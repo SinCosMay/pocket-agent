@@ -159,6 +159,7 @@ public final class RuntimeHost implements AutoCloseable {
                 if (runtime != null) {
                     try { runtime.getExecutor("PocketAgent.dispatch('{\"action\":\"stop_all\"}')").executeVoid(); runtime.await(V8AwaitMode.RunNoWait); } catch (Throwable ignored) { }
                     runtime.setStopping(true); runtime.close(); runtime = null;
+                    if(tools!=null){tools.close();tools=null;}
                 }
                 store.markInterrupted();
             } catch (Throwable error) { fail("Runtime shutdown failed", error); }

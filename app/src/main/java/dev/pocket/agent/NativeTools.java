@@ -22,15 +22,14 @@ import org.json.JSONArray;
 import org.json.JSONObject;
 import static dev.pocket.control.ControlException.Code.*;
 
-final class NativeTools {
+final class NativeTools implements AutoCloseable {
     private final Context context;
     private final OperationStore operations;
     private final JSONArray definitions;
     private final AndroidSystemActions system;
-    private String screenOwner;
-    private long screenUntil;
+    private final AgentDisplayCoordinator displays;
     NativeTools(Context context) throws Exception {
-        this.context=context.getApplicationContext();operations=new OperationStore(context);system=new AndroidSystemActions(context);
+        this.context=context.getApplicationContext();operations=new OperationStore(context);system=new AndroidSystemActions(context);displays=new AgentDisplayCoordinator(context);
         try(java.io.InputStream input=context.getAssets().open("tools.json")) {
             java.io.ByteArrayOutputStream bytes=new java.io.ByteArrayOutputStream();byte[] chunk=new byte[4096];int n;
             while((n=input.read(chunk))!=-1) bytes.write(chunk,0,n);
@@ -38,18 +37,12 @@ final class NativeTools {
         }
     }
     JSONArray list() {return definitions;}
-    private synchronized JSONObject acquire(String owner) {
-        long now=android.os.SystemClock.elapsedRealtime();
-        if(screenOwner!=null && !screenOwner.equals(owner) && screenUntil>now)
-            return Json.failure("SCREEN_BUSY","Another conversation owns the screen. Retry after release and observe again.");
-        screenOwner=owner;screenUntil=now+15000;
-        return Json.obj("status","acquired","owner",owner,"expires_in_ms",15000);
-    }
-    synchronized void releaseOwner(String owner) {if(owner.equals(screenOwner)) {screenOwner=null;screenUntil=0;}}
+    synchronized void releaseOwner(String owner) {displays.release(owner);}
+    @Override public synchronized void close(){displays.close();}
     private JSONObject screenLease(JSONObject args,String owner) {
         if(args.length()!=1) return Json.failure("INVALID_ARGUMENT","Only action is accepted");
         String action=args.optString("action");
-        if(action.equals("acquire")) return acquire(owner);
+        if(action.equals("acquire"))try{return displays.acquire(owner);}catch(ControlException e){return Json.failure(e.code.name(),e.getMessage());}
         if(action.equals("release")) {releaseOwner(owner);return Json.obj("status","released");}
         return Json.failure("INVALID_ARGUMENT","action must be acquire or release");
     }
@@ -101,21 +94,18 @@ final class NativeTools {
         if (name.equals("phone_screen")) return screenLease(args,owner);
         try {
             JSONObject spec=definition(name);validate(args,spec.getJSONObject("inputSchema"));
-            if (name.equals("phone_observe") || name.equals("phone_act") || name.equals("phone_open_app")) { JSONObject lease=acquire(owner);if(lease.optBoolean("isError")) return lease; }
-            if(!spec.getJSONObject("annotations").getBoolean("readOnlyHint")) return operations.execute(args.getString("operation_id"),name,args,()->dispatch(name,args));
-            return dispatch(name,args);
+            if(!spec.getJSONObject("annotations").getBoolean("readOnlyHint")) return operations.execute(args.getString("operation_id"),name,args,()->dispatch(name,args,owner));
+            return dispatch(name,args,owner);
         } catch(ControlException e) {return Json.failure(e.code.name(),e.getMessage());}
         catch(SecurityException e) {return Json.failure("PERMISSION_REQUIRED","Android denied access");}
         catch(Exception e) {return Json.failure("RESULT_UNKNOWN","Operation unavailable; inspect current state before repeating");}
     }
-    private AndroidScreenBackend screen() throws ControlException {
-        AgentAccessibility observer=AgentAccessibility.connected;if(observer==null) throw new ControlException(PERMISSION_REQUIRED,"Enable Pocket Agent accessibility in Android Settings");return observer.backend();
-    }
+    private AndroidScreenBackend screen(String owner) throws ControlException {return displays.screen(owner);}
     private static Integer integer(JSONObject a,String name) throws Exception {return a.has(name)?a.getInt(name):null;}
     private static String string(JSONObject a,String name) throws Exception {return a.has(name)?a.getString(name):null;}
     private JSONObject outcome(AndroidSystemActions.Outcome value) {return Json.tool(Json.obj("status",value.status(),"reference",value.reference(),"message",value.message()));}
-    private JSONObject observation(JSONObject a) throws Exception {
-        ControlBackend.Observation o=screen().observe(a.optBoolean("include_image",false),a.optInt("max_image_dimension",1280),a.optInt("max_nodes",150));
+    private JSONObject observation(JSONObject a,String owner) throws Exception {
+        ControlBackend.Observation o=screen(owner).observe(a.optBoolean("include_image",false),a.optInt("max_image_dimension",1280),a.optInt("max_nodes",150));
         JSONArray nodes=new JSONArray();
         for(ControlBackend.Node n:o.nodes()) nodes.put(Json.obj("index",n.index(),"resource_id",n.resourceId(),"text",n.text(),"description",n.description(),"role",n.role(),
             "bounds",Json.obj("left",n.left(),"top",n.top(),"right",n.right(),"bottom",n.bottom()),"enabled",n.enabled(),"focused",n.focused(),"editable",n.editable(),"clickable",n.clickable(),"long_clickable",n.longClickable(),"scrollable",n.scrollable()));
@@ -160,16 +150,23 @@ final class NativeTools {
                 int state=context.getSystemService(android.telephony.TelephonyManager.class).getCallState();callState=switch(state) {case 0 -> "idle";case 1 -> "ringing";case 2 -> "offhook";default -> "unknown";};
             }catch(Exception denied) {}
         }
-        return Json.tool(Json.obj("version",BuildConfig.VERSION_NAME,"operation_prefix",operations.prefix(),"operation_nonce_min_length",8,"operation_nonce_max_length",48,"accessibility_connected",AgentAccessibility.connected!=null,"notification_listener_connected",PhoneNotifications.connected!=null,"interactive",context.getSystemService(PowerManager.class).isInteractive(),"locked",context.getSystemService(KeyguardManager.class).isKeyguardLocked(),"permissions",permissions,"phone_accounts",accounts,"sms_subscriptions",subscriptions,"media_sessions",media,"call_state",callState,"call_state_note","offhook includes dialing; it is not connection proof","preferred_order",Json.arr("direct_android_api","app_provided_action","semantic_accessibility","screen_gesture")));
+        return Json.tool(Json.obj("version",BuildConfig.VERSION_NAME,"operation_prefix",operations.prefix(),"operation_nonce_min_length",8,"operation_nonce_max_length",48,"accessibility_connected",AgentAccessibility.connected!=null,"notification_listener_connected",PhoneNotifications.connected!=null,"interactive",context.getSystemService(PowerManager.class).isInteractive(),"locked",context.getSystemService(KeyguardManager.class).isKeyguardLocked(),"permissions",permissions,"phone_accounts",accounts,"sms_subscriptions",subscriptions,"media_sessions",media,"call_state",callState,"call_state_note","offhook includes dialing; it is not connection proof","preferred_order",Json.arr("direct_android_api","app_provided_action","semantic_accessibility","screen_gesture"),"virtual_displays",Json.obj("backend",displays.backendStatus(),"active",displays.activeCount(),"maximum",AgentDisplayCoordinator.MAX_DISPLAYS,"requires_shizuku",true)));
     }
-    private JSONObject dispatch(String name,JSONObject a) throws Exception {
+    private JSONObject dispatch(String name,JSONObject a,String owner) throws Exception {
         switch(name) {
             case "phone_capabilities": return capabilities();
-            case "phone_observe": return observation(a);
+            case "phone_observe": return observation(a,owner);
             case "phone_act": {
                 JSONObject s=a.optJSONObject("selector");ControlBackend.Selector selector=s==null?null:new ControlBackend.Selector(string(s,"resource_id"),string(s,"text"),string(s,"description"));
                 ControlBackend.Action action=new ControlBackend.Action(ControlBackend.Kind.valueOf(a.getString("kind").toUpperCase(java.util.Locale.ROOT)),a.getString("snapshot_id"),integer(a,"x"),integer(a,"y"),integer(a,"end_x"),integer(a,"end_y"),a.optInt("duration_ms",600),string(a,"text"),a.optBoolean("replace",true),string(a,"key"),string(a,"direction"),selector);
-                ControlBackend.Result result=screen().execute(action);return Json.tool(Json.obj("status",result.status(),"message",result.message()));
+                ControlBackend.Result result;
+                if(action.kind()==ControlBackend.Kind.KEY && !"enter".equals(action.key())) {
+                    screen(owner).validateAction(action);
+                    int key=switch(action.key()==null?"":action.key()) {case "back"->4;case "home"->3;case "recents"->187;default->throw new ControlException(UNSUPPORTED,"Key must be home, back, recents or enter");};
+                    displays.key(owner,key);
+                    result=new ControlBackend.Result("dispatched","Display-targeted key accepted; task outcome not yet verified");
+                }else result=screen(owner).execute(action);
+                return Json.tool(Json.obj("status",result.status(),"message",result.message()));
             }
             case "phone_apps": {
                 JSONArray apps=new JSONArray();List<ResolveInfo> found=context.getPackageManager().queryIntentActivities(new Intent(Intent.ACTION_MAIN).addCategory(Intent.CATEGORY_LAUNCHER),0);
@@ -177,8 +174,9 @@ final class NativeTools {
             }
             case "phone_open_app": {
                 String pkg=a.getString("package_name");Intent launch=context.getPackageManager().getLaunchIntentForPackage(pkg);
-                if(launch==null) throw new ControlException(UNSUPPORTED,"No launcher activity visible for this package");context.startActivity(launch.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK));
-                return Json.tool(Json.obj("status","requested","package_name",pkg,"message","Launch requested; verify foreground package with phone_observe. OEM restrictions may block background launch."));
+                if(launch==null||launch.getComponent()==null) throw new ControlException(UNSUPPORTED,"No launcher component visible for this package");
+                displays.launch(owner,launch.getComponent().flattenToString());
+                return Json.tool(Json.obj("status","requested","package_name",pkg,"display_id",displays.display(owner),"message","Launch requested on the private virtual display; verify with phone_observe."));
             }
             case "phone_contacts": {
                 JSONArray contacts=new JSONArray();for(AndroidSystemActions.Contact c:system.findContacts(a.getString("query"),a.optInt("limit",20))) contacts.put(Json.obj("contact_id",c.contactId(),"name",c.name(),"number",c.number()));return Json.tool(Json.obj("contacts",contacts));

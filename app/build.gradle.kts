@@ -32,6 +32,8 @@ android {
 dependencies {
     implementation(project(":android-platform"))
     implementation("com.caoccao.javet:javet-node-android-i18n:6.0.2")
+    implementation("dev.rikka.shizuku:api:13.1.5")
+    implementation("dev.rikka.shizuku:provider:13.1.5")
     androidTestImplementation("androidx.test:runner:1.6.2")
     androidTestImplementation("org.jetbrains.kotlin:kotlin-stdlib:2.2.0")
     androidTestImplementation("androidx.test:rules:1.6.1")

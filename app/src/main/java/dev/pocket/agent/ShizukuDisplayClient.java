@@ -1,0 +1,128 @@
+package dev.pocket.agent;
+
+import android.content.ComponentName;
+import android.content.Context;
+import android.content.ServiceConnection;
+import android.content.pm.PackageManager;
+import android.os.IBinder;
+import android.os.RemoteException;
+import android.os.SystemClock;
+import android.util.Log;
+import dev.pocket.control.ControlException;
+import rikka.shizuku.Shizuku;
+
+/** Single Shizuku session shared by all agent-owned virtual displays. */
+final class ShizukuDisplayClient implements AutoCloseable {
+    private static final String TAG="PocketDisplayShizuku";
+    private final Shizuku.UserServiceArgs args;
+    private final Object readyLock=new Object();
+    private final Runnable disconnected;
+    private volatile IDisplayShell remote;
+    private volatile boolean binding;
+    private volatile boolean closed;
+    private final ServiceConnection connection=new ServiceConnection() {
+        @Override public void onServiceConnected(ComponentName name,IBinder binder) {
+            if(closed) {
+                try {Shizuku.unbindUserService(args,connection,true);}catch(Exception ignored){}
+                return;
+            }
+            IDisplayShell shell=IDisplayShell.Stub.asInterface(binder);
+            try {binder.linkToDeath(ShizukuDisplayClient.this::loseService,0);}
+            catch(RemoteException e) {loseService();return;}
+            remote=shell;binding=false;
+            Log.i(TAG,"Shizuku UserService connected");
+            synchronized(readyLock) {readyLock.notifyAll();}
+        }
+        @Override public void onServiceDisconnected(ComponentName name) {loseService();}
+    };
+    private final Shizuku.OnBinderReceivedListener received=this::tryBind;
+    private final Shizuku.OnBinderDeadListener died=this::loseService;
+
+    ShizukuDisplayClient(Context context,Runnable disconnected) {
+        this.disconnected=disconnected;
+        args=new Shizuku.UserServiceArgs(new ComponentName(context,ShellDisplayService.class))
+            .daemon(false).tag("pocket-agent-displays").processNameSuffix("display").version(1);
+        Shizuku.addBinderReceivedListenerSticky(received);
+        Shizuku.addBinderDeadListener(died);
+    }
+    private void loseService() {
+        Log.w(TAG,"Shizuku UserService disconnected");
+        remote=null;binding=false;
+        synchronized(readyLock) {readyLock.notifyAll();}
+        if(!closed) disconnected.run();
+    }
+    private boolean available() {
+        try {return Shizuku.pingBinder();}catch(Throwable e){return false;}
+    }
+    static String prerequisites() {
+        try {
+            if(!Shizuku.pingBinder()) return "shizuku_unavailable";
+            return Shizuku.checkSelfPermission()==PackageManager.PERMISSION_GRANTED?"idle":"permission_required";
+        } catch(Throwable e) {return "shizuku_unavailable";}
+    }
+    String status() {
+        if(closed) return "stopped";
+        String pre=prerequisites();
+        if(!"idle".equals(pre)) return pre;
+        if(remote!=null && remote.asBinder().isBinderAlive()) return "ready";
+        return binding?"binding":"disconnected";
+    }
+    synchronized void tryBind() {
+        if(closed || binding || remote!=null || !available()) return;
+        try {
+            if(Shizuku.checkSelfPermission()!=PackageManager.PERMISSION_GRANTED) return;
+            binding=true;
+            Log.i(TAG,"Shizuku UserService bind requested");
+            Shizuku.bindUserService(args,connection);
+        } catch(Exception e) {
+            binding=false;
+            Log.e(TAG,"Shizuku UserService binding call failed",e);
+        }
+    }
+    private IDisplayShell require() throws ControlException {
+        if(!"ready".equals(status())) {
+            tryBind();
+            long end=SystemClock.elapsedRealtime()+4000;
+            synchronized(readyLock) {
+                while(!"ready".equals(status()) && !closed && SystemClock.elapsedRealtime()<end) {
+                    if(!"binding".equals(status())) break;
+                    try {readyLock.wait(Math.max(1,end-SystemClock.elapsedRealtime()));}
+                    catch(InterruptedException e) {
+                        Thread.currentThread().interrupt();
+                        throw new ControlException(ControlException.Code.RESULT_UNKNOWN,"Interrupted binding Shizuku service");
+                    }
+                }
+            }
+        }
+        if(!"ready".equals(status())) Log.w(TAG,"Shizuku bind did not reach ready state: "+status());
+        if(!"ready".equals(status())) throw new ControlException(ControlException.Code.NOT_READY,
+            "Virtual display backend "+status()+"; start Shizuku and authorize Pocket Agent in its UI");
+        return remote;
+    }
+    int createDisplay() throws ControlException {
+        try {return require().createDisplay(720,1280,320);}
+        catch(RemoteException e) {loseService();throw new ControlException(ControlException.Code.NOT_READY,"Shizuku display service disconnected");}
+        catch(RuntimeException e) {throw new ControlException(ControlException.Code.NOT_READY,"Android rejected trusted display creation: "+e.getClass().getSimpleName());}
+    }
+    void removeDisplay(int displayId) {
+        IDisplayShell service=remote;
+        if(service!=null) try {service.removeDisplay(displayId);}catch(Exception ignored){}
+    }
+    void launch(int displayId,String componentName) throws ControlException {
+        try {if(!require().launchActivity(displayId,componentName))
+            throw new ControlException(ControlException.Code.ACTION_REJECTED,"Android rejected the launch on the virtual display");}
+        catch(RemoteException e) {loseService();throw new ControlException(ControlException.Code.NOT_READY,"Virtual display backend disconnected");}
+    }
+    void key(int displayId,int code) throws ControlException {
+        try {if(!require().injectKey(displayId,code))
+            throw new ControlException(ControlException.Code.ACTION_REJECTED,"Android rejected the virtual display key event");}
+        catch(RemoteException e) {loseService();throw new ControlException(ControlException.Code.NOT_READY,"Virtual display backend disconnected");}
+    }
+    @Override public synchronized void close() {
+        closed=true;remote=null;
+        synchronized(readyLock) {readyLock.notifyAll();}
+        Shizuku.removeBinderReceivedListener(received);
+        Shizuku.removeBinderDeadListener(died);
+        try {if(available()) Shizuku.unbindUserService(args,connection,true);}catch(Exception ignored){}
+    }
+}

@@ -185,6 +185,7 @@ public final class MainActivity extends Activity implements AgentService.Observe
             @Override public void onNothingSelected(AdapterView<?> parent) { }
         });
         panel.addView(button("Accessibility settings", () -> startActivity(new Intent(Settings.ACTION_ACCESSIBILITY_SETTINGS))));
+        panel.addView(button("Enable Shizuku virtual displays", this::enableVirtualDisplays));
         panel.addView(button("Notification access settings", () -> startActivity(new Intent(Settings.ACTION_NOTIFICATION_LISTENER_SETTINGS))));
         panel.addView(button("Choose phone permissions", this::permissions));
         ScrollView scroll = new ScrollView(this); scroll.addView(panel);
@@ -278,6 +279,17 @@ public final class MainActivity extends Activity implements AgentService.Observe
                 instructions.setText(safeMessage + " The previous connection was preserved."); code.setText(""); browser.setEnabled(false); flow.close();
             }
         });
+    }
+    private void enableVirtualDisplays() {
+        try {
+            if(!rikka.shizuku.Shizuku.pingBinder()) {
+                Intent open=getPackageManager().getLaunchIntentForPackage("moe.shizuku.privileged.api");
+                if(open!=null)startActivity(open);
+                else toast("Install and start Shizuku, then return to authorize Pocket Agent");
+            } else if(rikka.shizuku.Shizuku.checkSelfPermission()!=PackageManager.PERMISSION_GRANTED) {
+                rikka.shizuku.Shizuku.requestPermission(1001);
+            } else toast("Shizuku permission granted; up to three background displays are available on demand");
+        }catch(Exception error){toast("Shizuku unavailable; start it and authorize Pocket Agent");}
     }
     private void permissions() {
         String[] labels = {"Contacts", "Phone calls and phone status", "Send SMS", "Read and edit calendar", "Runtime notifications"};

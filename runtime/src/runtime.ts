@@ -2,13 +2,14 @@ import { AgentRegistry } from '../vendor/pi9/agents.js';
 import { SubagentRuntime } from '../vendor/pi9/runtime.js';
 import { completedGeneration,errorGeneration,interruptedGeneration,generationKey } from '../vendor/pi9/conversation.js';
 import { MobileSession } from './session.js';
+import { DisplayPool } from './display-pool.js';
 import { nativeTools,subagentTool } from './tools.js';
 import { messageText } from './scripted.js';
 import { modelFor,makeStream } from './provider.js';
 import { registerCodexCredentialUpdater,redactProviderSecrets,hasPendingCodexRefresh } from './codex-auth.js';
 
-const MAIN_PROMPT=`You are the user's persistent phone assistant. Delegate substantial multi-step phone navigation, screenshots and computer use promptly to phone-operator using subagent spawn. Give a concise assignment, relevant facts, outcome and verification criteria. End your turn after async dispatch, remain available and let the host deliver completion. Do not poll workers or block main with join on unfinished work. You may do a genuinely short lookup directly. Never claim requested/dispatched actions prove outcomes. Read phone_capabilities before mutation. Use its operation_prefix plus an underscore and a unique 8..48 character nonce (ASCII letters, digits, underscore or hyphen) for each mutation. Include owner/generation/action/attempt or a timestamp for uniqueness; a valid suffix example is _type_0001, never reuse the example across actions; inspect phone_operation after uncertain outcomes and reuse the same ID/arguments. Prefer direct APIs, then app actions, accessibility, screenshot fallback. Release screen after work. Main Stop does not stop workers.`;
-const WORKER_PROMPT=`You are a bounded phone operator worker. Complete the assignment using the granted direct native tools, verify actual outcome, report evidence and uncertainties. Read phone_capabilities first. Never invent unavailable permissions or task success. Prefer APIs, then app actions, accessibility and image/gesture fallback. Use fresh observations and honor screen leases. Mutations require operation_prefix plus underscore and a unique 8..48 character nonce containing only ASCII letters, digits, underscore or hyphen. Include owner/generation/action/attempt or a timestamp for uniqueness; a valid suffix example is _type_0001, never reuse the example across actions; preserve operation IDs across uncertain retries and inspect receipts before repeating. A phone_act STALE_OBSERVATION with dispatch_status=not_dispatched permits reobserving and replanning with a new operation ID; do not reuse the recorded ID with changed arguments. RESULT_UNKNOWN never permits blind replay. Recursive delegation is available with a shared concurrency cap. Join child dependencies, and return concise verified results. If interrupted after process death inspect app state/receipts before any side-effect replay.`;
+const MAIN_PROMPT=`You are the user's persistent phone assistant. Delegate substantial multi-step phone navigation, screenshots and computer use promptly to phone-operator using subagent spawn. Give a concise assignment, relevant facts, outcome and verification criteria. End your turn after async dispatch, remain available and let the host deliver completion. Do not poll workers or block main with join on unfinished work. You may do a genuinely short lookup directly. Never claim requested/dispatched actions prove outcomes. Read phone_capabilities before mutation. Use its operation_prefix plus an underscore and a unique 8..48 character nonce (ASCII letters, digits, underscore or hyphen) for each mutation. Include owner/generation/action/attempt or a timestamp for uniqueness; a valid suffix example is _type_0001, never reuse the example across actions; inspect phone_operation after uncertain outcomes and reuse the same ID/arguments. Prefer direct APIs, then app actions, accessibility, screenshot fallback. Virtual displays are acquired automatically on UI tools; do not acquire a display for SMS, calls or direct APIs. Release the virtual display when the UI phase is finished. Main Stop does not stop workers.`;
+const WORKER_PROMPT=`You are a bounded phone operator worker. Complete the assignment using the granted direct native tools, verify actual outcome, report evidence and uncertainties. Read phone_capabilities first. Never invent unavailable permissions or task success. Prefer APIs, then app actions, accessibility and image/gesture fallback. Virtual screens are allocated automatically for UI tools, with a FIFO queue if all three are occupied. Never request a display for native-only actions (SMS, calls, contacts, calendars). Release a display after the UI phase is complete; waiting for a display is not a task failure. Use fresh observations and honor display ownership. Mutations require operation_prefix plus underscore and a unique 8..48 character nonce containing only ASCII letters, digits, underscore or hyphen. Include owner/generation/action/attempt or a timestamp for uniqueness; a valid suffix example is _type_0001, never reuse the example across actions; preserve operation IDs across uncertain retries and inspect receipts before repeating. A phone_act STALE_OBSERVATION with dispatch_status=not_dispatched permits reobserving and replanning with a new operation ID; do not reuse the recorded ID with changed arguments. RESULT_UNKNOWN never permits blind replay. Recursive delegation is available with a shared concurrency cap. Join child dependencies, and return concise verified results. If interrupted after process death inspect app state/receipts before any side-effect replay.`;
 const stripImages=(messages:any[])=>messages.map(m=>({...m,content:Array.isArray(m.content)?m.content.map((c:any)=>c.type==='image'?{type:'text',text:'[Previous screenshot omitted; observe again for current state]'}:c):m.content}));
 const textMessages=(messages:any[],sanitize=(text:string)=>text)=>messages.filter(m=>m.role==='user'||m.role==='assistant').map((m,i)=>({id:`${m.timestamp}-${i}`,role:m.role,text:messageText(m)||(m.stopReason==='error'?`Request failed: ${sanitize(m.errorMessage??'Provider request failed')}`:''),timestamp:m.timestamp,...(m.stopReason?{stopReason:m.stopReason}:{}),...(m.errorMessage?{error:sanitize(m.errorMessage)}:{})})).filter(m=>m.text);
 const normalizeMode=(mode:string)=>mode==='api-key'?'openai':mode==='codex-relay'||mode==='codexRelay'?'codex':mode;
@@ -16,6 +17,9 @@ const normalizeMode=(mode:string)=>mode==='api-key'?'openai':mode==='codex-relay
 export interface NativeBridge {call(method:string,argsJson:string):string;emit(eventJson:string):void}
 export class PocketRuntime {
   readonly registry=new AgentRegistry();
+  readonly displayPool=new DisplayPool(3);
+  private readonly nativeDisplays=new Set<string>();
+  private readonly pendingDisplays=new Map<string,Promise<any>>();
   readonly runtime:SubagentRuntime;
   readonly sessions=new Map<string,MobileSession>();
   main!:MobileSession;
@@ -39,7 +43,7 @@ export class PocketRuntime {
   private redact=(text:string)=>{for(const credentials of this.credentialHistory)text=redactProviderSecrets(text,credentials);return text;};
   private sanitize=(text:string)=>this.redact(text).slice(0,2000);
   readonly reportError=(e:any)=>{this.lastError=this.sanitize(String(e?.message??e));this.emit({type:'error',error:this.lastError});};
-  constructor(readonly native:NativeBridge,limits={maxExecuting:2,maxConversations:12}) {
+  constructor(readonly native:NativeBridge,limits={maxExecuting:4,maxConversations:12}) {
     const phoneTools=nativeTools(this,'placeholder').map(x=>x.name);
     this.registry.agents.set('phone-operator',{name:'phone-operator',description:'Performs bounded Android workflows and verifies native outcomes.',source:'project',systemPrompt:WORKER_PROMPT,tools:[...phoneTools,'subagent']});
     this.registry.agents.set('researcher',{name:'researcher',description:'Reads phone capabilities and app data with no screen mutations.',source:'project',systemPrompt:'Read-only bounded worker. Report evidence and uncertainty.',tools:['phone_capabilities','phone_apps','phone_contacts','phone_calendars','phone_notifications','phone_operation','subagent']});
@@ -130,7 +134,32 @@ export class PocketRuntime {
     finally {this.dropPriorImages(conversation.conversationId);this.releaseScreen(conversation.conversationId);this.save();this.publish();}
   };
   dropPriorImages(owner:string):void {(owner==='main'?this.main:this.sessions.get(owner))?.dropPriorImages();}
-  private releaseScreen(owner:string):void {try{this.call('tool',{name:'phone_screen',args:{action:'release'},owner});}catch{/* Missing lease is harmless. */}}
+  async ensureDisplay(owner:string,signal?:AbortSignal):Promise<any> {
+    if(signal?.aborted)throw new Error('Display request cancelled');
+    const pending=this.pendingDisplays.get(owner);
+    if(pending)return pending;
+    const request=(async()=>{
+      if(!this.displayPool.has(owner)&&this.displayPool.active>=this.displayPool.capacity)
+        this.emit({type:'log',owner,message:'Waiting for a virtual display; work resumes automatically when one is released'});
+      await this.displayPool.reserve(owner,signal);
+      if(signal?.aborted){this.releaseScreen(owner);throw new Error('Display request cancelled');}
+      if(this.nativeDisplays.has(owner))return {status:'acquired'};
+      try {
+        const result=this.call('tool',{name:'phone_screen',args:{action:'acquire'},owner});
+        if(result?.isError){this.displayPool.release(owner);return result;}
+        this.nativeDisplays.add(owner);
+        if(signal?.aborted){this.releaseScreen(owner);throw new Error('Display request cancelled');}
+        return result;
+      }catch(e){this.displayPool.release(owner);throw e;}
+    })();
+    this.pendingDisplays.set(owner,request);
+    try{return await request;}finally{this.pendingDisplays.delete(owner);}
+  }
+  releaseScreen(owner:string):void {
+    this.nativeDisplays.delete(owner);
+    try{this.call('tool',{name:'phone_screen',args:{action:'release'},owner});}catch{/* Service shutdown also releases leases. */}
+    finally{this.displayPool.release(owner);}
+  }
   private enqueueCompletion(conversationId:string,generation:number):void {
     const key=generationKey({conversationId:conversationId as any,generation});
     if(this.delivered.has(key)||this.inbox.some(x=>x.key===key))return;
@@ -238,7 +267,7 @@ export class PocketRuntime {
     this.delivered=new Set([...this.delivered].filter(key=>retained.has(JSON.parse(key)[0])));
   }
   private async stopAll():Promise<void> {
-    this.stoppingAll=true;this.mainPaused=true;this.inbox=[];this.main.agent.abort();
+    this.stoppingAll=true;this.mainPaused=true;this.inbox=[];this.main.agent.abort();this.releaseScreen('main');
     // Child ownership cancellation is explicit through each owning caller.
     await Promise.allSettled(this.runtime.listConversations().filter(c=>c.currentGeneration).map(c=>{
       const parent=c.parentConversationId?this.runtime.generationCaller({conversationId:c.parentConversationId,generation:this.runtime.conversation(c.parentConversationId).generations.at(-1)!.generation}):undefined;
