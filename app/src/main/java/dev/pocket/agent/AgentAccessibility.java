@@ -19,7 +19,7 @@ public final class AgentAccessibility extends AccessibilityService {
     @Override public void onAccessibilityEvent(AccessibilityEvent event) {
         int type=event.getEventType();
         if(type==AccessibilityEvent.TYPE_VIEW_CLICKED || type==AccessibilityEvent.TYPE_VIEW_TEXT_CHANGED || type==AccessibilityEvent.TYPE_VIEW_SCROLLED || type==AccessibilityEvent.TYPE_WINDOW_STATE_CHANGED) {
-            int displayId=event.getDisplayId();
+            int displayId=android.os.Build.VERSION.SDK_INT>=33?event.getDisplayId():android.view.Display.DEFAULT_DISPLAY;
             AndroidScreenBackend target=displayId==0?backend:virtualBackends.get(displayId);
             if(target!=null)target.noteInteraction(event.getEventTime());
         }
