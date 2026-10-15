@@ -81,7 +81,7 @@ is needed. Default-assistant support and key mapping depend on OEM firmware.
   distinct Stop listening action.
 - While Pi thinks or speaks, capture continues without reopening AudioRecord.
   Flux `StartOfTurn` interrupts playback immediately: local queued PCM is discarded,
-  Deepgram TTS receives `Clear`, and `stop_main` aborts **only** the previous
+  Deepgram TTS receives `Clear`, and voice-turn-scoped `stop_main` aborts **only** the previous
   main response. The next confirmed `EndOfTurn` enters Pi as a new user message.
   Late response deltas are ignored using a new identifier for each voice turn.
   Android's available acoustic echo canceler and noise suppression are enabled;

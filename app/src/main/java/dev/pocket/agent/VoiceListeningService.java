@@ -83,6 +83,16 @@ public final class VoiceListeningService extends Service implements AgentService
             @Override public void onSpeechStarted() {
                 main.post(VoiceListeningService.this::speechStarted);
             }
+            @Override public void onEmptyTurn() {
+                main.post(() -> {
+                    if (!started) return;
+                    userSpeaking = false;
+                    if (!responding) {
+                        showStatus("Listening for follow-up");
+                        resetIdle();
+                    }
+                });
+            }
             @Override public void onInterim(String text) {
                 main.post(() -> {
                     if (started && !text.isBlank()) {
@@ -154,10 +164,14 @@ public final class VoiceListeningService extends Service implements AgentService
         userSpeaking = true;
         main.removeCallbacks(idleStop);
         if (responding) {
+            String interruptedTurn = activeTurn;
             responding = false;
             activeTurn = null;
             voice.interruptReply();
-            try { command(new JSONObject().put("action", "stop_main")); }
+            try {
+                if (interruptedTurn != null) command(new JSONObject()
+                    .put("action", "stop_main").put("voiceSessionId", interruptedTurn));
+            }
             catch (Exception error) { Log.w("PocketVoice", "Could not abort previous response", error); }
             showStatus("Interrupted · listening to you");
         } else showStatus("Hearing you");

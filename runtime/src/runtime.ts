@@ -190,7 +190,18 @@ export class PocketRuntime {
           const voiceSessionId=typeof cmd.voiceSessionId==='string'&&/^[a-f0-9-]{36}$/.test(cmd.voiceSessionId)?cmd.voiceSessionId:undefined;
           this.inbox.push({type:'user',text:cmd.text,...(voiceSessionId?{voiceSessionId}:{})});this.save();void this.pump();
         }
-      } else if(cmd.action==='stop_main') {this.main.agent.abort();}
+      } else if(cmd.action==='stop_main') {
+        if(cmd.voiceSessionId===undefined) this.main.agent.abort();
+        else {
+          const sessionId=cmd.voiceSessionId;
+          if(typeof sessionId!=='string'||!/^[a-f0-9-]{36}$/.test(sessionId))
+            throw new Error('Invalid voice session identifier for scoped stop');
+          // A late interruption must never abort a newer spoken response.
+          // Also drop the old request if it was still waiting behind other work.
+          if(this.speakingTurn===sessionId)this.main.agent.abort();
+          this.inbox=this.inbox.filter(item=>item.voiceSessionId!==sessionId);
+        }
+      }
       else if(cmd.action==='stop_all')void this.stopAll().catch(this.reportError);
       else if(cmd.action==='cancel_worker')void this.runtime.cancelSubagent(cmd.conversationId,this.hostCaller(cmd.conversationId)).catch(this.reportError);
       else if(cmd.action==='steer_worker')void this.steer(cmd.conversationId,cmd.text,this.hostCaller(cmd.conversationId),'user').catch(this.reportError);

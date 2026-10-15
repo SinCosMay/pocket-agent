@@ -21,6 +21,17 @@ public class VoicePipelineDeviceTest {
             .put("type", "TurnInfo").put("event", "EndOfTurn").put("transcript", " I want a reminder ")));
     }
 
+    @Test public void emptyConfirmedTurnReleasesSpeechStateWithoutDispatch() throws Exception {
+        JSONObject empty = new JSONObject().put("type", "TurnInfo")
+            .put("event", "EndOfTurn").put("transcript", "   ");
+        assertTrue(VoiceTranscript.emptyCompletedTurn(empty));
+        assertNull(VoiceTranscript.completedTurn(empty));
+        assertFalse(VoiceTranscript.emptyCompletedTurn(new JSONObject()
+            .put("type", "TurnInfo").put("event", "Update").put("transcript", " ")));
+        assertFalse(VoiceTranscript.emptyCompletedTurn(new JSONObject()
+            .put("type", "TurnInfo").put("event", "EndOfTurn").put("transcript", "voice")));
+    }
+
     @Test public void fluxBargeInOnlyOnConfirmedSpeechStart() throws Exception {
         assertFalse(VoiceTranscript.startedTurn(new JSONObject().put("type", "TurnInfo")
             .put("event", "Update").put("transcript", "hello")));

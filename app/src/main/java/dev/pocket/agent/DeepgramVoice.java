@@ -32,6 +32,7 @@ final class DeepgramVoice implements AutoCloseable {
     interface Callback {
         void onUtterance(String text);
         void onSpeechStarted();
+        void onEmptyTurn();
         void onInterim(String text);
         void onPlaybackFinished();
         void onFirstAudio();
@@ -144,6 +145,8 @@ final class DeepgramVoice implements AutoCloseable {
                         callback.onUtterance(finalText);
                     } else if (VoiceTranscript.startedTurn(packet)) {
                         callback.onSpeechStarted();
+                    } else if (VoiceTranscript.emptyCompletedTurn(packet)) {
+                        callback.onEmptyTurn();
                     } else if ("TurnInfo".equals(packet.optString("type"))) {
                         callback.onInterim(packet.optString("transcript", ""));
                     } else if ("Error".equals(packet.optString("type"))) {
@@ -199,6 +202,7 @@ final class DeepgramVoice implements AutoCloseable {
                     }
                     if (!socket.send(ByteString.of(Arrays.copyOf(samples, size)))) break;
                 }
+                if (!closed && listening) callback.onStatus("Microphone stream disconnected");
                 stopListening();
             }, "PocketVoiceMicrophone");
             capture.setDaemon(true);
