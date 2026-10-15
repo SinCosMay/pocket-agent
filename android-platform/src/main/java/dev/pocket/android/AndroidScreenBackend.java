@@ -35,12 +35,15 @@ public final class AndroidScreenBackend implements ControlBackend {
     private final Handler main = new Handler(Looper.getMainLooper());
     private final Map<String, Observation> snapshots = new LinkedHashMap<>();
     private final Map<String, Long> snapshotRevisions = new LinkedHashMap<>();
-    private final java.util.concurrent.atomic.AtomicLong revision = new java.util.concurrent.atomic.AtomicLong();
+    private final java.util.concurrent.atomic.AtomicLong interactionTime = new java.util.concurrent.atomic.AtomicLong();
     private static final long MAX_SNAPSHOT_AGE_MS = 15_000;
 
     public AndroidScreenBackend(AccessibilityService service) { this.service = service; }
     /** May be called from the accessibility callback without waiting on the worker lock. */
-    public void noteInteraction() { revision.incrementAndGet(); }
+    public void noteInteraction(long eventTime) {
+        long time=eventTime>0?eventTime:android.os.SystemClock.uptimeMillis();
+        interactionTime.accumulateAndGet(time,Math::max);
+    }
 
     private <T> T onMain(Callable<T> action) throws ControlException {
         if (Looper.myLooper() == Looper.getMainLooper()) {
@@ -88,11 +91,12 @@ public final class AndroidScreenBackend implements ControlBackend {
     }
 
     @Override public synchronized Observation observe(boolean image, int maxDimension, int maxNodes) throws ControlException {
-        long before = revision.get();
+        long[] capturedUptime = {0};
         if (maxDimension < 256 || maxDimension > 2048 || maxNodes < 0 || maxNodes > 500) {
             throw new ControlException(INVALID_ARGUMENT, "Image dimension 256..2048; nodes 0..500");
         }
         Observation base = onMain(() -> {
+            capturedUptime[0]=android.os.SystemClock.uptimeMillis();
             Rect bounds = dimensions();
             AccessibilityNodeInfo root = freshRoot();
             if(root==null) throw new ControlException(NOT_READY,"No active accessibility window yet; wait for the screen transition and observe again");
@@ -117,8 +121,8 @@ public final class AndroidScreenBackend implements ControlBackend {
             onMain(() -> { validateContext(expected); return null; });
         }
         // Retain only target metadata, never screenshots or captured app text.
-        if (before != revision.get()) throw new ControlException(STALE_OBSERVATION,"Screen changed during observation; observe again");
-        snapshotRevisions.put(base.snapshotId(), before);
+        if (capturedUptime[0] < interactionTime.get()) throw new ControlException(STALE_OBSERVATION,"Screen changed during observation; observe again");
+        snapshotRevisions.put(base.snapshotId(), capturedUptime[0]);
         snapshots.put(base.snapshotId(), new Observation(base.snapshotId(), base.capturedAtMs(), base.packageName(),
             base.windowId(), base.coordinateWidth(), base.coordinateHeight(), base.interactive(), base.locked(),
             List.of(), false, null, null, 0, 0));
@@ -199,7 +203,7 @@ public final class AndroidScreenBackend implements ControlBackend {
         if (observed == null || System.currentTimeMillis()-observed.capturedAtMs()>MAX_SNAPSHOT_AGE_MS) {
             throw new ControlException(STALE_OBSERVATION,"A recent snapshot ID is required");
         }
-        if (!java.util.Objects.equals(snapshotRevisions.get(a.snapshotId()),revision.get()))
+        if (snapshotRevisions.getOrDefault(a.snapshotId(),0L) < interactionTime.get())
             throw new ControlException(STALE_OBSERVATION,"Screen interaction occurred; observe again");
         onMain(() -> {
             if (!interactive()) throw new ControlException(SCREEN_OFF,"Display asleep");

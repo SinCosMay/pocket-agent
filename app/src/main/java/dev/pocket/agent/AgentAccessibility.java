@@ -11,7 +11,7 @@ public final class AgentAccessibility extends AccessibilityService {
     AndroidScreenBackend backend() {return backend;}
     @Override public void onAccessibilityEvent(AccessibilityEvent event) {
         int type=event.getEventType();
-        if(backend!=null && (type==AccessibilityEvent.TYPE_VIEW_CLICKED || type==AccessibilityEvent.TYPE_VIEW_TEXT_CHANGED || type==AccessibilityEvent.TYPE_VIEW_SCROLLED || type==AccessibilityEvent.TYPE_WINDOW_STATE_CHANGED)) backend.noteInteraction();
+        if(backend!=null && (type==AccessibilityEvent.TYPE_VIEW_CLICKED || type==AccessibilityEvent.TYPE_VIEW_TEXT_CHANGED || type==AccessibilityEvent.TYPE_VIEW_SCROLLED || type==AccessibilityEvent.TYPE_WINDOW_STATE_CHANGED)) backend.noteInteraction(event.getEventTime());
     }
     @Override public void onInterrupt() {}
     @Override public void onDestroy() {if(connected==this) connected=null;super.onDestroy();}
