@@ -12,6 +12,14 @@ import static org.junit.Assert.*;
 
 @RunWith(AndroidJUnit4.class)
 public class VoiceAssistantDeviceTest {
+    @Test public void microphoneServiceIsPrivateAndForegroundTyped() throws Exception {
+        Context context = InstrumentationRegistry.getInstrumentation().getTargetContext();
+        ServiceInfo voice = context.getPackageManager().getServiceInfo(
+            new ComponentName(context, VoiceListeningService.class), 0);
+        assertFalse(voice.exported);
+        assertNotEquals(0, voice.foregroundServiceType & ServiceInfo.FOREGROUND_SERVICE_TYPE_MICROPHONE);
+    }
+
     @Test public void assistantIsProtectedAndDiscoverable() throws Exception {
         Context context = InstrumentationRegistry.getInstrumentation().getTargetContext();
         PackageManager pm = context.getPackageManager();

@@ -3,13 +3,15 @@
 ## Product contract
 
 Pocket Agent remains the assistant and subagent host. Android's selected digital-assistant
-gesture opens a temporary voice UI. A live microphone stream goes to Deepgram STT;
+gesture activates a microphone-type Android foreground service with an ongoing
+notification, without leaving an overlay on screen. A live microphone stream goes to Deepgram STT;
 a finalized utterance is submitted as **one normal main-agent user message**. Only
 text deltas produced in that particular main response are sent to Deepgram streaming
 TTS. Subsequent Pi9 worker completion messages and ordinary text messages remain
-visible in chat without speech. Dismissing the assistant closes microphone, audio
-playback and speech WebSockets but **does not cancel Pi or any worker**. Stop response,
-Cancel worker and Stop all remain distinct actions.
+visible in chat without speech. The listening service ends after six seconds of idle silence, or immediately via
+the notification **Stop listening** action. Neither ending the voice session nor switching
+to another app cancels Pi workers. Stop response, Cancel worker and Stop all remain
+distinct actions.
 
 This is not Deepgram's Conversational Agent API. No Deepgram model makes decisions,
 dispatches tools or starts subagents.
@@ -37,8 +39,10 @@ Pocket Agent instead uses directly documented Deepgram APIs:
   or a long whitespace boundary, preserving incomplete word fragments.
   One `Flush` is sent per response and Android `AudioTrack` plays received PCM
   incrementally without writing an audio file.
-- Only two WebSockets are opened by a visible voice session. No always-on microphone,
-  greeting request, separate LLM or polling loop is introduced.
+- Only one STT and one TTS connection are opened per **active notification voice session**.
+  The microphone stays acquired through TTS playback for interruption and follow-ups.
+  It is not a permanent always-on listener and closes on idle silence or explicit Stop.
+  There is no wake-word process, greeting request, separate LLM, or polling loop.
 - A separate Android Keystore encrypted key is configured in Settings. It is not
   copied from the reference repository and never passed into Pi transcripts.
   The microphone permission must be granted on the device.
@@ -52,8 +56,13 @@ Pocket Agent instead uses directly documented Deepgram APIs:
    Settings → Apps → Default apps → Digital assistant app.
 5. Configure the power-button long-press to **Digital assistant** if that
    device supports it. Some OEMs reserve this gesture for the power menu.
-6. Long-press the power button to speak. Close the voice window to stop audio;
-   workers remain active in the foreground service and text chat.
+6. Grant **Allow voice notification** so Android displays the ongoing listening indicator.
+7. Long-press the power button to activate voice. No overlay should remain.
+   Navigate the phone normally while the microphone notification remains visible.
+   Say something; begin speaking while the response is audible to barge in.
+8. Stop via **Stop listening** in the notification, **Stop voice** in the main app,
+   or allow six seconds of idle silence after the last response. Workers remain
+   active in the existing runtime notification and chat.
 
 The Android manifest registers a protected `VoiceInteractionService` and
 `VoiceInteractionSessionService` rather than a global accessibility shortcut.
@@ -66,11 +75,23 @@ is needed. Default-assistant support and key mapping depend on OEM firmware.
   and does not open a microphone.
 - Malformed streaming recognition packets and provisional turn updates are ignored;
   only a confirmed nonempty `EndOfTurn` sends a prompt.
-- While Pi is thinking or speaking, mic recording is stopped to prevent playback
-  from becoming a second user instruction. This first implementation is intentionally
-  **half duplex**; echo cancellation and interruption/barge-in are not yet implemented.
-- Closing the overlay discards streamed voice data, pending TTS and its per-session
-  identifier. Late Pi responses cannot speak into a subsequent voice window.
+- Android 14+ permits this microphone-type foreground service to continue capture
+  while other apps are visible. Capture is started by an explicit assistant gesture,
+  never silently restarted after process death. The ongoing notification has a
+  distinct Stop listening action.
+- While Pi thinks or speaks, capture continues without reopening AudioRecord.
+  Flux `StartOfTurn` interrupts playback immediately: local queued PCM is discarded,
+  Deepgram TTS receives `Clear`, and `stop_main` aborts **only** the previous
+  main response. The next confirmed `EndOfTurn` enters Pi as a new user message.
+  Late response deltas are ignored using a new identifier for each voice turn.
+  Android's available acoustic echo canceler and noise suppression are enabled;
+  noisy speakers/headsets and OEM audio routing still require device validation.
+- Six seconds of idle silence stops the voice service when no user utterance or
+  main spoken response is active. A long-running response does not unexpectedly
+  lose interruption capability midway through playback.
+- Notification stop and idle expiry release both WebSockets, microphone, AudioTrack,
+  and pending speech; neither cancels Pi workers. Late Pi deltas cannot speak into
+  a new voice session.
 - The main queue persists in the existing runtime. Main response failure emits
   `voice_end` and no false spoken success. Tool-only turns return to listening
   without waiting for an empty TTS response.
@@ -78,11 +99,14 @@ is needed. Default-assistant support and key mapping depend on OEM firmware.
   as voice status; no speech provider error is treated as worker task completion.
 - The TTS queue bounds pending synthesis commands and bytes; STT WebSocket
   backlog is capped, avoiding indefinite retained audio.
-- No wake-word listener or screen-off microphone service is installed. The selected
-  assistant gesture is the entrypoint; workers can continue with the screen off
-  under the existing Android service limitations.
-- UI and agent remain separate owners. `onHide`/dismiss destroys all voice
-  audio transport, but never issues `stop_main` or `stop_all`.
+- There is no wake-word or indefinite screen-off listener. An active user-started
+  microphone service can continue when the screen turns off, subject to OEM battery
+  and microphone policies. The default-assistant gesture remains the entrypoint.
+- The assistant UI finishes immediately after starting the voice service;
+  switching apps, pressing Back and opening Recents do not stop an active session.
+  Ending the voice service never issues `stop_main` or `stop_all`, but **barge-in**
+  deliberately issues `stop_main` to prevent continuing the superseded spoken
+  response. Worker tasks remain independent.
 
 ## Metrics and verification
 
@@ -118,10 +142,13 @@ Validation checklist:
    clause segmentation, assistant-service registration.
 3. Build and sign on GitHub Actions; install **that artifact** on Fedora Android
    emulator and select the assistant via the system voice-interaction role.
-4. Invoke the actual system voice gesture/session and confirm the microphone
-   indicator, completed STT transcript, model output, TTS audio and dismissal.
-5. Exercise an async subagent completion after dismiss and ensure it appears
-   in chat without resuming speech.
+4. Invoke the assistant and verify no overlay remains; navigate to another app
+   while the microphone notification remains visible and a voice response plays.
+   Interrupt playback with a second utterance, and confirm only the new reply is
+   spoken while unrelated Pi workers continue.
+5. Test Stop listening, six-second idle shutdown, Android microphone revocation,
+   repeated assistant activation, and a worker completion after microphone shutdown.
+   The worker completion should appear only in chat.
 6. Inspect `logcat -s PocketVoiceLatency:I` for actual voice latency,
    and foreground memory/battery with system tools. Never claim live voice
    latency was measured without a Deepgram-connected voice trial.
@@ -130,3 +157,10 @@ Known limitations: Deepgram STT/TTS consumes network access and quota.
 An OEM may not expose the power-button assistant gesture; it may invoke a
 different assistant despite the selected role. Android 12+ background service
 and microphone restrictions still apply.
+
+### Current verification boundary
+
+The previous live Deepgram and real Pi audio round trips apply to the initial
+half-duplex implementation. Full-duplex background capture, barge-in and silence
+expiry require the new signed APK and Android device testing; a successful build
+alone does not prove acoustics or device-specific background reliability.

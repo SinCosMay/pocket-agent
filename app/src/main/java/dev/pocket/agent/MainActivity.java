@@ -71,6 +71,8 @@ public final class MainActivity extends Activity implements AgentService.Observe
             command(json("action", "send", "text", value)); input.setText("");
         }); controls.addView(send, new LinearLayout.LayoutParams(0, -2, 1));
         controls.addView(button("Stop response", () -> command(json("action", "stop_main"))));
+        controls.addView(button("Stop voice", () -> startService(new Intent(this,
+            VoiceListeningService.class).setAction(VoiceListeningService.ACTION_STOP))));
         controls.addView(button("Stop all", () -> {
             if (AgentService.isRunning()) startService(new Intent(this, AgentService.class).setAction(AgentService.ACTION_STOP));
         })); root.addView(controls); setContentView(root);
@@ -191,6 +193,12 @@ public final class MainActivity extends Activity implements AgentService.Observe
         panel.addView(text("Voice uses Deepgram streaming speech recognition and synthesis, with the existing Pi main agent. Closing the voice window stops audio only."));
         panel.addView(button("Deepgram voice key", this::voiceKeySettings));
         panel.addView(button("Allow microphone", () -> requestPermissions(new String[]{Manifest.permission.RECORD_AUDIO}, 103)));
+        panel.addView(button("Allow voice notification", () -> {
+            if (Build.VERSION.SDK_INT >= 33 &&
+                checkSelfPermission(Manifest.permission.POST_NOTIFICATIONS) != PackageManager.PERMISSION_GRANTED)
+                requestPermissions(new String[]{Manifest.permission.POST_NOTIFICATIONS}, 105);
+            else toast("Notifications already permitted");
+        }));
         panel.addView(button("Choose default assistant", this::chooseAssistant));
         ScrollView scroll = new ScrollView(this); scroll.addView(panel);
         AlertDialog dialog = new AlertDialog.Builder(this).setTitle("Connection & permissions").setView(scroll).setNegativeButton("Close", null).setPositiveButton("Save", null).create(); settingsDialog[0] = dialog;

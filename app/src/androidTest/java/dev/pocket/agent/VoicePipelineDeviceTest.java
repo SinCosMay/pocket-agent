@@ -21,6 +21,17 @@ public class VoicePipelineDeviceTest {
             .put("type", "TurnInfo").put("event", "EndOfTurn").put("transcript", " I want a reminder ")));
     }
 
+    @Test public void fluxBargeInOnlyOnConfirmedSpeechStart() throws Exception {
+        assertFalse(VoiceTranscript.startedTurn(new JSONObject().put("type", "TurnInfo")
+            .put("event", "Update").put("transcript", "hello")));
+        assertFalse(VoiceTranscript.startedTurn(new JSONObject().put("type", "TurnInfo")
+            .put("event", "EndOfTurn").put("transcript", "hello")));
+        assertFalse(VoiceTranscript.startedTurn(new JSONObject().put("type", "Error")
+            .put("event", "StartOfTurn")));
+        assertTrue(VoiceTranscript.startedTurn(new JSONObject().put("type", "TurnInfo")
+            .put("event", "StartOfTurn")));
+    }
+
     @Test public void streamedReplyDoesNotSplitWordsAndDrainsTrailingText() {
         VoiceTextChunker chunker = new VoiceTextChunker();
         assertTrue(chunker.append("Here is your ans").isEmpty());
