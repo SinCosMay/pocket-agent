@@ -11,7 +11,7 @@ android {
         versionName = "0.1.1"
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
     }
-    buildFeatures { buildConfig = true }
+    buildFeatures { buildConfig = true; aidl = true }
     signingConfigs {
         create("distribution") {
             storeFile = file(System.getenv("APK_KEYSTORE") ?: "missing-keystore.jks")
