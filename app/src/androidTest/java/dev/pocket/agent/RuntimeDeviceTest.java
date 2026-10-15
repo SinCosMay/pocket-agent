@@ -23,6 +23,27 @@ public class RuntimeDeviceTest {
         }
         throw new AssertionError("Fixture window did not become ready: "+observation);
     }
+    private boolean rejectedBeforeDispatch(JSONObject result) {
+        return result.optBoolean("isError") && "STALE_OBSERVATION".equals(result.optString("code"))
+            && "not_dispatched".equals(result.optString("dispatch_status"));
+    }
+    private void requireText(JSONObject observation,String expected) throws Exception {
+        org.json.JSONArray nodes=observation.getJSONArray("nodes");
+        for(int i=0;i<nodes.length();i++)if(expected.equals(nodes.getJSONObject(i).optString("text")))return;
+        throw new AssertionError("Fixture precondition changed: expected "+expected+" in "+observation);
+    }
+    /** Change snapshot/ID only after a recorded pre-dispatch rejection. args retains the successful request for duplicate checks. */
+    private JSONObject fixtureAction(NativeTools tools,String owner,JSONObject args,String expected) throws Exception {
+        String base=args.getString("operation_id");
+        for(int attempt=0;attempt<4;attempt++) {
+            JSONObject observation=fixtureObservation(tools,owner);requireText(observation,expected);
+            args.put("snapshot_id",observation.getString("snapshot_id")).put("operation_id",base+"r"+attempt);
+            JSONObject result=tools.execute("phone_act",args,owner);
+            if(!rejectedBeforeDispatch(result))return result;
+            Thread.sleep(250);
+        }
+        throw new AssertionError("Fixture action did not settle within four pre-dispatch attempts");
+    }
     private RuntimeHost host() throws Exception {
         // Visible Activity starts the user-visible foreground service; no background start exemption.
         Context c=context();c.startActivity(new Intent(c,MainActivity.class).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK));
@@ -52,26 +73,35 @@ public class RuntimeDeviceTest {
             JSONObject opened=tools.execute("phone_open_app",open,owner);assertFalse(opened.toString(),opened.optBoolean("isError"));
             JSONObject observation=fixtureObservation(tools,owner);assertEquals(observation.toString(),"dev.pocket.agent.fixture",observation.optString("package_name"));
             JSONObject type=new JSONObject().put("kind","type").put("snapshot_id",observation.getString("snapshot_id")).put("selector",new JSONObject().put("description","AGENT_INPUT")).put("text","PocketWorks").put("operation_id",prefix+"_type"+nonce);
-            JSONObject typed=tools.execute("phone_act",type,owner);assertFalse(typed.toString(),typed.optBoolean("isError"));Thread.sleep(300);
-            observation=tools.execute("phone_observe",new JSONObject(),owner);
+            JSONObject typed=fixtureAction(tools,owner,type,"STATUS_READY");assertFalse(typed.toString(),typed.optBoolean("isError"));Thread.sleep(300);
+            observation=fixtureObservation(tools,owner);requireText(observation,"PocketWorks");
             JSONObject click=new JSONObject().put("kind","click").put("snapshot_id",observation.getString("snapshot_id")).put("selector",new JSONObject().put("text","AGENT_CLICK")).put("operation_id",prefix+"_click"+nonce);
-            JSONObject clicked=tools.execute("phone_act",click,owner);assertFalse(clicked.toString(),clicked.optBoolean("isError"));Thread.sleep(300);
+            JSONObject clicked=fixtureAction(tools,owner,click,"STATUS_READY");assertFalse(clicked.toString(),clicked.optBoolean("isError"));Thread.sleep(300);
             JSONObject duplicate=tools.execute("phone_act",click,owner);assertEquals(clicked.toString(),duplicate.toString());
-            JSONObject verified=tools.execute("phone_observe",new JSONObject(),owner);assertTrue(verified.toString(),verified.toString().contains("STATUS_CLICKED:PocketWorks COUNT:1"));
+            JSONObject verified=fixtureObservation(tools,owner);requireText(verified,"STATUS_CLICKED:PocketWorks COUNT:1");
             JSONObject other=tools.execute("phone_observe",new JSONObject(),"competing-worker");assertEquals(other.toString(),"SCREEN_BUSY",other.optString("code"));
             JSONObject invalidBatch=new JSONObject().put("calls",new org.json.JSONArray().put(new JSONObject().put("name","phone_act").put("args",click)).put(new JSONObject().put("name","phone_missing").put("args",new JSONObject())));
             assertTrue(tools.execute("phone_batch",invalidBatch,owner).optBoolean("isError"));
             JSONObject first=new JSONObject(click.toString()).put("snapshot_id",verified.getString("snapshot_id")).put("operation_id",prefix+"_partial"+nonce);
             JSONObject second=new JSONObject(click.toString()).put("snapshot_id","unknown-snapshot").put("operation_id",prefix+"_failed"+nonce);
             JSONObject partialBatch=new JSONObject().put("calls",new org.json.JSONArray().put(new JSONObject().put("name","phone_act").put("args",first)).put(new JSONObject().put("name","phone_act").put("args",second)));
-            JSONObject partial=tools.execute("phone_batch",partialBatch,owner);
+            JSONObject partial=new JSONObject();
+            for(int attempt=0;attempt<4;attempt++) {
+                observation=fixtureObservation(tools,owner);requireText(observation,"STATUS_CLICKED:PocketWorks COUNT:1");
+                first.put("snapshot_id",observation.getString("snapshot_id")).put("operation_id",prefix+"_partial"+nonce+"r"+attempt);
+                partial=tools.execute("phone_batch",partialBatch,owner);
+                if(partial.optInt("stopped_at",-1)!=0)break;
+                assertTrue(partial.toString(),rejectedBeforeDispatch(partial.getJSONArray("results").getJSONObject(0).getJSONObject("result")));
+                Thread.sleep(250);
+            }
             assertEquals(partial.toString(),"partial",partial.optString("status"));
+            assertEquals(partial.toString(),1,partial.optInt("stopped_at"));
             JSONObject stale=partial.getJSONArray("results").getJSONObject(1).getJSONObject("result");
             assertEquals("STALE_OBSERVATION",stale.optString("code"));
             assertEquals("not_dispatched",stale.optString("dispatch_status"));
             assertEquals(partial.toString(),tools.execute("phone_batch",partialBatch,owner).toString());
             Thread.sleep(300);
-            assertTrue(tools.execute("phone_observe",new JSONObject(),owner).toString().contains("STATUS_CLICKED:PocketWorks COUNT:2"));
+            requireText(fixtureObservation(tools,owner),"STATUS_CLICKED:PocketWorks COUNT:2");
             JSONObject unavailable=tools.execute("phone_contacts",new JSONObject().put("query","Synthetic missing permission"),owner);
             assertEquals(unavailable.toString(),"PERMISSION_REQUIRED",unavailable.optString("code"));
             System.out.println("POCKET_FIXTURE_VERIFIED="+verified);
