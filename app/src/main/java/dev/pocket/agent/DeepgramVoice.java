@@ -142,6 +142,8 @@ final class DeepgramVoice implements AutoCloseable {
 
     private void startMicrophone(WebSocket socket) {
         try {
+            if (context.checkSelfPermission(Manifest.permission.RECORD_AUDIO) != PackageManager.PERMISSION_GRANTED)
+                throw new SecurityException("Microphone permission revoked");
             int minimum = AudioRecord.getMinBufferSize(16000, AudioFormat.CHANNEL_IN_MONO,
                 AudioFormat.ENCODING_PCM_16BIT);
             if (minimum <= 0) throw new IllegalStateException("Microphone unsupported");
