@@ -1,13 +1,15 @@
 #!/usr/bin/env python3
 """Copy an existing Codex sign-in to the one authorized test emulator, once.
 
-This script never refreshes credentials or modifies the desktop auth file. The
+This script requires the rooted task AVD. The app itself needs no root.
+It never refreshes credentials or modifies the desktop auth file. The
 opt-in instrumentation imports the transient file and immediately deletes it.
 """
 import argparse
 import base64
 import json
 import os
+import re
 from pathlib import Path
 import subprocess
 import tempfile
@@ -89,7 +91,16 @@ def provision(serial, auth_path=None, runner=subprocess.run):
         # The host-side credential copy is removed before any further command.
         temporary.unlink()
         temporary = None
-        adb('shell', 'chmod', '600', DESTINATION)
+        packages = adb('shell', 'cmd', 'package', 'list', 'packages', '-U', 'dev.pocket.agent')
+        identity = re.search(r'^package:dev\.pocket\.agent uid:(\d+)$', packages, re.MULTILINE)
+        if not identity:
+            raise ProvisionError('Could not determine the installed test app identity')
+        app_uid = identity.group(1)
+        # FUSE preserves the shell upload's owner. Keep mode 0600 and transfer
+        # ownership through the rooted test AVD's backing store, never widen it.
+        backing = '/data/media/0/Android/data/dev.pocket.agent/files/provider-test.json'
+        adb('shell', 'su', '0', 'chown', app_uid + ':' + app_uid, backing)
+        adb('shell', 'su', '0', 'chmod', '600', backing)
     except BaseException:
         # Best-effort cleanup if push/chmod fails. Never echo subprocess output.
         try:

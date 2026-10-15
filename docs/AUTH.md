@@ -85,7 +85,8 @@ explicit emulator with:
 python3 scripts/emulator_test.py --serial emulator-5580 --artifacts artifacts/BUILD --fresh --codex-account
 ```
 
-This opt-in setup privately reads the local Codex cache, provisions a transient
+This opt-in setup requires the rooted test AVD; the installed app itself does not
+require root. It privately reads the local Codex cache, provisions a transient
 app-scoped file, imports encrypted credentials and deletes that file. It never
 refreshes or rewrites the host cache. The live case requires a real Luna background
 worker, a concurrent main answer, and a native observation of

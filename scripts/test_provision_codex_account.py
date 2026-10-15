@@ -60,6 +60,8 @@ class ProvisionTests(unittest.TestCase):
                 self.assertEqual(command[:3], ['adb', '-s', SERIAL])
                 if command[3:5] == ['shell', 'getprop']:
                     return subprocess.CompletedProcess(command, 0, '1\n', '')
+                if command[3:6] == ['shell', 'cmd', 'package']:
+                    return subprocess.CompletedProcess(command, 0, 'package:dev.pocket.agent uid:10148\n', '')
                 if command[3] == 'push':
                     temporary = Path(command[4]);self.assertEqual(stat.S_IMODE(temporary.stat().st_mode), 0o600)
                     self.assertEqual(command[5], DESTINATION);pushed.update(json.loads(temporary.read_text()))
