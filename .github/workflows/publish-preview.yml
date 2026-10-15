@@ -1,0 +1,79 @@
+name: Publish verified preview
+on:
+  workflow_dispatch:
+    inputs:
+      source_run_id:
+        description: Successful signed APK workflow run to publish
+        required: true
+        type: string
+      release_tag:
+        description: Existing draft prerelease tag pointing at that APK source
+        required: true
+        type: string
+permissions:
+  actions: read
+  contents: write
+concurrency:
+  group: publish-${{ inputs.release_tag }}
+  cancel-in-progress: false
+jobs:
+  publish:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    env:
+      GH_TOKEN: ${{ github.token }}
+      SOURCE_RUN_ID: ${{ inputs.source_run_id }}
+      RELEASE_TAG: ${{ inputs.release_tag }}
+    steps:
+      - uses: actions/checkout@v4
+      - name: Validate selected build and draft release
+        run: |
+          [[ "$SOURCE_RUN_ID" =~ ^[0-9]+$ ]]
+          [[ "$RELEASE_TAG" =~ ^v[0-9][A-Za-z0-9._-]*$ ]]
+          test "$(gh run view "$SOURCE_RUN_ID" --json conclusion --jq .conclusion)" = success
+          test "$(gh release view "$RELEASE_TAG" --json isDraft --jq .isDraft)" = true
+          test "$(gh release view "$RELEASE_TAG" --json isPrerelease --jq .isPrerelease)" = true
+      - uses: actions/download-artifact@v4
+        with:
+          name: pocket-agent-release
+          path: artifacts
+          run-id: ${{ inputs.source_run_id }}
+          github-token: ${{ github.token }}
+      - name: Verify immutable source and every APK hash
+        run: |
+          artifact_source="$(cat artifacts/source-commit.txt)"
+          [[ "$artifact_source" =~ ^[0-9a-f]{40}$ ]]
+          test "$artifact_source" = "$(gh api "repos/$GITHUB_REPOSITORY/commits/$RELEASE_TAG" --jq .sha)"
+          test "$artifact_source" = "$(gh run view "$SOURCE_RUN_ID" --json headSha --jq .headSha)"
+          sha256sum -c artifacts/SHA256SUMS.txt
+      - name: Upload distribution APKs and publish existing evidence
+        run: |
+          gh release upload "$RELEASE_TAG" artifacts/Pocket-Agent-arm64.apk artifacts/Pocket-Agent-x86_64.apk --clobber
+          # Recheck staged local-emulator evidence against the immutable CI payload.
+          gh release download "$RELEASE_TAG" --dir evidence
+          python3 - <<'PY'
+          import hashlib,json,os
+          from pathlib import Path
+          built=Path('artifacts');published=Path('evidence')
+          names={f.name for f in published.iterdir()}
+          expected={'Pocket-Agent-arm64.apk','Pocket-Agent-x86_64.apk','Pocket-Agent-tests.apk','Pocket-Agent-fixture.apk','SHA256SUMS.txt','VALIDATION.md','validation.json','source-commit.txt','signature.txt','runtime-manifest.json','payload-report.jsonl','native-stripping.json','build.txt'}
+          assert expected <= names, 'Release is missing validation/provenance assets'
+          apks={name for name in expected if name.endswith('.apk')}
+          hashes={Path(name).name:sha for sha,name in (line.split() for line in (built/'SHA256SUMS.txt').read_text().splitlines())}
+          published_hashes={name:sha for sha,name in (line.split() for line in (published/'SHA256SUMS.txt').read_text().splitlines())}
+          for name in apks:
+              assert hashlib.sha256((published/name).read_bytes()).hexdigest()==hashes[name], name
+              assert published_hashes[name]==hashes[name], name+' release checksum'
+          for name in ['source-commit.txt','signature.txt','runtime-manifest.json','payload-report.jsonl','native-stripping.json']:
+              assert (published/name).read_bytes()==(built/name).read_bytes(), name+' provenance mismatch'
+          validation=json.loads((published/'validation.json').read_text())
+          assert validation['source']==(built/'source-commit.txt').read_text().strip()
+          assert validation['instrumentation']['apkSha256']==hashes['Pocket-Agent-x86_64.apk']
+          cases=validation['instrumentation']['cases']
+          assert len(cases)==8 and all(case['passed'] for case in cases), 'Local device suite did not pass'
+          for name in apks:assert validation['artifactSha256'][name]==hashes[name], name+' evidence mismatch'
+          build_url=f"https://github.com/{os.environ['GITHUB_REPOSITORY']}/actions/runs/{os.environ['SOURCE_RUN_ID']}"
+          assert validation['build']==build_url and (published/'build.txt').read_text().strip()==build_url
+          print('All four APKs and local validation evidence match the selected signed build.')
+          PY
+          gh release edit "$RELEASE_TAG" --draft=false --prerelease
