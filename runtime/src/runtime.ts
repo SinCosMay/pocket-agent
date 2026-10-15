@@ -9,7 +9,7 @@ import { modelFor,makeStream } from './provider.js';
 const MAIN_PROMPT=`You are the user's persistent phone assistant. Delegate substantial multi-step phone navigation, screenshots and computer use promptly to phone-operator using subagent spawn. Give a concise assignment, relevant facts, outcome and verification criteria. End your turn after async dispatch, remain available and let the host deliver completion. Do not poll workers or block main with join on unfinished work. You may do a genuinely short lookup directly. Never claim requested/dispatched actions prove outcomes. Read phone_capabilities before mutation. Use its operation_prefix plus an underscore and a unique nonce for each mutation; inspect phone_operation after uncertain outcomes and reuse the same ID/arguments. Prefer direct APIs, then app actions, accessibility, screenshot fallback. Release screen after work. Main Stop does not stop workers.`;
 const WORKER_PROMPT=`You are a bounded phone operator worker. Complete the assignment using the granted direct native tools, verify actual outcome, report evidence and uncertainties. Read phone_capabilities first. Never invent unavailable permissions or task success. Prefer APIs, then app actions, accessibility and image/gesture fallback. Use fresh observations and honor screen leases. Mutations require operation_prefix plus underscore and unique nonce; preserve operation IDs across uncertain retries and inspect receipts before repeating. Recursive delegation is available with a shared concurrency cap. Join child dependencies, and return concise verified results. If interrupted after process death inspect app state/receipts before any side-effect replay.`;
 const stripImages=(messages:any[])=>messages.map(m=>({...m,content:Array.isArray(m.content)?m.content.map((c:any)=>c.type==='image'?{type:'text',text:'[Previous screenshot omitted; observe again for current state]'}:c):m.content}));
-const textMessages=(messages:any[])=>messages.filter(m=>m.role==='user'||m.role==='assistant').map((m,i)=>({id:`${m.timestamp}-${i}`,role:m.role,text:messageText(m),timestamp:m.timestamp})).filter(m=>m.text);
+const textMessages=(messages:any[],sanitize=(text:string)=>text)=>messages.filter(m=>m.role==='user'||m.role==='assistant').map((m,i)=>({id:`${m.timestamp}-${i}`,role:m.role,text:messageText(m)||(m.stopReason==='error'?`Request failed: ${sanitize(m.errorMessage??'Provider request failed')}`:''),timestamp:m.timestamp,...(m.stopReason?{stopReason:m.stopReason}:{}),...(m.errorMessage?{error:sanitize(m.errorMessage)}:{})})).filter(m=>m.text);
 const normalizeMode=(mode:string)=>mode==='api-key'?'openai':mode==='codex-relay'||mode==='codexRelay'?'codex':mode;
 
 export interface NativeBridge {call(method:string,argsJson:string):string;emit(eventJson:string):void}
@@ -23,6 +23,7 @@ export class PocketRuntime {
   context:any;
   busy=false;
   mainInterrupted=false;
+  lastError:string|null=null;
   private inbox:any[]=[];
   private delivered=new Set<string>();
   private mainTurns=0;
@@ -34,7 +35,7 @@ export class PocketRuntime {
   private totalStarts=0;
   private deliveryTransaction=false;
   private sanitize=(text:string)=>text.replaceAll(this.credentials.apiKey||'\0','[redacted]').slice(0,2000);
-  readonly reportError=(e:any)=>this.emit({type:'error',error:this.sanitize(String(e?.message??e))});
+  readonly reportError=(e:any)=>{this.lastError=this.sanitize(String(e?.message??e));this.emit({type:'error',error:this.lastError});};
   constructor(readonly native:NativeBridge,limits={maxExecuting:2,maxConversations:12}) {
     const phoneTools=nativeTools(this,'placeholder').map(x=>x.name);
     this.registry.agents.set('phone-operator',{name:'phone-operator',description:'Performs bounded Android workflows and verifies native outcomes.',source:'project',systemPrompt:WORKER_PROMPT,tools:[...phoneTools,'subagent']});
@@ -52,6 +53,7 @@ export class PocketRuntime {
     this.mainInterrupted=Boolean(saved.busy);
     this.mainPaused=Boolean(saved.mainPaused);
     this.totalStarts=saved.totalStarts??0;
+    this.lastError=saved.lastError?this.sanitize(String(saved.lastError)):null;
     this.main=this.createSession('main',undefined,saved.mainMessages??[]);
     for(const snapshot of saved.workers??[]) {
       try {
@@ -142,12 +144,16 @@ export class PocketRuntime {
           prompt=`[Worker completion] ${item.conversationId} generation ${item.generation}: ${JSON.stringify(g.state)}`;
           this.delivered.add(item.key);c.markCollected(g,'model');
         }
-        this.busy=true;this.mainInterrupted=false;this.mainTurns++;
+        this.busy=true;this.mainInterrupted=false;this.lastError=null;this.mainTurns++;
         this.main.agent.state.messages=[...this.main.messages,{role:'user',content:[{type:'text',text:prompt}],timestamp:Date.now()}];
         this.deliveryTransaction=false;
         // Delivery transcript, receipt and queue removal are one native store checkpoint.
         this.save();this.publish();const pending=this.main.continue();
-        try {await pending;}catch(e){this.reportError(e);}
+        try {
+          await pending;
+          const last=this.main.messages.at(-1);
+          if(last?.role==='assistant'&&last.stopReason==='error')this.reportError(last.errorMessage??'Provider request failed');
+        }catch(e){this.reportError(e);}
         finally {this.busy=false;this.releaseScreen('main');this.save();this.publish();}
       }
     } catch(e){this.reportError(e);}
@@ -171,7 +177,7 @@ export class PocketRuntime {
         const snapshot=this.runtime.conversation(cmd.conversationId);
         const own=this.runtime.generationCaller({conversationId:cmd.conversationId,generation:snapshot.generations.at(-1)!.generation});
         if(own.generation.state.kind==='done')own.conversation.markCollected(own.generation,'user');
-        this.emit({type:'worker',conversationId:cmd.conversationId,snapshot,messages:textMessages(this.sessions.get(cmd.conversationId)?.messages??[])});
+        this.emit({type:'worker',conversationId:cmd.conversationId,snapshot,messages:textMessages(this.sessions.get(cmd.conversationId)?.messages??[],this.sanitize)});
       } else if(cmd.action==='configure') {
         if(this.busy||this.runtime.listConversations().some(c=>c.currentGeneration))throw new Error('Stop active work before changing providers');
         this.reloadCredentials();
@@ -240,12 +246,12 @@ export class PocketRuntime {
     if(this.restoring)return;
     const workerMessages:any={};
     for(const [id,s] of this.sessions)workerMessages[id]=stripImages(s.messages);
-    this.call('store.save',{state:{version:1,config:this.config,busy:this.busy,mainPaused:this.mainPaused,totalStarts:this.totalStarts,mainMessages:stripImages(this.main.messages),workers:this.runtime.listConversations(),workerMessages,inbox:this.inbox,delivered:[...this.delivered],mainTurns:this.mainTurns}});
+    this.call('store.save',{state:{version:1,config:this.config,busy:this.busy,lastError:this.lastError,mainPaused:this.mainPaused,totalStarts:this.totalStarts,mainMessages:stripImages(this.main.messages),workers:this.runtime.listConversations(),workerMessages,inbox:this.inbox,delivered:[...this.delivered],mainTurns:this.mainTurns}});
   }
   state():any {
     const tasks=this.runtime.listConversations().map(c=>{const g=c.generations.at(-1)!;return {...c,generation:g.generation,status:g.status.kind==='done'?({error:'failed',aborted:'cancelled',skipped:'cancelled'} as any)[g.status.outcome]??g.status.outcome:g.status.kind,output:g.status.kind==='done'?g.status.output:undefined};});
-    return {messages:textMessages(this.main.messages),tasks,busy:this.busy,active:this.busy||tasks.some(t=>t.currentGeneration||t.isStopping)||(!this.mainPaused&&this.inbox.length>0)||Boolean(this.pendingSave),mainPaused:this.mainPaused,mainInterrupted:this.mainInterrupted,provider:{...this.config},mainTurns:this.mainTurns,
-      workerMessages:Object.fromEntries([...this.sessions].map(([id,s])=>[id,textMessages(s.messages)]))};
+    return {messages:textMessages(this.main.messages,this.sanitize),tasks,busy:this.busy,lastError:this.lastError,active:this.busy||tasks.some(t=>t.currentGeneration||t.isStopping)||(!this.mainPaused&&this.inbox.length>0)||Boolean(this.pendingSave),mainPaused:this.mainPaused,mainInterrupted:this.mainInterrupted,provider:{...this.config},mainTurns:this.mainTurns,
+      workerMessages:Object.fromEntries([...this.sessions].map(([id,s])=>[id,textMessages(s.messages,this.sanitize)]))};
   }
   publish():void {if(!this.restoring){const state=this.state();this.emit({type:'state',state});this.emit({type:'activity',active:state.active});}}
 }

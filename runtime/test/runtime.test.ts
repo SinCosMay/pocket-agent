@@ -2,6 +2,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import {PocketRuntime,NativeBridge} from '../src/runtime.js';
 import {delay} from '../src/scripted.js';
+import {AssistantMessageEventStream} from '@earendil-works/pi-ai';
 
 class Bridge implements NativeBridge {
  state:any={};events:any[]=[];tools:any[]=[];credentials:any={authMode:'scripted'};
@@ -17,6 +18,30 @@ class Bridge implements NativeBridge {
 }
 async function until(fn:()=>any,timeout=4000):Promise<void>{const end=Date.now()+timeout;while(!fn()){if(Date.now()>end)throw new Error('Timed out');await delay(10);}}
 const command=(r:PocketRuntime,cmd:any)=>assert.equal(JSON.parse(r.dispatch(JSON.stringify(cmd))).ok,true);
+
+test('a resolved provider error remains visible, persisted and credential-redacted after idle/restart',async()=>{
+ const bridge=new Bridge();bridge.credentials.apiKey='synthetic-secret-token';
+ const r=new PocketRuntime(bridge);
+ r.main.agent.streamFunction=((model:any)=>{
+   const stream=new AssistantMessageEventStream();
+   const message:any={role:'assistant',content:[],api:model.api,provider:model.provider,model:model.id,timestamp:Date.now(),stopReason:'error',errorMessage:'Invalid credential synthetic-secret-token: provider unavailable',usage:{input:0,output:0,cacheRead:0,cacheWrite:0,totalTokens:0,cost:{input:0,output:0,cacheRead:0,cacheWrite:0,total:0}}};
+   stream.push({type:'error',reason:'error',error:message});stream.end(message);return stream;
+ }) as any;
+ command(r,{action:'send',text:'Check unavailable provider'});
+ await until(()=>!r.state().active);
+ assert.equal(r.state().lastError,'Invalid credential [redacted]: provider unavailable');
+ assert.equal(r.state().messages.at(-1).stopReason,'error');
+ assert.match(r.state().messages.at(-1).text,/Request failed: Invalid credential \[redacted\]/);
+ assert.ok(bridge.events.some(e=>e.type==='error'&&e.error.includes('provider unavailable')));
+ assert.equal(bridge.state.lastError,r.state().lastError);
+ assert.ok(!JSON.stringify(bridge.state).includes('synthetic-secret-token'));
+ assert.ok(!JSON.stringify(bridge.events).includes('synthetic-secret-token'));
+ const restored=new PocketRuntime(bridge);await until(()=>!restored.state().active);
+ assert.equal(restored.state().lastError,r.state().lastError);
+ assert.equal(restored.state().messages.at(-1).stopReason,'error');
+ command(restored,{action:'send',text:'hello'});await until(()=>!restored.state().active);
+ assert.equal(restored.state().lastError,null,'next successful turn clears the error');
+});
 
 test('main responds under worker load; completion is persisted and wakes main once; worker direct followup retains identity',async()=>{
  const bridge=new Bridge(),r=new PocketRuntime(bridge);

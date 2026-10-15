@@ -50,7 +50,9 @@ public final class AgentService extends Service {
         if (ACTION_STOP.equals(intent.getAction())) { stopSelf(); return START_NOT_STICKY; }
         if (ACTION_COMMAND.equals(intent.getAction())) {
             String value = intent.getStringExtra("command");
-            try { JSONObject command = new JSONObject(value == null ? "{}" : value); startup.thenRun(() -> host.dispatch(command)); }
+            try { JSONObject command = new JSONObject(value == null ? "{}" : value); startup.thenCompose(ignored -> host.dispatch(command)).thenAccept(response -> {
+                if(!response.optBoolean("ok")) try {publish(new JSONObject().put("type","error").put("error",response.optString("error","Command rejected")));}catch(Exception ignored){}
+            }); }
             catch (Exception e) { try { publish(new JSONObject().put("type", "error").put("error", "Invalid agent command")); } catch (Exception ignored) { } }
         }
         return START_NOT_STICKY;

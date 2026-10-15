@@ -6,6 +6,7 @@ public final class FixtureActivity extends Activity {
  @Override public void onCreate(Bundle b) {
   super.onCreate(b);
   LinearLayout column=new LinearLayout(this);column.setOrientation(1);column.setPadding(24,80,24,24);
+  column.setOnApplyWindowInsetsListener((view,insets)->{android.graphics.Insets bars=insets.getInsets(android.view.WindowInsets.Type.systemBars()|android.view.WindowInsets.Type.displayCutout());view.setPadding(24+bars.left,24+bars.top,24+bars.right,24+bars.bottom);return insets;});
   TextView heading=new TextView(this);heading.setText("POCKET_AGENT_FIXTURE");column.addView(heading);
   EditText input=new EditText(this);input.setHint("AGENT_INPUT");input.setContentDescription("AGENT_INPUT");column.addView(input);
   TextView status=new TextView(this);status.setText("STATUS_READY");status.setContentDescription("AGENT_STATUS");

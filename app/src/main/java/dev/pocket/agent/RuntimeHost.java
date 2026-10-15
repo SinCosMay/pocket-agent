@@ -95,6 +95,12 @@ public final class RuntimeHost implements AutoCloseable {
         try {
             JSONObject event = new JSONObject().put("type", "error").put("error", message).put("kind", error.getClass().getSimpleName());
             if (error instanceof JavetException) event.put("javetCode", ((JavetException) error).getError().getCode());
+            if(message.equals("Runtime startup failed")) {
+                String detail=String.valueOf(error.getMessage());
+                String secret=credentials.get().optString("apiKey");
+                if(!secret.isEmpty())detail=detail.replace(secret,"[redacted]");
+                event.put("startupDiagnostic",detail.substring(0,Math.min(detail.length(),800)));
+            }
             emit(event);
         }
         catch (Exception ignored) { }

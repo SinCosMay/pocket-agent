@@ -34,6 +34,10 @@ public final class MainActivity extends Activity implements AgentService.Observe
     @Override public void onCreate(Bundle saved) {
         super.onCreate(saved); store = new StateStore(this);
         LinearLayout root = column(); root.setPadding(dp(14), dp(12), dp(14), dp(12));
+        root.setOnApplyWindowInsetsListener((view,insets)->{
+            android.graphics.Insets bars=insets.getInsets(android.view.WindowInsets.Type.systemBars()|android.view.WindowInsets.Type.displayCutout()|android.view.WindowInsets.Type.ime());
+            view.setPadding(dp(14)+bars.left,dp(12)+bars.top,dp(14)+bars.right,dp(12)+bars.bottom);return insets;
+        });
         LinearLayout toolbar = row(); TextView title = text("Pocket Agent"); title.setTextSize(22); title.setTypeface(null, Typeface.BOLD);
         toolbar.addView(title, new LinearLayout.LayoutParams(0, -2, 1));
         toolbar.addView(button("Settings", this::settings)); root.addView(toolbar);
@@ -63,6 +67,7 @@ public final class MainActivity extends Activity implements AgentService.Observe
     }
     private void render() {
         status.setText(!AgentService.isRunning() ? "Stopped · Send starts the runtime" : state.optBoolean("busy") ? "Main is responding" : state.optBoolean("active") ? "Workers active · Main is available" : "Ready");
+        if(AgentService.isRunning() && !state.optString("lastError").isEmpty()) status.setText("Error · "+state.optString("lastError"));
         transcript.setText(formatMessages(state.optJSONArray("messages")));
         taskList.removeAllViews(); JSONArray tasks = state.optJSONArray("tasks");
         if (tasks == null || tasks.length() == 0) taskList.addView(text("No tasks yet"));
@@ -118,6 +123,7 @@ public final class MainActivity extends Activity implements AgentService.Observe
         AlertDialog dialog = new AlertDialog.Builder(this).setTitle("Connection & permissions").setView(scroll).setNegativeButton("Close", null).setPositiveButton("Save", null).create();
         dialog.setOnShowListener(ignored -> dialog.getButton(AlertDialog.BUTTON_POSITIVE).setOnClickListener(view -> {
             try {
+                if(state.optBoolean("busy") || state.optBoolean("active")) {toast("Stop active work before changing connections");return;}
                 JSONObject config = json("authMode", modes[mode.getSelectedItemPosition()], "endpoint", endpoint.getText().toString().trim(), "model", model.getText().toString().trim(), "apiKey", secret.getText().length() == 0 ? saved.optString("apiKey") : secret.getText().toString().trim());
                 credentials.save(config); if (AgentService.isRunning()) command(json("action", "configure")); dialog.dismiss(); toast("Connection saved");
             } catch (Exception error) { toast(error instanceof IllegalArgumentException ? error.getMessage() : "Could not save connection"); }
