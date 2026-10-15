@@ -335,7 +335,7 @@ test('voice-scoped interruption aborts only its matching turn and removes stale 
  assert.equal(rejected.ok,false,'malformed scoped abort must not fall back to global cancellation');
  assert.equal(aborts,1);
  anyRuntime.speakingTurn=null;
- anyRuntime.mainPaused=true;
+ anyRuntime.pumping=true; // Freeze the inbox while verifying queued-turn cancellation.
  command(runtime,{action:'send',text:'queued old',voiceSessionId:old});
  command(runtime,{action:'send',text:'queued new',voiceSessionId:newer});
  assert.deepEqual(anyRuntime.inbox.map((item:any)=>item.voiceSessionId),[old,newer]);
