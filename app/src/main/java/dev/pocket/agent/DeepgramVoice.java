@@ -243,11 +243,15 @@ final class DeepgramVoice implements AutoCloseable {
         waitingForFlush = false;
         chunker.clear();
         speechQueue.clear();
-        if (ttsSocket != null) {
+        if (ttsSocket != null && ttsReady) {
             ttsReady = false;
             waitingForClear = true;
             ttsSocket.send("{\"type\":\"Clear\"}");
-        } else waitingForClear = false;
+        } else if (!waitingForClear) {
+            // No synthesis was sent, or connection is still opening.
+            // Do not enqueue a duplicate Clear that might erase the next reply.
+            waitingForClear = false;
+        }
         if (speaker != null) {
             try { speaker.pause(); speaker.flush(); } catch (Exception ignored) { }
             try { speaker.release(); } catch (Exception ignored) { }
