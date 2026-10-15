@@ -1,0 +1,13 @@
+.gradle/
+**/build/
+node_modules/
+local.properties
+artifacts/
+*.jks
+*.keystore
+*.env
+runtime/dist/
+app/src/main/assets/runtime.cjs
+app/src/main/assets/runtime-manifest.json
+*.log
+__pycache__/
