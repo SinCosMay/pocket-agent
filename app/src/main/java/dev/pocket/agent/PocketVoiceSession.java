@@ -148,6 +148,10 @@ public final class PocketVoiceSession extends VoiceInteractionSession implements
             if (voice != null && awaitingReply) { voice.appendReply(delta); setStatus("Responding"); }
         } else if ("voice_end".equals(event.optString("type"))) {
             if (voice != null && awaitingReply) voice.finishReply();
+        } else if ("voice_error".equals(event.optString("type"))) {
+            setStatus("Voice request rejected; try speaking again");
+            if (response != null) response.setText("Request could not be submitted");
+            if (voice != null && awaitingReply) voice.finishReply();
         }
     }
 

@@ -32,6 +32,7 @@ def main():
     adb('shell','pm','grant','dev.pocket.agent','android.permission.POST_NOTIFICATIONS')
     report={'serial':a.serial,'apkSha256':hashlib.sha256(apk.read_bytes()).hexdigest(),'cases':[]}
     cases=[('RuntimeDeviceTest','nodeEmbeddingStreamingAndCancellation'),('RuntimeDeviceTest','directNativeFixtureAndMutationLedger'),('AsyncAgentDeviceTest','delegatedFixtureKeepsMainResponsiveAndCompletesOnce'),('LifecycleDeviceTest','activityRecreationKeepsWorker'),('LifecycleDeviceTest','reportFootprint'),('LifecycleDeviceTest','prepareProcessDeath'),('LifecycleDeviceTest','verifyProcessDeath')]
+    cases.extend([('VoiceAssistantDeviceTest','assistantIsProtectedAndDiscoverable'),('VoicePipelineDeviceTest','fluxOnlyDispatchesConfirmedNonemptyTurns'),('VoicePipelineDeviceTest','streamedReplyDoesNotSplitWordsAndDrainsTrailingText')])
     if a.account_auth_tests:cases.extend([('CodexAuthDeviceTest','importEncryptAndSignOut'),('CodexAuthDeviceTest','rotationCompareAndSaveRejectsStaleAndSignedOut')])
     if a.live:cases.append(('LiveProviderDeviceTest','liveCodexDelegationAndFixture'))
     if a.case:cases=[case for case in cases if '#'.join(case) in a.case]
