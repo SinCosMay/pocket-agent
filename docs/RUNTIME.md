@@ -1,0 +1,52 @@
+# Pocket Agent runtime
+
+The Android host loads `runtime.cjs` in one Javet Node engine. Main and workers are logical Pi Agent sessions sharing model services, native tools and Pi9's in-process scheduler. They do not launch separate engines or shells. See `runtime/SOURCE_PINS.json` and the npm lockfile for exact pins.
+
+## Selected upstream code and mobile adaptation
+
+Pi9 `@pi9/subagent` 0.12.0 source at `94405f79bb1e400fcba5e1b973778ef82d8378b2` supplies the retained `SubagentRuntime`, `Conversation`/`Generation`, generation scheduler and execution queue, canonical projection contracts, action schema/parser, activity tracking and stable IDs. This is an adaptation of that runtime, not a replacement scheduler. The package entry point, terminal widgets/renderers/commands, settings discovery and stock coding-agent executor are excluded from the bundle.
+
+The app injects `MobileSession`, a narrow implementation of Pi9's coding `AgentSession` interface backed by actual `@earendil-works/pi-agent-core` 1.2.0. It supports prompt, events, messages, steering, abort and queue clearing. Its tools call native Android functions directly. `agents.ts` retains upstream config precedence/summary helpers while replacing filesystem discovery with two fixed app definitions; `execute.ts` explicitly rejects desktop skills, directory changes and per-worker provider overrides. Pi core and selected Pi AI Responses streaming are pinned to 1.2.0, with no coding-agent SDK or TUI dependency in the app bundle.
+
+Additive Pi9 hooks restore checkpoint identities, generations, collection receipts, model subscriptions, activity, steering receipts and transcripts. Running/queued work becomes `interrupted`; it is never silently replayed. The ID allocator reserves restored identities. A small `reserveSpawn` change intersects child grants with its parent's grant before scheduling/persistence. Descendants cannot gain mutation tools by choosing a broader agent definition. Grants persist on restore and apply to batch entries too.
+
+Upstream MIT notices remain in `runtime/vendor/pi9/LICENSE`, `runtime/PI-LICENSE`, and the generated APK notices asset. Changes to vendored code are labeled Pocket mobile. Pi9's original terminal notification driver is replaced by the Android host inbox described below.
+
+## Protocol and lifecycle
+
+`PocketNative.call(method, argsJson)` synchronously returns JSON `{ok,result,error}`. Methods are `tool` with `{name,args,owner}`, `store.load`, `store.save` with `{state}`, and `credentials.get`. `PocketNative.emit(eventJson)` delivers ready, state, activity, log, worker and error events. Native tools return direct data with structured `{isError,code,message,retry_safe}` failures. Observation images become Pi image content; saved screenshot histories are replaced by a text marker requesting a fresh observation.
+
+A `phone_act` stale-screen rejection recorded with `dispatch_status: "not_dispatched"` occurs before any action. Reobserve, verify current preconditions, and plan a new request with a new ID; the old receipt stays immutable. Unknown outcomes remain non-retryable without outcome inspection. Screen freshness is rechecked on the Android main thread immediately before dispatch. Batches expose this classification per entry; it does not apply to already completed entries.
+
+Mutation IDs use the current `phone_capabilities.operation_prefix`, an underscore, and a unique 8..48 character nonce containing only ASCII letters, digits, underscores or hyphens. The same format is declared in each mutation argument's anchored JSON Schema pattern and enforced by the persistent native ledger. Capabilities expose nonce bounds; validation failures explain that dispatch did not occur. Historical `phone_operation` lookup does not impose current-prefix rules.
+
+`PocketAgent.dispatch(json)` returns synchronous `{ok,accepted}` or `{ok:false,error}`; model work runs asynchronously. Supported commands:
+
+- `send {text,conversationId?}`: main message, or a worker follow-up. Active worker follow-ups steer; terminal follow-ups collect for the user and request a new generation.
+- `stop_main`: abort only the current main response.
+- `cancel_worker {conversationId}`: cancel that retained worker.
+- `stop_all`: stop main and all workers, pause main completion inference until the next main user message.
+- `inspect_worker {conversationId}`: emit saved worker transcript/snapshot and record the user's terminal collection receipt. Inspection by the model does not collect.
+- `steer_worker {conversationId,text}`: queue user steering and expose upstream steer receipts.
+- `configure {config?}`: reload platform credentials and optional public `{mode,endpoint,model}`. Reject while work is active. Modes are scripted, openai and codex; API-key/codex-relay aliases are accepted from platform settings.
+- `state`: republish current view.
+
+State view has `messages:[{id,role,text,timestamp}]`, `tasks:[{conversationId,label,status,generation,...Pi9Snapshot}]`, `workerMessages`, `busy` for main, `active` for any workers/queued delivery/coalescing timer, public provider config, `mainInterrupted` and `mainTurns`. `activity.active` tells the Android host when its Node event-loop pump has work. No repeating model-status polling occurs; the only runtime progress timer coalesces updates for 120 ms. Pi9's cancellation settlement timeout remains intact.
+
+The main inbox serializes all main turns. Root model-subscribed worker completion enqueues one `(conversationId,generation)` delivery. Before inference, its completion text, exact-generation model collection receipt, delivery ID and inbox removal are persisted in one checkpoint. A crash after delivery preserves that transcript rather than issuing another completion model turn. A crash before delivery leaves pending work in the saved inbox. A main response interrupted by process death is flagged honestly; it is not automatically replayed across possibly uncertain tool outcomes. Worker resume still obeys Pi9's initiator collection and retained-session eligibility rules. User-initiated follow-ups appear in worker UI without automatically waking main, unless a model subsequently subscribes via steering.
+
+Native storage must keep durable runtime state separate from UI snapshots. Durable version 1 fields are `config`, `busy`, `mainPaused`, `mainMessages` (Pi messages), `workers` (Pi9 snapshots), `workerMessages` (Pi messages by identity), `inbox`, `delivered`, `mainTurns`, and `totalStarts`. Native must store it opaquely. Secrets are obtained from platform-protected credentials and are not stored in the public config. Known provider credentials are redacted from emitted/persisted JSON. Native mutation receipts and unknown outcomes live in the Android operation ledger, separately from this checkpoint.
+
+## Bounds and resources
+
+Defaults: two executing workers across the recursive tree, four spawn/resume tasks per call, twelve retained conversations, four recursive levels, twenty generations per worker, one thousand lifetime start attempts per database, thirty-two pending main entries/steers per generation, twenty-four turns and forty-eight tool calls per run. Each conversation stops at 256 messages or one million serialized characters; the boundary is checked at turn/prompt boundaries, so the current bounded provider response/tool batch can overshoot once. Native result text is limited to 32 KB and one image to two million base64 characters. Provider output is capped to 4096 tokens.
+
+Limits reject new work or pause main delivery with an explicit error while retaining history and pending results. There is no silent truncation of uncollected generations. Removing inactive worker subtrees through the upstream remove action releases the corresponding app sessions/delivery IDs. There is not yet a UI for rotating an exhausted main conversation/database; reaching those conservative limits is an explicit first-release limitation.
+
+`npm ci --ignore-scripts`, `npm run test:gate`, `npm test` and `npm run build` run under Node >=22.19.0. The build emits minified CommonJS, the esbuild metafile/bundle report, source pins and notices, and copies Android assets into `app/src/main/assets`. Only generated bundle/assets ship; npm's development tree does not. The report lists emitted inputs, so disabled desktop features are verifiably excluded. The selected OpenAI SDK remains a measurable part of the bundle; unused provider packages in npm's install tree are not copied into the APK.
+
+Linux tests establish a real scripted Pi tool loop and AbortSignal gate before Pi9 integration, responsive main under worker load, one completion delivery across restart, steering, collection, resume, interruption recovery, cancellation distinctions, recursive shared-cap join without deadlock, inherited grants across restore, and the typed fixture workflow with an in-memory native bridge. Android instrumentation must establish actual ARM64/x86 Javet execution and native fixture postconditions; these Linux results do not prove Android engine compatibility, background survival or device resource use. Live emulator provider tests target the user's selected Luna model (`gpt-6-luna`); scripted tests remain deterministic and model independent.
+
+`delegate long fixture delay=2000` starts the deterministic fixture flow: capabilities; a bounded batch of app/capability reads; launch `dev.pocket.agent.fixture`; observe; type `PocketWorks` into `AGENT_INPUT`; reobserve; click `AGENT_CLICK`; reobserve exact `STATUS_CLICKED:PocketWorks COUNT:1`. Operation IDs are stable per fixture generation and mutation, with the native installation prefix. A second main message such as `hello while working` is answered before worker completion. `delegate nested fixture` exercises recursive spawn/join instead. Scripted mode uses no cloud model; real provider checks are separate.
+
+Bundle bytes are not APK size, installed bytes, RSS/PSS, incremental worker memory, battery or spawn latency. Those measurements and comparison to stock Pi9 headless remain separate release gates. No local Android compilation is performed by the runtime workflow.

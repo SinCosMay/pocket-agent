@@ -1,0 +1,84 @@
+name: Signed Android APK
+on:
+  push:
+    branches: [main, feat/android-agent]
+  workflow_dispatch:
+permissions:
+  contents: read
+concurrency:
+  group: apk-${{ github.ref }}
+  cancel-in-progress: true
+jobs:
+  build:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 35
+    env:
+      APK_KEYSTORE: /tmp/pocket-agent-signing.jks
+      APK_STORE_PASSWORD: ${{ secrets.APK_STORE_PASSWORD }}
+      APK_KEY_PASSWORD: ${{ secrets.APK_KEY_PASSWORD }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22.22.2'
+          cache: npm
+          cache-dependency-path: runtime/package-lock.json
+      - name: Build and test trimmed runtime
+        working-directory: runtime
+        run: npm ci && npm test && npm run build
+      - name: Test local inference relay without account credentials
+        run: |
+          python3 -m pip install aiohttp==3.13.5
+          python3 -m unittest discover -s scripts -p test_codex_relay.py -v
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+      - uses: android-actions/setup-android@v4
+      - run: sdkmanager 'platforms;android-36' 'build-tools;36.0.0' 'ndk;27.2.12479018'
+      - name: Restore private signing material
+        env:
+          KEYSTORE_BASE64: ${{ secrets.APK_KEYSTORE_BASE64 }}
+        run: |
+          python3 - <<'PY'
+          import base64, os
+          from pathlib import Path
+          path=Path(os.environ['APK_KEYSTORE'])
+          path.write_bytes(base64.b64decode(os.environ['KEYSTORE_BASE64'],validate=True))
+          path.chmod(0o600)
+          PY
+      - uses: gradle/actions/setup-gradle@v4
+      - name: Build release and local-emulator tests (no emulator in CI)
+        run: ./gradlew --no-daemon :app:assembleRelease :app:assembleReleaseAndroidTest :app:lintRelease :fixture:assembleDebug
+      - name: Collect provenance and signed APKs
+        run: |
+          mkdir -p artifacts
+          cp app/build/outputs/apk/release/app-arm64-v8a-release.apk artifacts/Pocket-Agent-arm64.apk
+          cp app/build/outputs/apk/release/app-x86_64-release.apk artifacts/Pocket-Agent-x86_64.apk
+          cp app/build/outputs/apk/release/app-universal-release.apk artifacts/Pocket-Agent-universal.apk
+          cp app/build/outputs/apk/androidTest/release/*.apk artifacts/Pocket-Agent-tests.apk
+          cp fixture/build/outputs/apk/debug/*.apk artifacts/Pocket-Agent-fixture.apk
+          cp app/build/reports/lint-results-release.txt artifacts/lint.txt
+          "$ANDROID_HOME/build-tools/36.0.0/apksigner" verify --verbose --print-certs artifacts/Pocket-Agent-arm64.apk > artifacts/signature.txt
+          git rev-parse HEAD > artifacts/source-commit.txt
+          cp app/src/main/assets/runtime-manifest.json artifacts/runtime-manifest.json
+          python3 scripts/native_footprint.py > artifacts/native-stripping.json
+          python3 scripts/check_apk.py artifacts/Pocket-Agent-arm64.apk artifacts/Pocket-Agent-x86_64.apk artifacts/Pocket-Agent-universal.apk > artifacts/payload-report.jsonl
+          sha256sum artifacts/*.apk > artifacts/SHA256SUMS.txt
+      - uses: actions/upload-artifact@v4
+        with:
+          name: pocket-agent-release
+          path: artifacts/
+          retention-days: 90
+          if-no-files-found: error
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: build-diagnostics
+          path: |
+            app/build/reports/lint-results-release.*
+            app/build/outputs/mapping/**/missing_rules.txt
+          if-no-files-found: ignore
+      - name: Remove signing material
+        if: always()
+        run: rm -f "$APK_KEYSTORE"

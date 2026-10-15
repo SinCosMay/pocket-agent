@@ -1,0 +1,689 @@
+[
+  {
+    "name": "phone_capabilities",
+    "description": "First call: inspect permissions, accessibility, lock/power state, phone accounts, operation_prefix and nonce length bounds. Direct Android APIs are preferred.",
+    "inputSchema": {
+      "type": "object",
+      "properties": {},
+      "required": [],
+      "additionalProperties": false
+    },
+    "annotations": {
+      "readOnlyHint": true,
+      "destructiveHint": false,
+      "idempotentHint": true,
+      "openWorldHint": true
+    }
+  },
+  {
+    "name": "phone_observe",
+    "description": "Observe screen nodes and optional screenshot. Coordinates use full device dimensions; resized images need scaling. Screenshot is omitted by default. Get a fresh snapshot before every action.",
+    "inputSchema": {
+      "type": "object",
+      "properties": {
+        "include_image": {
+          "type": "boolean"
+        },
+        "max_image_dimension": {
+          "type": "integer",
+          "minimum": 256,
+          "maximum": 2048
+        },
+        "max_nodes": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 500
+        }
+      },
+      "required": [],
+      "additionalProperties": false
+    },
+    "annotations": {
+      "readOnlyHint": true,
+      "destructiveHint": false,
+      "idempotentHint": true,
+      "openWorldHint": true
+    }
+  },
+  {
+    "name": "phone_act",
+    "description": "Perform an Android screen action using a recent snapshot_id. Prefer exact unique semantic selectors for click/type/scroll. Enter uses real IME action. Input acceptance is not task completion. Reuse operation_id and identical arguments after network loss. operation_id must be phone_capabilities.operation_prefix + underscore + a unique 8..48 character nonce; reuse identical IDs and arguments after uncertain results.",
+    "inputSchema": {
+      "type": "object",
+      "properties": {
+        "kind": {
+          "type": "string",
+          "minLength": 0,
+          "maxLength": 20000,
+          "enum": [
+            "tap",
+            "click",
+            "long_click",
+            "long_press",
+            "swipe",
+            "scroll",
+            "type",
+            "key"
+          ]
+        },
+        "snapshot_id": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 80
+        },
+        "x": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 2147483647
+        },
+        "y": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 2147483647
+        },
+        "end_x": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 2147483647
+        },
+        "end_y": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 2147483647
+        },
+        "duration_ms": {
+          "type": "integer",
+          "minimum": 100,
+          "maximum": 4000
+        },
+        "text": {
+          "type": "string",
+          "minLength": 0,
+          "maxLength": 20000
+        },
+        "replace": {
+          "type": "boolean"
+        },
+        "key": {
+          "type": "string",
+          "minLength": 0,
+          "maxLength": 20000,
+          "enum": [
+            "home",
+            "back",
+            "recents",
+            "enter"
+          ]
+        },
+        "direction": {
+          "type": "string",
+          "minLength": 0,
+          "maxLength": 20000,
+          "enum": [
+            "up",
+            "down",
+            "left",
+            "right"
+          ]
+        },
+        "selector": {
+          "type": "object",
+          "properties": {
+            "resource_id": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 500
+            },
+            "text": {
+              "type": "string",
+              "minLength": 0,
+              "maxLength": 1000
+            },
+            "description": {
+              "type": "string",
+              "minLength": 0,
+              "maxLength": 1000
+            }
+          },
+          "required": [],
+          "additionalProperties": false
+        },
+        "operation_id": {
+          "type": "string",
+          "minLength": 27,
+          "maxLength": 78,
+          "description": "Current phone_capabilities.operation_prefix + '_' + a unique 8..48 character nonce using only ASCII letters, digits, '_' or '-'. Include owner/generation/action/attempt or a timestamp for uniqueness. A valid suffix example is _type_0001; never reuse the example across actions. Preserve identical IDs/arguments after uncertain results.",
+          "pattern": "^[0-9]{1,12}-[0-9a-f]{16}_[A-Za-z0-9_-]{8,48}$"
+        }
+      },
+      "required": [
+        "kind",
+        "snapshot_id",
+        "operation_id"
+      ],
+      "additionalProperties": false
+    },
+    "annotations": {
+      "readOnlyHint": false,
+      "destructiveHint": true,
+      "idempotentHint": true,
+      "openWorldHint": true
+    }
+  },
+  {
+    "name": "phone_apps",
+    "description": "List visible launcher apps without screen navigation.",
+    "inputSchema": {
+      "type": "object",
+      "properties": {},
+      "required": [],
+      "additionalProperties": false
+    },
+    "annotations": {
+      "readOnlyHint": true,
+      "destructiveHint": false,
+      "idempotentHint": true,
+      "openWorldHint": true
+    }
+  },
+  {
+    "name": "phone_open_app",
+    "description": "Request app launch. Verify foreground package afterward: OEM background restrictions can reject a launch silently. operation_id must be phone_capabilities.operation_prefix + underscore + a unique 8..48 character nonce; reuse identical IDs and arguments after uncertain results.",
+    "inputSchema": {
+      "type": "object",
+      "properties": {
+        "package_name": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 200
+        },
+        "operation_id": {
+          "type": "string",
+          "minLength": 27,
+          "maxLength": 78,
+          "description": "Current phone_capabilities.operation_prefix + '_' + a unique 8..48 character nonce using only ASCII letters, digits, '_' or '-'. Include owner/generation/action/attempt or a timestamp for uniqueness. A valid suffix example is _type_0001; never reuse the example across actions. Preserve identical IDs/arguments after uncertain results.",
+          "pattern": "^[0-9]{1,12}-[0-9a-f]{16}_[A-Za-z0-9_-]{8,48}$"
+        }
+      },
+      "required": [
+        "package_name",
+        "operation_id"
+      ],
+      "additionalProperties": false
+    },
+    "annotations": {
+      "readOnlyHint": false,
+      "destructiveHint": true,
+      "idempotentHint": true,
+      "openWorldHint": true
+    }
+  },
+  {
+    "name": "phone_contacts",
+    "description": "Find phone contacts via Android Contacts Provider. Resolve ambiguous names or numbers before calling.",
+    "inputSchema": {
+      "type": "object",
+      "properties": {
+        "query": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 200
+        },
+        "limit": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 100
+        }
+      },
+      "required": [
+        "query"
+      ],
+      "additionalProperties": false
+    },
+    "annotations": {
+      "readOnlyHint": true,
+      "destructiveHint": false,
+      "idempotentHint": true,
+      "openWorldHint": true
+    }
+  },
+  {
+    "name": "phone_call",
+    "description": "Place a direct Telecom phone call, by unique contact name or explicit number. Provide exactly one. Resolve multiple numbers/SIMs first. requested does not mean connected. operation_id must be phone_capabilities.operation_prefix + underscore + a unique 8..48 character nonce; reuse identical IDs and arguments after uncertain results.",
+    "inputSchema": {
+      "type": "object",
+      "properties": {
+        "name": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 200
+        },
+        "number": {
+          "type": "string",
+          "minLength": 3,
+          "maxLength": 26
+        },
+        "phone_account_id": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 500
+        },
+        "speaker": {
+          "type": "boolean"
+        },
+        "operation_id": {
+          "type": "string",
+          "minLength": 27,
+          "maxLength": 78,
+          "description": "Current phone_capabilities.operation_prefix + '_' + a unique 8..48 character nonce using only ASCII letters, digits, '_' or '-'. Include owner/generation/action/attempt or a timestamp for uniqueness. A valid suffix example is _type_0001; never reuse the example across actions. Preserve identical IDs/arguments after uncertain results.",
+          "pattern": "^[0-9]{1,12}-[0-9a-f]{16}_[A-Za-z0-9_-]{8,48}$"
+        }
+      },
+      "required": [
+        "operation_id"
+      ],
+      "additionalProperties": false
+    },
+    "annotations": {
+      "readOnlyHint": false,
+      "destructiveHint": true,
+      "idempotentHint": true,
+      "openWorldHint": true
+    }
+  },
+  {
+    "name": "phone_calendars",
+    "description": "List Calendar Provider calendars and writable flags.",
+    "inputSchema": {
+      "type": "object",
+      "properties": {},
+      "required": [],
+      "additionalProperties": false
+    },
+    "annotations": {
+      "readOnlyHint": true,
+      "destructiveHint": false,
+      "idempotentHint": true,
+      "openWorldHint": true
+    }
+  },
+  {
+    "name": "phone_calendar_create",
+    "description": "Create calendar event directly and read back its persisted URI. Use a writable calendar_id, epoch milliseconds and a recognized time zone. operation_id must be phone_capabilities.operation_prefix + underscore + a unique 8..48 character nonce; reuse identical IDs and arguments after uncertain results.",
+    "inputSchema": {
+      "type": "object",
+      "properties": {
+        "calendar_id": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 9223372036854775807
+        },
+        "title": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 500
+        },
+        "start_ms": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 9223372036854775807
+        },
+        "end_ms": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 9223372036854775807
+        },
+        "timezone": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 100
+        },
+        "operation_id": {
+          "type": "string",
+          "minLength": 27,
+          "maxLength": 78,
+          "description": "Current phone_capabilities.operation_prefix + '_' + a unique 8..48 character nonce using only ASCII letters, digits, '_' or '-'. Include owner/generation/action/attempt or a timestamp for uniqueness. A valid suffix example is _type_0001; never reuse the example across actions. Preserve identical IDs/arguments after uncertain results.",
+          "pattern": "^[0-9]{1,12}-[0-9a-f]{16}_[A-Za-z0-9_-]{8,48}$"
+        }
+      },
+      "required": [
+        "calendar_id",
+        "title",
+        "start_ms",
+        "end_ms",
+        "timezone",
+        "operation_id"
+      ],
+      "additionalProperties": false
+    },
+    "annotations": {
+      "readOnlyHint": false,
+      "destructiveHint": true,
+      "idempotentHint": true,
+      "openWorldHint": true
+    }
+  },
+  {
+    "name": "phone_alarm",
+    "description": "Request an Android clock alarm with skip UI. Owning clock/OEM decides execution; verify outcome. operation_id must be phone_capabilities.operation_prefix + underscore + a unique 8..48 character nonce; reuse identical IDs and arguments after uncertain results.",
+    "inputSchema": {
+      "type": "object",
+      "properties": {
+        "hour": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 23
+        },
+        "minute": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 59
+        },
+        "label": {
+          "type": "string",
+          "minLength": 0,
+          "maxLength": 200
+        },
+        "operation_id": {
+          "type": "string",
+          "minLength": 27,
+          "maxLength": 78,
+          "description": "Current phone_capabilities.operation_prefix + '_' + a unique 8..48 character nonce using only ASCII letters, digits, '_' or '-'. Include owner/generation/action/attempt or a timestamp for uniqueness. A valid suffix example is _type_0001; never reuse the example across actions. Preserve identical IDs/arguments after uncertain results.",
+          "pattern": "^[0-9]{1,12}-[0-9a-f]{16}_[A-Za-z0-9_-]{8,48}$"
+        }
+      },
+      "required": [
+        "hour",
+        "minute",
+        "operation_id"
+      ],
+      "additionalProperties": false
+    },
+    "annotations": {
+      "readOnlyHint": false,
+      "destructiveHint": true,
+      "idempotentHint": true,
+      "openWorldHint": true
+    }
+  },
+  {
+    "name": "phone_timer",
+    "description": "Request Android clock timer with skip UI; verify owning clock outcome. operation_id must be phone_capabilities.operation_prefix + underscore + a unique 8..48 character nonce; reuse identical IDs and arguments after uncertain results.",
+    "inputSchema": {
+      "type": "object",
+      "properties": {
+        "seconds": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 86400
+        },
+        "label": {
+          "type": "string",
+          "minLength": 0,
+          "maxLength": 200
+        },
+        "operation_id": {
+          "type": "string",
+          "minLength": 27,
+          "maxLength": 78,
+          "description": "Current phone_capabilities.operation_prefix + '_' + a unique 8..48 character nonce using only ASCII letters, digits, '_' or '-'. Include owner/generation/action/attempt or a timestamp for uniqueness. A valid suffix example is _type_0001; never reuse the example across actions. Preserve identical IDs/arguments after uncertain results.",
+          "pattern": "^[0-9]{1,12}-[0-9a-f]{16}_[A-Za-z0-9_-]{8,48}$"
+        }
+      },
+      "required": [
+        "seconds",
+        "operation_id"
+      ],
+      "additionalProperties": false
+    },
+    "annotations": {
+      "readOnlyHint": false,
+      "destructiveHint": true,
+      "idempotentHint": true,
+      "openWorldHint": true
+    }
+  },
+  {
+    "name": "phone_sms",
+    "description": "Submit SMS through SmsManager with per-part sent/delivery receipts. Check phone_operation afterward. Requires SEND_SMS and a valid/default SMS SIM; never replay with a new ID after uncertain result. operation_id must be phone_capabilities.operation_prefix + underscore + a unique 8..48 character nonce; reuse identical IDs and arguments after uncertain results.",
+    "inputSchema": {
+      "type": "object",
+      "properties": {
+        "number": {
+          "type": "string",
+          "minLength": 3,
+          "maxLength": 26
+        },
+        "text": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 20000
+        },
+        "subscription_id": {
+          "type": "integer",
+          "minimum": -1,
+          "maximum": 2147483647
+        },
+        "operation_id": {
+          "type": "string",
+          "minLength": 27,
+          "maxLength": 78,
+          "description": "Current phone_capabilities.operation_prefix + '_' + a unique 8..48 character nonce using only ASCII letters, digits, '_' or '-'. Include owner/generation/action/attempt or a timestamp for uniqueness. A valid suffix example is _type_0001; never reuse the example across actions. Preserve identical IDs/arguments after uncertain results.",
+          "pattern": "^[0-9]{1,12}-[0-9a-f]{16}_[A-Za-z0-9_-]{8,48}$"
+        }
+      },
+      "required": [
+        "number",
+        "text",
+        "operation_id"
+      ],
+      "additionalProperties": false
+    },
+    "annotations": {
+      "readOnlyHint": false,
+      "destructiveHint": true,
+      "idempotentHint": true,
+      "openWorldHint": true
+    }
+  },
+  {
+    "name": "phone_notifications",
+    "description": "List currently available app-provided notification reply capabilities; does not promise arbitrary messaging APIs.",
+    "inputSchema": {
+      "type": "object",
+      "properties": {},
+      "required": [],
+      "additionalProperties": false
+    },
+    "annotations": {
+      "readOnlyHint": true,
+      "destructiveHint": false,
+      "idempotentHint": true,
+      "openWorldHint": true
+    }
+  },
+  {
+    "name": "phone_reply",
+    "description": "Reply through an app-provided notification action, guarded by notification key/post time. requested is not delivery proof. operation_id must be phone_capabilities.operation_prefix + underscore + a unique 8..48 character nonce; reuse identical IDs and arguments after uncertain results.",
+    "inputSchema": {
+      "type": "object",
+      "properties": {
+        "notification_key": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 1000
+        },
+        "posted_at_ms": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 9223372036854775807
+        },
+        "action_index": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 100
+        },
+        "text": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 20000
+        },
+        "operation_id": {
+          "type": "string",
+          "minLength": 27,
+          "maxLength": 78,
+          "description": "Current phone_capabilities.operation_prefix + '_' + a unique 8..48 character nonce using only ASCII letters, digits, '_' or '-'. Include owner/generation/action/attempt or a timestamp for uniqueness. A valid suffix example is _type_0001; never reuse the example across actions. Preserve identical IDs/arguments after uncertain results.",
+          "pattern": "^[0-9]{1,12}-[0-9a-f]{16}_[A-Za-z0-9_-]{8,48}$"
+        }
+      },
+      "required": [
+        "notification_key",
+        "posted_at_ms",
+        "action_index",
+        "text",
+        "operation_id"
+      ],
+      "additionalProperties": false
+    },
+    "annotations": {
+      "readOnlyHint": false,
+      "destructiveHint": true,
+      "idempotentHint": true,
+      "openWorldHint": true
+    }
+  },
+  {
+    "name": "phone_media",
+    "description": "Control a unique active media session advertising the requested action; verify playback state. operation_id must be phone_capabilities.operation_prefix + underscore + a unique 8..48 character nonce; reuse identical IDs and arguments after uncertain results.",
+    "inputSchema": {
+      "type": "object",
+      "properties": {
+        "package_name": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 200
+        },
+        "action": {
+          "type": "string",
+          "minLength": 0,
+          "maxLength": 20000,
+          "enum": [
+            "play",
+            "pause",
+            "next",
+            "previous",
+            "seek"
+          ]
+        },
+        "position_ms": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 9223372036854775807
+        },
+        "operation_id": {
+          "type": "string",
+          "minLength": 27,
+          "maxLength": 78,
+          "description": "Current phone_capabilities.operation_prefix + '_' + a unique 8..48 character nonce using only ASCII letters, digits, '_' or '-'. Include owner/generation/action/attempt or a timestamp for uniqueness. A valid suffix example is _type_0001; never reuse the example across actions. Preserve identical IDs/arguments after uncertain results.",
+          "pattern": "^[0-9]{1,12}-[0-9a-f]{16}_[A-Za-z0-9_-]{8,48}$"
+        }
+      },
+      "required": [
+        "package_name",
+        "action",
+        "operation_id"
+      ],
+      "additionalProperties": false
+    },
+    "annotations": {
+      "readOnlyHint": false,
+      "destructiveHint": true,
+      "idempotentHint": true,
+      "openWorldHint": true
+    }
+  },
+  {
+    "name": "phone_operation",
+    "description": "Inspect durable operation result and per-part SMS sent/delivery receipt codes after timeouts or network loss.",
+    "inputSchema": {
+      "type": "object",
+      "properties": {
+        "operation_id": {
+          "type": "string",
+          "minLength": 8,
+          "maxLength": 80
+        }
+      },
+      "required": [
+        "operation_id"
+      ],
+      "additionalProperties": false
+    },
+    "annotations": {
+      "readOnlyHint": true,
+      "destructiveHint": false,
+      "idempotentHint": true,
+      "openWorldHint": true
+    }
+  },
+  {
+    "name": "phone_screen",
+    "description": "Acquire or release a screen lease for this conversation. Lease expires after 15 seconds without a screen action. Reobserve after handoff. Release after work or cancellation.",
+    "inputSchema": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "action": {
+          "type": "string",
+          "enum": [
+            "acquire",
+            "release"
+          ]
+        }
+      },
+      "required": [
+        "action"
+      ]
+    },
+    "annotations": {
+      "readOnlyHint": true
+    }
+  },
+  {
+    "name": "phone_batch",
+    "description": "Validate up to 8 direct tool calls before execution. Ordered screen mutations. Every mutation has its own operation_id. Stops on the first error. Not atomic. Retry with SAME IDs after a lost response; never replay unknown outcomes.",
+    "inputSchema": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "calls": {
+          "type": "array",
+          "maxItems": 8,
+          "minItems": 1,
+          "items": {
+            "type": "object",
+            "additionalProperties": false,
+            "properties": {
+              "name": {
+                "type": "string"
+              },
+              "args": {
+                "type": "object"
+              }
+            },
+            "required": [
+              "name",
+              "args"
+            ]
+          }
+        }
+      },
+      "required": [
+        "calls"
+      ]
+    },
+    "annotations": {
+      "readOnlyHint": false
+    }
+  }
+]
