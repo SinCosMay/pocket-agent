@@ -3,6 +3,7 @@ import assert from 'node:assert/strict';
 import {PocketRuntime,NativeBridge} from '../src/runtime.js';
 import {delay} from '../src/scripted.js';
 import {AssistantMessageEventStream} from '@earendil-works/pi-ai';
+import {toolResult} from '../src/tools.js';
 
 class Bridge implements NativeBridge {
  state:any={};events:any[]=[];tools:any[]=[];credentials:any={authMode:'scripted'};
@@ -18,6 +19,61 @@ class Bridge implements NativeBridge {
 }
 async function until(fn:()=>any,timeout=4000):Promise<void>{const end=Date.now()+timeout;while(!fn()){if(Date.now()>end)throw new Error('Timed out');await delay(10);}}
 const command=(r:PocketRuntime,cmd:any)=>assert.equal(JSON.parse(r.dispatch(JSON.stringify(cmd))).ok,true);
+
+test('batch vision keeps only latest bounded image and preserves image-free operation receipts',()=>{
+ const first='Zmlyc3Qtc2NyZWVu',latest='bGF0ZXN0LXNjcmVlbg==';
+ const result=toolResult({status:'completed',results:[
+   {index:0,name:'phone_observe',result:{snapshot_id:'screen-1',nodes:[{text:'First screen'}],images:[{data:first,mimeType:'image/png'}]}},
+   {index:1,name:'phone_act',result:{operation_id:'fixture_action001',status:'verified',receipt:{delivered:true}}},
+   {index:2,name:'phone_observe',result:{snapshot_id:'screen-2',nodes:[{text:'Latest screen'}],images:[{data:latest,mimeType:'image/jpeg'}]}},
+ ]});
+ assert.deepEqual(result.content.filter((c:any)=>c.type==='image'),[{type:'image',data:latest,mimeType:'image/jpeg'}]);
+ const text=result.content.find((c:any)=>c.type==='text').text;
+ for(const value of [text,JSON.stringify(result.details)]) {
+   assert.ok(!value.includes(first));assert.ok(!value.includes(latest));assert.ok(!value.includes('"images"'));
+ }
+ assert.deepEqual(JSON.parse(text),result.details);
+ assert.deepEqual(result.details.results[1].result,{operation_id:'fixture_action001',status:'verified',receipt:{delivered:true}});
+ assert.equal(result.details.results[0].result.nodes[0].text,'First screen');
+ assert.equal(result.details.results[2].result.snapshot_id,'screen-2');
+ const oversized=toolResult({results:[{result:{images:[{data:first,mimeType:'image/png'}]}},{result:{images:[{data:'X'.repeat(2000001),mimeType:'image/png'}],operation_id:'retained'}}]});
+ assert.equal(oversized.content.filter((c:any)=>c.type==='image').length,0,'oversized latest image does not resurrect a stale screenshot');
+ assert.equal(oversized.details.results[1].result.operation_id,'retained');
+ assert.ok(JSON.stringify(oversized).length<1000);
+});
+
+test('fresh observations replace prior live screenshots; terminal runs retain text/results without base64',async()=>{
+ const imageData='c2NyZWVuc2hvdA=='.repeat(80000); // >1 MB must not consume the text context budget.
+ const images=(messages:any[])=>messages.flatMap(m=>Array.isArray(m.content)?m.content:[]).filter(c=>c.type==='image');
+ let r:PocketRuntime;
+ class ImageBridge extends Bridge {
+   observations=0;priorImageCounts:number[]=[];
+   override call(method:string,json:string):string {
+     const args=JSON.parse(json);
+     if(method==='tool'&&args.name==='phone_observe'){
+       this.priorImageCounts.push(images(r.main.messages).length);this.observations++;
+       return JSON.stringify({ok:true,result:{snapshot_id:`snapshot-${this.observations}`,nodes:[{text:`retained text ${this.observations}`}],images:[{data:imageData,mimeType:'image/png'}]}});
+     }
+     return super.call(method,json);
+   }
+ }
+ const bridge=new ImageBridge();r=new PocketRuntime(bridge);
+ const providerImageCounts:number[]=[];
+ r.main.agent.streamFunction=((model:any,context:any)=>{
+   providerImageCounts.push(images(context.messages).length);
+   const stream=new AssistantMessageEventStream(),call=bridge.observations<2;
+   const message:any={role:'assistant',content:call?[{type:'toolCall',id:`observe-${bridge.observations}`,name:'phone_observe',arguments:{include_image:true}}]:[{type:'text',text:'Observed twice; completed.'}],api:model.api,provider:model.provider,model:model.id,timestamp:Date.now(),stopReason:call?'toolUse':'stop',usage:{input:0,output:0,cacheRead:0,cacheWrite:0,totalTokens:0,cost:{input:0,output:0,cacheRead:0,cacheWrite:0,total:0}}};
+   stream.push({type:'done',reason:message.stopReason,message});stream.end(message);return stream;
+ }) as any;
+ command(r,{action:'send',text:'Observe twice'});await until(()=>!r.state().active);
+ assert.deepEqual(providerImageCounts,[0,1,1],'the active model context retains only the newest observation');
+ assert.deepEqual(bridge.priorImageCounts,[0,0],'previous image is released before the next native capture');
+ assert.equal(images(r.main.messages).length,0,'terminal response releases its last screenshot');
+ const results=r.main.messages.filter(m=>m.role==='toolResult');
+ assert.equal(results.length,2);assert.ok(results.every(m=>m.content.some((c:any)=>c.type==='text'&&c.text.includes('retained text'))));
+ assert.ok(results.every(m=>m.content.some((c:any)=>c.type==='text'&&c.text.includes('Previous screenshot omitted'))));
+ assert.ok(!JSON.stringify(bridge.state).includes(imageData));assert.equal(r.state().lastError,null);
+});
 
 test('a resolved provider error remains visible, persisted and credential-redacted after idle/restart',async()=>{
  const bridge=new Bridge();bridge.credentials.apiKey='synthetic-secret-token';
@@ -45,7 +101,7 @@ test('a resolved provider error remains visible, persisted and credential-redact
 
 test('main responds under worker load; completion is persisted and wakes main once; worker direct followup retains identity',async()=>{
  const bridge=new Bridge(),r=new PocketRuntime(bridge);
- command(r,{action:'send',text:'delegate long fixture delay=300'});
+ command(r,{action:'send',text:'delegate long task delay=300'});
  await until(()=>r.state().tasks.length===1&&!r.busy);
  const id=r.state().tasks[0].conversationId;
  assert.equal(r.state().tasks[0].status,'running');
@@ -138,4 +194,32 @@ test('scripted fixture executes the real typed tool loop and verifies exact post
  assert.match(r.state().tasks[0].output,/Verified fixture outcome/);
  assert.ok(bridge.tools.some(x=>x.name==='phone_batch'));
  assert.equal(bridge.tools.filter(x=>x.name==='phone_act').length,2);
+});
+
+test('scripted fixture retries cold-launch NOT_READY reads without replaying mutations',async()=>{
+ class ColdFixtureBridge extends Bridge {
+   count=0;typed='';observes=0;
+   override call(method:string,json:string):string {
+     const a=JSON.parse(json);
+     if(method==='tool') {
+       if(a.name==='phone_act'){if(a.args.kind==='type')this.typed=a.args.text;else if(a.args.kind==='click')this.count++;}
+       if(a.name==='phone_observe') {
+         this.observes++;
+         this.tools.push(a);
+         if(this.observes<=2)return JSON.stringify({ok:true,result:{isError:true,code:'NOT_READY',message:'Foreground accessibility root is transitioning',retry_safe:false}});
+         return JSON.stringify({ok:true,result:{package_name:'dev.pocket.agent.fixture',snapshot_id:`cold-${this.observes}`,nodes:[{description:'AGENT_INPUT'},{text:`STATUS_CLICKED:${this.typed} COUNT:${this.count}`} ]}});
+       }
+     }
+     return super.call(method,json);
+   }
+ }
+ const bridge=new ColdFixtureBridge(),r=new PocketRuntime(bridge);
+ command(r,{action:'send',text:'delegate fixture delay=10'});
+ await until(()=>r.state().tasks[0]?.status==='completed'&&!r.state().active);
+ assert.equal(bridge.observes,5,'two transitional reads plus three workflow observations');
+ assert.equal(bridge.tools.filter(x=>x.name==='phone_open_app').length,1);
+ assert.equal(bridge.tools.filter(x=>x.name==='phone_act'&&x.args.kind==='type').length,1);
+ assert.equal(bridge.tools.filter(x=>x.name==='phone_act'&&x.args.kind==='click').length,1);
+ assert.equal(bridge.count,1);assert.equal(bridge.typed,'PocketWorks');
+ assert.match(r.state().tasks[0].output,/Verified fixture outcome/);
 });

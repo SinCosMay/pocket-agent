@@ -27,7 +27,7 @@ class RemoteZip(io.RawIOBase):
   if r.status_code!=206:raise RuntimeError(f'Artifact range unavailable ({r.status_code})')
   if len(r.content)!=n:raise RuntimeError('Artifact range length mismatch')
   self.pos+=n;return r.content
-wanted={'Pocket-Agent-x86_64.apk','Pocket-Agent-tests.apk','Pocket-Agent-fixture.apk','source-commit.txt','runtime-manifest.json','SHA256SUMS.txt','signature.txt','payload-report.jsonl','lint.txt'}
+wanted={'Pocket-Agent-x86_64.apk','Pocket-Agent-tests.apk','Pocket-Agent-fixture.apk','source-commit.txt','runtime-manifest.json','SHA256SUMS.txt','signature.txt','payload-report.jsonl','lint.txt','native-stripping.json'}
 a.output.mkdir(parents=True,exist_ok=True)
 with zipfile.ZipFile(RemoteZip()) as archive:
  for item in archive.infolist():

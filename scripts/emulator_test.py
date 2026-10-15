@@ -14,13 +14,17 @@ def main():
     def adb(*args,**kw):return run('adb','-s',a.serial,*args,**kw)
     if adb('shell','getprop','ro.kernel.qemu').stdout.strip()!='1':raise SystemExit('Selected serial is not an emulator')
     apk=a.artifacts/'Pocket-Agent-x86_64.apk';fixture=a.artifacts/'Pocket-Agent-fixture.apk';tests=a.artifacts/'Pocket-Agent-tests.apk'
+    adb('uninstall','dev.pocket.agent.fixture',check=False)
     for file in (apk,fixture,tests):adb('install','-r',str(file))
     if a.fresh:adb('shell','pm','clear','dev.pocket.agent')
     # This read-only AVD copy belongs to this task; preserve other accessibility components.
     existing=adb('shell','settings','get','secure','enabled_accessibility_services').stdout.strip()
     component='dev.pocket.agent/.AgentAccessibility'
     services=[] if existing in ('null','') else existing.split(':')
-    if component not in services:services.append(component)
+    services=[s for s in services if s!=component]
+    if services:adb('shell','settings','put','secure','enabled_accessibility_services',':'.join(services))
+    else:adb('shell','settings','delete','secure','enabled_accessibility_services')
+    services.append(component)
     adb('shell','settings','put','secure','enabled_accessibility_services',':'.join(services));adb('shell','settings','put','secure','accessibility_enabled','1')
     adb('shell','pm','grant','dev.pocket.agent','android.permission.POST_NOTIFICATIONS')
     report={'serial':a.serial,'apkSha256':hashlib.sha256(apk.read_bytes()).hexdigest(),'cases':[]}
@@ -33,7 +37,10 @@ def main():
         if cls=='LiveProviderDeviceTest':
             run('python3',str(Path(__file__).with_name('provision_emulator.py')),'--serial',a.serial)
             args+=['-e','providerConfigPath','/sdcard/Android/data/dev.pocket.agent/files/provider-test.json']
+        adb('logcat','-c')
         result=adb(*args,'dev.pocket.agent.test/androidx.test.runner.AndroidJUnitRunner',timeout=240)
+        evidence=adb('logcat','-d','-s','System.out:I','*:S').stdout
+        (a.artifacts/f'{cls}-{method}-evidence.txt').write_text(evidence)
         log=a.artifacts/f'{cls}-{method}.txt';log.write_text(result.stdout+result.stderr)
         passed='OK (' in result.stdout and 'FAILURES!!!' not in result.stdout
         report['cases'].append({'class':cls,'method':method,'passed':passed,'log':log.name})

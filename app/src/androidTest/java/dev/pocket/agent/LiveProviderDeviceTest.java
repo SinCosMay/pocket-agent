@@ -70,6 +70,7 @@ public class LiveProviderDeviceTest {
         return false;
     }
     @Test public void liveCodexDelegationAndFixture() throws Exception {
+        DeviceTestAccess.ensureAccessibility();
         String configPath=InstrumentationRegistry.getArguments().getString("providerConfigPath");
         Assume.assumeTrue("Opt-in local provider configuration required",configPath!=null&&!configPath.isEmpty());
         Context c=context();File provisioned=new File(configPath).getCanonicalFile();

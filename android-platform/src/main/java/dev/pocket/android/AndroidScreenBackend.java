@@ -95,6 +95,7 @@ public final class AndroidScreenBackend implements ControlBackend {
         Observation base = onMain(() -> {
             Rect bounds = dimensions();
             AccessibilityNodeInfo root = freshRoot();
+            if(root==null) throw new ControlException(NOT_READY,"No active accessibility window yet; wait for the screen transition and observe again");
             List<Node> nodes = new ArrayList<>();
             String pkg = ""; int window = -1; boolean[] truncated = {false};
             if (root != null) {

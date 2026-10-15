@@ -57,6 +57,18 @@ async function fixtureStep(context:any,owner:string,signal?:AbortSignal):Promise
  if(scope.some((m:any)=>m.role==='assistant'&&/Verified fixture outcome:|Fixture failed:/.test(messageText(m))))return;
  const last=tools.at(-1),data=last?JSON.parse(messageText(last)):undefined;
  const call=(name:string,args:any)=>({call:{name,arguments:args}});
+ const launch=tools.find((m:any)=>m.toolName==='phone_open_app');
+ const acts=tools.filter((m:any)=>m.toolName==='phone_act');
+ if(launch&&!acts.length&&last?.toolName==='phone_observe') {
+  const transitional=data?.code==='NOT_READY'||(!data?.isError&&(data?.package_name!=='dev.pocket.agent.fixture'||!data.nodes?.some((n:any)=>n.description==='AGENT_INPUT')));
+  if(transitional) {
+   const remaining=Number(launch.timestamp)+5000-Date.now();
+   if(remaining<=0)return {answer:`Fixture failed: app launch was not ready within 5 seconds; last observation ${JSON.stringify(data)}`};
+   const attempts=tools.filter((m:any)=>m.toolName==='phone_observe').length;
+   if(attempts>=10){await delay(remaining,signal);return {answer:`Fixture failed: app launch was not ready within 5 seconds; last observation ${JSON.stringify(data)}`};}
+   await delay(Math.min(500,remaining),signal);return call('phone_observe',{max_nodes:150});
+  }
+ }
  if(data?.isError)return {answer:`Fixture failed: ${JSON.stringify(data)}`};
  const caps=tools.find((m:any)=>m.toolName==='phone_capabilities');
  if(!caps) {await delay(Math.min(Number(task.match(/delay[=: ](\d+)/i)?.[1]??300),30000),signal);return call('phone_capabilities',{});}
@@ -66,8 +78,7 @@ async function fixtureStep(context:any,owner:string,signal?:AbortSignal):Promise
  const op=(kind:string)=>`${prefix}_${nonce}${kind}`;
  if(!tools.some((m:any)=>m.toolName==='phone_batch'))return call('phone_batch',{calls:[{name:'phone_apps',args:{}},{name:'phone_capabilities',args:{}}]});
  if(!tools.some((m:any)=>m.toolName==='phone_open_app'))return call('phone_open_app',{package_name:'dev.pocket.agent.fixture',operation_id:op('open')});
- const acts=tools.filter((m:any)=>m.toolName==='phone_act');
- if(last.toolName==='phone_open_app'||last.toolName==='phone_act'){await delay(250,signal);return call('phone_observe',{max_nodes:150});}
+ if(last.toolName==='phone_open_app'||last.toolName==='phone_act'){await delay(last.toolName==='phone_open_app'?500:250,signal);return call('phone_observe',{max_nodes:150});}
  if(last.toolName!=='phone_observe')return {answer:'Fixture failed: unexpected tool sequence.'};
  if(data.package_name!=='dev.pocket.agent.fixture')return {answer:`Fixture failed: foreground package was ${data.package_name??'unavailable'}`};
  if(!acts.length) {

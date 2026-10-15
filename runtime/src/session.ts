@@ -16,7 +16,12 @@ export class MobileSession {
     });
   }
   get messages():any[] {return this.agent.state.messages;}
-  full():boolean {return this.messages.length>=256||JSON.stringify(this.messages).length>=1000000;}
+  full():boolean {return this.messages.length>=256||JSON.stringify(this.messages,(_key,value)=>value?.type==='image'?{type:'image'}:value).length>=1000000;}
+  dropPriorImages():void {
+    // Mutate shared message objects so the active Pi loop's shallow context copy
+    // releases prior image data too; retain every text block/result and receipt.
+    for(const message of this.messages)if(Array.isArray(message.content))message.content=message.content.map((content:any)=>content.type==='image'?{type:'text',text:'[Previous screenshot omitted; observe again for current state]'}:content);
+  }
   prompt(text:string):Promise<void> {if(this.full())return Promise.reject(new Error('Conversation is at the mobile context limit; history was retained'));this.turns=0;this.calls=0;return this.agent.prompt(text);}
   continue():Promise<void> {this.turns=0;this.calls=0;return this.agent.continue();}
   subscribe(fn:(event:any)=>void):()=>void {return this.agent.subscribe(fn);}
@@ -26,5 +31,5 @@ export class MobileSession {
   getSteeringMessages():string[] {return this.steering;}
   clearQueue():void {this.steering=[];this.agent.clearAllQueues();}
   async abort():Promise<void> {this.agent.abort();await this.agent.waitForIdle();}
-  dispose():void {this.clearQueue();}
+  dispose():void {this.dropPriorImages();this.clearQueue();}
 }

@@ -62,6 +62,7 @@ jobs:
           "$ANDROID_HOME/build-tools/36.0.0/apksigner" verify --verbose --print-certs artifacts/Pocket-Agent-arm64.apk > artifacts/signature.txt
           git rev-parse HEAD > artifacts/source-commit.txt
           cp app/src/main/assets/runtime-manifest.json artifacts/runtime-manifest.json
+          python3 scripts/native_footprint.py > artifacts/native-stripping.json
           python3 scripts/check_apk.py artifacts/Pocket-Agent-arm64.apk artifacts/Pocket-Agent-x86_64.apk artifacts/Pocket-Agent-universal.apk > artifacts/payload-report.jsonl
           sha256sum artifacts/*.apk > artifacts/SHA256SUMS.txt
       - uses: actions/upload-artifact@v4

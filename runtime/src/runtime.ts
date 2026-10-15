@@ -101,6 +101,7 @@ export class PocketRuntime {
     this.configureSessionTools(session,parent);
     session.subscribe(event=>{
       if(event.type==='message_end')this.coalesce();
+      if(event.type==='agent_end')session.dropPriorImages();
       if(event.type==='tool_execution_start')this.emit({type:'log',owner,tool:event.toolName,message:'Tool started'});
     });
     return session;
@@ -120,8 +121,9 @@ export class PocketRuntime {
       if(last?.stopReason==='error')return errorGeneration(conversation,generation,this.sanitize(last.errorMessage??'Provider error'));
       return completedGeneration(conversation,generation,messageText(last));
     } catch(e){return errorGeneration(conversation,generation,this.sanitize(String(e)));}
-    finally {this.releaseScreen(conversation.conversationId);this.save();this.publish();}
+    finally {this.dropPriorImages(conversation.conversationId);this.releaseScreen(conversation.conversationId);this.save();this.publish();}
   };
+  dropPriorImages(owner:string):void {(owner==='main'?this.main:this.sessions.get(owner))?.dropPriorImages();}
   private releaseScreen(owner:string):void {try{this.call('tool',{name:'phone_screen',args:{action:'release'},owner});}catch{/* Missing lease is harmless. */}}
   private enqueueCompletion(conversationId:string,generation:number):void {
     const key=generationKey({conversationId:conversationId as any,generation});
@@ -154,7 +156,7 @@ export class PocketRuntime {
           const last=this.main.messages.at(-1);
           if(last?.role==='assistant'&&last.stopReason==='error')this.reportError(last.errorMessage??'Provider request failed');
         }catch(e){this.reportError(e);}
-        finally {this.busy=false;this.releaseScreen('main');this.save();this.publish();}
+        finally {this.busy=false;this.dropPriorImages('main');this.releaseScreen('main');this.save();this.publish();}
       }
     } catch(e){this.reportError(e);}
     finally {this.deliveryTransaction=false;this.pumping=false;this.publish();}

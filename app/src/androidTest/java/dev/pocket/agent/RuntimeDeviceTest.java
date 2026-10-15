@@ -14,6 +14,15 @@ import static org.junit.Assert.*;
 @RunWith(AndroidJUnit4.class)
 public class RuntimeDeviceTest {
     private Context context() {return InstrumentationRegistry.getInstrumentation().getTargetContext();}
+    private JSONObject fixtureObservation(NativeTools tools,String owner) throws Exception {
+        long deadline=System.currentTimeMillis()+10000;JSONObject observation=new JSONObject();
+        while(System.currentTimeMillis()<deadline) {
+            observation=tools.execute("phone_observe",new JSONObject(),owner);
+            if("dev.pocket.agent.fixture".equals(observation.optString("package_name")) && observation.optJSONArray("nodes")!=null && observation.getJSONArray("nodes").length()>0)return observation;
+            Thread.sleep(200);
+        }
+        throw new AssertionError("Fixture window did not become ready: "+observation);
+    }
     private RuntimeHost host() throws Exception {
         // Visible Activity starts the user-visible foreground service; no background start exemption.
         Context c=context();c.startActivity(new Intent(c,MainActivity.class).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK));
@@ -34,15 +43,14 @@ public class RuntimeDeviceTest {
         System.out.println("POCKET_NODE_MEMORY="+h.memoryStats().get(5,TimeUnit.SECONDS));
     }
     @Test public void directNativeFixtureAndMutationLedger() throws Exception {
-        Context c=context();NativeTools tools=new NativeTools(c);String owner="instrumentation-fixture";
+        DeviceTestAccess.ensureAccessibility();Context c=context();NativeTools tools=new NativeTools(c);String owner="instrumentation-fixture";
         JSONObject caps=tools.execute("phone_capabilities",new JSONObject(),owner);
         assertTrue(caps.toString(),caps.optBoolean("accessibility_connected"));
         String prefix=caps.getString("operation_prefix");String nonce=Long.toString(System.nanoTime());
         JSONObject open=new JSONObject().put("package_name","dev.pocket.agent.fixture").put("operation_id",prefix+"_open"+nonce);
         try {
             JSONObject opened=tools.execute("phone_open_app",open,owner);assertFalse(opened.toString(),opened.optBoolean("isError"));
-            Thread.sleep(1500);
-            JSONObject observation=tools.execute("phone_observe",new JSONObject(),owner);assertEquals(observation.toString(),"dev.pocket.agent.fixture",observation.optString("package_name"));
+            JSONObject observation=fixtureObservation(tools,owner);assertEquals(observation.toString(),"dev.pocket.agent.fixture",observation.optString("package_name"));
             JSONObject type=new JSONObject().put("kind","type").put("snapshot_id",observation.getString("snapshot_id")).put("selector",new JSONObject().put("description","AGENT_INPUT")).put("text","PocketWorks").put("operation_id",prefix+"_type"+nonce);
             JSONObject typed=tools.execute("phone_act",type,owner);assertFalse(typed.toString(),typed.optBoolean("isError"));Thread.sleep(300);
             observation=tools.execute("phone_observe",new JSONObject(),owner);

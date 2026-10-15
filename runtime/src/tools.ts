@@ -3,11 +3,28 @@ import schemas from '../../app/src/main/assets/tools.json';
 import { SubagentParams, parseSubagentInvocation } from '../vendor/pi9/schema.js';
 
 export function toolResult(data:any):any {
-  const images=data?.images ?? [];
-  const text={...data};delete text.images;
-  const json=JSON.stringify(text);
+  let latestImage:any;
+  const withoutImages=(value:any):any=>{
+    if(Array.isArray(value))return value.map(withoutImages);
+    if(!value||typeof value!=='object')return value;
+    const result:any={};
+    for(const [key,child] of Object.entries(value)) {
+      if(key==='images') {
+        // Native batches nest observations under results[].result. Earlier
+        // screenshots describe stale screen state; never fall back to one if
+        // the latest capture exceeds the independent image payload bound.
+        if(Array.isArray(child))for(const image of child) {
+          latestImage=undefined;
+          if(typeof image?.data==='string'&&image.data.length>0&&image.data.length<=2000000&&typeof image.mimeType==='string')latestImage={type:'image',data:image.data,mimeType:image.mimeType};
+        }
+      } else result[key]=withoutImages(child);
+    }
+    return result;
+  };
+  const text=withoutImages(data);
+  const json=JSON.stringify(text??null);
   const content:any[]=[{type:'text',text:json.length>32000?JSON.stringify({isError:true,code:'OUTPUT_LIMIT',message:'Native output exceeded 32 KB; narrow the query.'}):json}];
-  for(const im of images.slice(0,1)) if(im.data && im.mimeType && im.data.length<=2000000) content.push({type:'image',data:im.data,mimeType:im.mimeType});
+  if(latestImage)content.push(latestImage);
   return {content,details:json.length>32000?{isError:true,code:'OUTPUT_LIMIT'}:text,isError:Boolean(data?.isError)||json.length>32000};
 }
 export function nativeTools(host:any,owner:string,grant?:readonly string[]):any[] {
@@ -18,6 +35,7 @@ export function nativeTools(host:any,owner:string,grant?:readonly string[]):any[
       if(signal?.aborted) throw new Error('Cancelled before native dispatch');
       // Batch entries must also stay inside this conversation's grant.
       if(s.name==='phone_batch' && args.calls?.some((x:any)=>!schemas.some(t=>t.name===x.name) || (grant && !grant.includes(x.name)))) throw new Error('Batch tool exceeds tool grant');
+      if(s.name==='phone_observe'||(s.name==='phone_batch'&&args.calls?.some((x:any)=>x.name==='phone_observe')))host.dropPriorImages(owner);
       const result=host.call('tool',{name:s.name,args,owner});
       return toolResult(result);
     },

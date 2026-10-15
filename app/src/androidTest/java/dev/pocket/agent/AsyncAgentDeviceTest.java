@@ -20,7 +20,7 @@ public class AsyncAgentDeviceTest {
  }
  private JSONObject latest(JSONObject state)throws Exception {JSONArray tasks=state.optJSONArray("tasks");return tasks==null||tasks.length()==0?new JSONObject():tasks.getJSONObject(tasks.length()-1);}
  @Test public void delegatedFixtureKeepsMainResponsiveAndCompletesOnce()throws Exception {
-  Context c=context();new CredentialStore(c).save(new JSONObject().put("authMode","scripted").put("endpoint","https://api.openai.com/v1").put("model","scripted").put("apiKey",""));
+  DeviceTestAccess.ensureAccessibility();Context c=context();new CredentialStore(c).save(new JSONObject().put("authMode","scripted").put("endpoint","https://api.openai.com/v1").put("model","scripted").put("apiKey",""));
   c.startActivity(new Intent(c,MainActivity.class).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK));Thread.sleep(500);
   c.startForegroundService(new Intent(c,AgentService.class).setAction(AgentService.ACTION_START));
   long start=System.currentTimeMillis();RuntimeHost host=null;
