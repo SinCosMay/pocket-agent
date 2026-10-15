@@ -71,6 +71,9 @@ jobs:
           assert validation['instrumentation']['apkSha256']==hashes['Pocket-Agent-x86_64.apk']
           cases=validation['instrumentation']['cases']
           required={('RuntimeDeviceTest','nodeEmbeddingStreamingAndCancellation'),('RuntimeDeviceTest','directNativeFixtureAndMutationLedger'),('AsyncAgentDeviceTest','delegatedFixtureKeepsMainResponsiveAndCompletesOnce'),('LifecycleDeviceTest','activityRecreationKeepsWorker'),('LifecycleDeviceTest','reportFootprint'),('LifecycleDeviceTest','prepareProcessDeath'),('LifecycleDeviceTest','verifyProcessDeath'),('LiveProviderDeviceTest','liveCodexDelegationAndFixture')}
+          if validation.get('suite')=='codex-account-focused':
+              assert validation.get('authMode')=='codex-account'
+              required={('CodexAuthDeviceTest','importEncryptAndSignOut'),('CodexAuthDeviceTest','rotationCompareAndSaveRejectsStaleAndSignedOut'),('LiveProviderDeviceTest','liveCodexDelegationAndFixture')}
           observed={(case['class'],case['method']) for case in cases}
           assert required <= observed and all(case['passed'] for case in cases), 'Local device suite did not pass'
           if validation.get('authMode')=='codex-account':

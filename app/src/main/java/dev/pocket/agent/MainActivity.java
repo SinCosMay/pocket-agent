@@ -10,6 +10,7 @@ import android.widget.AdapterView;
 import java.io.InputStream;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
+import java.util.concurrent.Future;
 import android.content.pm.PackageManager;
 import android.graphics.Typeface;
 import android.os.Build;
@@ -42,6 +43,10 @@ public final class MainActivity extends Activity implements AgentService.Observe
     private final ExecutorService accountFiles = Executors.newSingleThreadExecutor();
     private CodexAccountAuth accountFlow;
     private AlertDialog accountDialog;
+    private long accountGeneration;
+    private long pendingPickerGeneration = -1;
+    private int pendingPickerRequest = -1;
+    private Future<?> pendingImport;
     @Override public void onCreate(Bundle saved) {
         super.onCreate(saved); store = new StateStore(this);
         LinearLayout root = column(); root.setPadding(dp(14), dp(12), dp(14), dp(12));
@@ -72,8 +77,7 @@ public final class MainActivity extends Activity implements AgentService.Observe
     @Override protected void onStart() { super.onStart(); AgentService.observe(this); state = store.load(); render(); }
     @Override protected void onStop() { AgentService.unobserve(this); super.onStop(); }
     @Override protected void onDestroy() {
-        if (accountFlow != null) accountFlow.close();
-        if (accountDialog != null) accountDialog.dismiss();
+        invalidateAccountOperations();
         accountFiles.shutdownNow(); store.close(); super.onDestroy();
     }
     @Override public void onAgentEvent(JSONObject event) {
@@ -158,13 +162,16 @@ public final class MainActivity extends Activity implements AgentService.Observe
         accountPanel.addView(button("Import Codex auth.json", () -> {
             if (activeWork()) { toast("Stop active work before changing accounts"); return; }
             settingsDialog[0].dismiss();
+            long generation = invalidateAccountOperations();
+            pendingPickerGeneration = generation;
+            pendingPickerRequest = IMPORT_CODEX + (int) (generation % 60000);
             Intent pick = new Intent(Intent.ACTION_OPEN_DOCUMENT).addCategory(Intent.CATEGORY_OPENABLE).setType("*/*")
                     .putExtra(Intent.EXTRA_MIME_TYPES, new String[]{"application/json", "text/plain", "application/octet-stream"});
-            try { startActivityForResult(pick, IMPORT_CODEX); } catch (Exception unavailable) { toast("No document picker is available"); }
+            try { startActivityForResult(pick, pendingPickerRequest); } catch (Exception unavailable) { invalidateAccountOperations(); toast("No document picker is available"); }
         }));
         accountPanel.addView(button("Sign out", () -> {
             if (activeWork()) { toast("Stop active work before signing out"); return; }
-            try { credentials.signOutCodex(); if (AgentService.isRunning()) command(json("action", "configure")); settingsDialog[0].dismiss(); toast("Account signed out on this phone"); }
+            try { credentials.signOutCodex(); invalidateAccountOperations(); if (AgentService.isRunning()) command(json("action", "configure")); settingsDialog[0].dismiss(); toast("Account signed out on this phone"); }
             catch (Exception error) { toast("Unable to clear the protected account"); }
         }));
         TextView connectionHelp = text("Codex relay uses http://10.0.2.2:port/v1 on an emulator. Account mode connects directly and needs no API key or endpoint."); panel.addView(connectionHelp);
@@ -194,7 +201,7 @@ public final class MainActivity extends Activity implements AgentService.Observe
                         // Never substitute an account token into the API-key field.
                         config.put("apiKey", secret.getText().length() == 0 ? saved.optString("apiKey") : secret.getText().toString().trim());
                     }
-                    credentials.save(config); if (AgentService.isRunning()) command(json("action", "configure")); dialog.dismiss(); toast("Connection saved");
+                    credentials.save(config); invalidateAccountOperations(); if (AgentService.isRunning()) command(json("action", "configure")); dialog.dismiss(); toast("Connection saved");
                 } catch (Exception error) { toast(error instanceof IllegalArgumentException ? error.getMessage() : "Could not save connection"); }
             });
         }); dialog.show();
@@ -205,25 +212,43 @@ public final class MainActivity extends Activity implements AgentService.Observe
         new CredentialStore(this).save(config);
         if (AgentService.isRunning()) command(json("action", "configure"));
     }
+    /** A newer account choice/sign-out always wins over an older file read or login callback. */
+    private long invalidateAccountOperations() {
+        long generation = ++accountGeneration;
+        pendingPickerGeneration = -1; pendingPickerRequest = -1;
+        Future<?> importing = pendingImport; pendingImport = null; if (importing != null) importing.cancel(true);
+        CodexAccountAuth flow = accountFlow; accountFlow = null; if (flow != null) flow.close();
+        AlertDialog dialog = accountDialog; accountDialog = null; if (dialog != null) dialog.dismiss();
+        return generation;
+    }
     @Override protected void onActivityResult(int request, int result, Intent data) {
         super.onActivityResult(request, result, data);
-        if (request != IMPORT_CODEX || result != RESULT_OK || data == null || data.getData() == null) return;
+        if (request != pendingPickerRequest) return;
+        long generation = pendingPickerGeneration; pendingPickerGeneration = -1; pendingPickerRequest = -1;
+        if (generation != accountGeneration || result != RESULT_OK || data == null || data.getData() == null || isDestroyed()) return;
         Uri document = data.getData();
         if (!"content".equals(document.getScheme())) { toast("Select an account file from the document picker"); return; }
         toast("Reading selected account file");
-        accountFiles.submit(() -> {
+        pendingImport = accountFiles.submit(() -> {
             JSONObject account;
             try (InputStream input = getContentResolver().openInputStream(document)) { account = CodexAccountAuth.readImport(input); }
-            catch (Exception invalid) { runOnUiThread(() -> { if (!isDestroyed()) toast("Unable to import account. Select a valid Codex auth.json with account and refresh tokens."); }); return; }
+            catch (Exception invalid) {
+                runOnUiThread(() -> {
+                    if (!isDestroyed() && generation == accountGeneration) {
+                        pendingImport = null; toast("Unable to import account. Select a valid Codex auth.json with account and refresh tokens.");
+                    }
+                }); return;
+            }
             runOnUiThread(() -> {
-                if (isDestroyed() || isFinishing()) return;
-                try { saveAccount(account); toast(account.optLong("expiresAt") <= System.currentTimeMillis() ? "Account imported · refresh required on next request" : "Account imported"); settings(); }
+                if (isDestroyed() || isFinishing() || generation != accountGeneration) return;
+                pendingImport = null;
+                try { saveAccount(account); invalidateAccountOperations(); toast(account.optLong("expiresAt") <= System.currentTimeMillis() ? "Account imported · refresh required on next request" : "Account imported"); settings(); }
                 catch (Exception error) { toast(activeWork() ? "Stop active work, then import the account again" : "Unable to save the protected account"); }
             });
         });
     }
     private void signInAccount() {
-        if (accountFlow != null) accountFlow.close();
+        final long generation = invalidateAccountOperations();
         CodexAccountAuth flow = new CodexAccountAuth(); accountFlow = flow;
         LinearLayout panel = column(); panel.setPadding(dp(20), dp(8), dp(20), dp(8));
         TextView instructions = text("Requesting a device code…"); panel.addView(instructions);
@@ -233,20 +258,23 @@ public final class MainActivity extends Activity implements AgentService.Observe
             catch (Exception unavailable) { toast("Open auth.openai.com/codex/device in a browser and enter the displayed code"); }
         }); browser.setEnabled(false); panel.addView(browser);
         AlertDialog dialog = new AlertDialog.Builder(this).setTitle("Sign in to Codex").setView(panel).setNegativeButton("Cancel", null).create(); accountDialog = dialog;
-        dialog.setOnDismissListener(ignored -> { flow.close(); if (accountFlow == flow) accountFlow = null; if (accountDialog == dialog) accountDialog = null; });
+        dialog.setOnDismissListener(ignored -> {
+            if (generation == accountGeneration) ++accountGeneration;
+            flow.close(); if (accountFlow == flow) accountFlow = null; if (accountDialog == dialog) accountDialog = null;
+        });
         dialog.show(); dialog.getWindow().addFlags(WindowManager.LayoutParams.FLAG_SECURE);
         flow.signIn(new CodexAccountAuth.Listener() {
             @Override public void onDeviceCode(String userCode) {
-                if (isDestroyed() || !dialog.isShowing()) return;
+                if (isDestroyed() || generation != accountGeneration || !dialog.isShowing()) return;
                 instructions.setText("Open the sign-in page and enter this code. Do not share it. Waiting for authorization (up to 15 minutes)…"); code.setText(userCode); browser.setEnabled(true);
             }
             @Override public void onSuccess(JSONObject account) {
-                if (isDestroyed() || !dialog.isShowing()) return;
+                if (isDestroyed() || generation != accountGeneration || !dialog.isShowing()) return;
                 try { saveAccount(account); dialog.dismiss(); toast("Codex account connected"); settings(); }
                 catch (Exception error) { instructions.setText(activeWork() ? "Stop active work, then start sign-in again. The previous connection was preserved." : "Unable to save the protected account. The previous connection was preserved."); code.setText(""); browser.setEnabled(false); flow.close(); }
             }
             @Override public void onFailure(String safeMessage) {
-                if (isDestroyed() || !dialog.isShowing()) return;
+                if (isDestroyed() || generation != accountGeneration || !dialog.isShowing()) return;
                 instructions.setText(safeMessage + " The previous connection was preserved."); code.setText(""); browser.setEnabled(false); flow.close();
             }
         });
