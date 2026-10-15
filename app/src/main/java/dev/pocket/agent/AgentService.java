@@ -47,7 +47,10 @@ public final class AgentService extends Service {
     }
     @Override public int onStartCommand(Intent intent, int flags, int startId) {
         if (intent == null) return START_NOT_STICKY;
-        if (ACTION_STOP.equals(intent.getAction())) { stopSelf(); return START_NOT_STICKY; }
+        if (ACTION_STOP.equals(intent.getAction())) {
+            stopService(new Intent(this, VoiceListeningService.class));
+            stopSelf(); return START_NOT_STICKY;
+        }
         if (ACTION_COMMAND.equals(intent.getAction())) {
             String value = intent.getStringExtra("command");
             try {

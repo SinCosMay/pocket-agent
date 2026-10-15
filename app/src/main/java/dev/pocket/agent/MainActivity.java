@@ -71,11 +71,12 @@ public final class MainActivity extends Activity implements AgentService.Observe
             command(json("action", "send", "text", value)); input.setText("");
         }); controls.addView(send, new LinearLayout.LayoutParams(0, -2, 1));
         controls.addView(button("Stop response", () -> command(json("action", "stop_main"))));
-        controls.addView(button("Stop voice", () -> startService(new Intent(this,
-            VoiceListeningService.class).setAction(VoiceListeningService.ACTION_STOP))));
         controls.addView(button("Stop all", () -> {
             if (AgentService.isRunning()) startService(new Intent(this, AgentService.class).setAction(AgentService.ACTION_STOP));
-        })); root.addView(controls); setContentView(root);
+        })); root.addView(controls);
+        root.addView(button("Stop voice listening", () -> startService(new Intent(this,
+            VoiceListeningService.class).setAction(VoiceListeningService.ACTION_STOP))));
+        setContentView(root);
     }
     @Override protected void onStart() { super.onStart(); AgentService.observe(this); state = store.load(); render(); }
     @Override protected void onStop() { AgentService.unobserve(this); super.onStop(); }
