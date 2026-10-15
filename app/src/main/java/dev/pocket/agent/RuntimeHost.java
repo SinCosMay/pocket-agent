@@ -47,7 +47,7 @@ public final class RuntimeHost implements AutoCloseable {
         handler.post(() -> {
             try {
                 store.markInterrupted(); tools = new NativeTools(context);
-                runtime = V8Host.getNodeInstance().createV8Runtime();
+                runtime = V8Host.getNodeI18nInstance().createV8Runtime();
                 runtime.getNodeModule(NodeModuleModule.class).setRequireRootDirectory(context.getFilesDir());
                 try (V8ValueObject bridge = runtime.createV8ValueObject()) {
                     bridge.bind(new Bridge()); runtime.getGlobalObject().set("PocketNative", bridge);

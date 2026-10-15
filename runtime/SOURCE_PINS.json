@@ -17,6 +17,6 @@
   "esbuild": "0.25.12",
   "tsx": "4.20.6",
   "nodeTested": "22.22.2",
-  "androidEngine": "Javet Node 6.0.2 (host integration; on-device compatibility requires separate validation)",
+  "androidEngine": "Javet Node I18n 6.0.2 (host integration; on-device compatibility requires separate validation)",
   "lockfile": "package-lock.json"
 }

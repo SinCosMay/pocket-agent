@@ -2,6 +2,7 @@ plugins { id("com.android.application") }
 android {
     namespace = "dev.pocket.agent"
     compileSdk = 36
+    ndkVersion = "27.2.12479018"
     defaultConfig {
         applicationId = "dev.pocket.agent"
         minSdk = 31
@@ -30,7 +31,7 @@ android {
 }
 dependencies {
     implementation(project(":android-platform"))
-    implementation("com.caoccao.javet:javet-node-android:6.0.2")
+    implementation("com.caoccao.javet:javet-node-android-i18n:6.0.2")
     androidTestImplementation("androidx.test:runner:1.6.2")
     androidTestImplementation("org.jetbrains.kotlin:kotlin-stdlib:2.2.0")
     androidTestImplementation("androidx.test:rules:1.6.1")
