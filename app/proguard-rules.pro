@@ -16,3 +16,5 @@
 -keep class dev.pocket.agent.IDisplayShell** { *; }
 
 -keep class dev.pocket.agent.CodexAccountAuth { *; }
+
+-keep class dev.pocket.agent.MemoryStore { *; }
