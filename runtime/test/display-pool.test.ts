@@ -85,6 +85,29 @@ test('Shizuku acquisition failure frees reservation and wakes waiting owner',asy
   assert.equal(app.displayPool.active,3);
 });
 
+test('a Shizuku service death clears stale UI ownership and lets the same worker reacquire',async()=>{
+  class DisconnectingBridge extends Bridge {
+    lost=false;
+    override call(method:string,json:string):string {
+      const args=JSON.parse(json);
+      if(method==='tool'&&args.name==='phone_observe'&&this.lost) {
+        return JSON.stringify({ok:true,result:{isError:true,code:'NOT_READY',message:'Shizuku backend disconnected; observe after recovery'}});
+      }
+      return super.call(method,json);
+    }
+  }
+  const bridge=new DisconnectingBridge(),app=new PocketRuntime(bridge);
+  const observe=()=>nativeTools(app,'worker').find(t=>t.name==='phone_observe')!.execute('t',{});
+  assert.equal(unwrap(await observe()).owner,'worker');
+  assert.equal(app.displayPool.active,1);
+  bridge.lost=true;
+  assert.equal((await observe()).isError,true);
+  assert.equal(app.displayPool.active,0,'dead native ownership must not pin the JS pool');
+  bridge.lost=false;
+  assert.equal(unwrap(await observe()).owner,'worker');
+  assert.equal(bridge.calls.filter(c=>c.name==='phone_screen'&&c.args.action==='acquire').length,2);
+});
+
 test('FIFO queue rejects duplicate requests and never leaves display zero available',async()=>{
   const pool=new DisplayPool(1);
   await pool.reserve('first');

@@ -19,6 +19,7 @@ final class ShizukuDisplayClient implements AutoCloseable {
     private final Runnable disconnected;
     private volatile IDisplayShell remote;
     private volatile boolean binding;
+    private volatile long bindingStartedMs;
     private volatile boolean closed;
     private final ServiceConnection connection=new ServiceConnection() {
         @Override public void onServiceConnected(ComponentName name,IBinder binder) {
@@ -47,7 +48,7 @@ final class ShizukuDisplayClient implements AutoCloseable {
     }
     private void loseService() {
         Log.w(TAG,"Shizuku UserService disconnected");
-        remote=null;binding=false;
+        remote=null;binding=false;bindingStartedMs=0;
         synchronized(readyLock) {readyLock.notifyAll();}
         if(!closed) disconnected.run();
     }
@@ -65,17 +66,19 @@ final class ShizukuDisplayClient implements AutoCloseable {
         String pre=prerequisites();
         if(!"idle".equals(pre)) return pre;
         if(remote!=null && remote.asBinder().isBinderAlive()) return "ready";
+        if(binding && SystemClock.elapsedRealtime()-bindingStartedMs>=35_000) return "service_start_timeout";
         return binding?"binding":"disconnected";
     }
     synchronized void tryBind() {
         if(closed || binding || remote!=null || !available()) return;
         try {
             if(Shizuku.checkSelfPermission()!=PackageManager.PERMISSION_GRANTED) return;
+            bindingStartedMs=SystemClock.elapsedRealtime();
             binding=true;
             Log.i(TAG,"Shizuku UserService bind requested");
             Shizuku.bindUserService(args,connection);
         } catch(Exception e) {
-            binding=false;
+            binding=false;bindingStartedMs=0;
             Log.e(TAG,"Shizuku UserService binding call failed",e);
         }
     }
@@ -95,8 +98,13 @@ final class ShizukuDisplayClient implements AutoCloseable {
             }
         }
         if(!"ready".equals(status())) Log.w(TAG,"Shizuku bind did not reach ready state: "+status());
-        if(!"ready".equals(status())) throw new ControlException(ControlException.Code.NOT_READY,
-            "Virtual display backend "+status()+"; start Shizuku and authorize Pocket Agent in its UI");
+        String state=status();
+        if(!"ready".equals(state)) throw new ControlException(ControlException.Code.NOT_READY,
+            "service_start_timeout".equals(state)
+                ? "Shizuku is running, but its privileged UserService failed to start within 35 seconds. Check device and MediaTek compatibility."
+                : "binding".equals(state)
+                    ? "Shizuku display UserService startup is still pending; retry after startup completes."
+                    : "Virtual display backend "+state+"; start Shizuku and authorize Pocket Agent in its UI");
         return remote;
     }
     int createDisplay() throws ControlException {
