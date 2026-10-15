@@ -28,4 +28,6 @@ adb -s emulator-5580 install -r Pocket-Agent-tests.apk
 adb -s emulator-5580 shell am instrument -w -e class dev.pocket.agent.MemoryDeviceTest dev.pocket.agent.test/androidx.test.runner.AndroidJUnitRunner
 ```
 
-This test creates/deletes an isolated `memory-instrumentation.db` and does not modify existing user memory. `MemoryStore` uses a separate DB file so no schema changes to `StateStore` or operation receipts are necessary.
+This test creates/deletes an isolated `memory-instrumentation.db` and does not modify existing user memory. Also run `dev.pocket.agent.MemoryLoopDeviceTest`: this invokes the real scripted Pi tool loop to save a synthetic preference, verifies the native SQLite entry, and recalls it on the next main turn. The synthetic record is deleted after the test.
+
+`MemoryStore` uses a separate DB file so no schema changes to `StateStore` or operation receipts are necessary.

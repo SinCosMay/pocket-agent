@@ -27,7 +27,7 @@ public class MemoryDeviceTest {
     }
     @Test public void verifiedLocalMemoryIsScopedPersistentAndConcurrent() throws Exception {
         Context c=context();c.deleteDatabase(name);
-        int pssStart=Debug.getPss();
+        long pssStart=Debug.getPss();
         try(MemoryStore store=new MemoryStore(c,name)){
             long first=save(store,"main","global","preference:git","Use existing branches for GitHub projects.",true,"agent").getLong("id");
             assertEquals(1,request(store,"worker-a","search","query","GitHub").getJSONArray("memories").length());
