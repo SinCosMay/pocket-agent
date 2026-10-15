@@ -98,7 +98,10 @@ is needed. Default-assistant support and key mapping depend on OEM firmware.
 - Network loss, permission revocation, denied audio hardware and overrun are surfaced
   as voice status; no speech provider error is treated as worker task completion.
 - The TTS queue bounds pending synthesis commands and bytes; STT WebSocket
-  backlog is capped, avoiding indefinite retained audio.
+  backlog is capped, avoiding indefinite retained audio. A normal speech socket
+  closure, transport failure, or rejected synthesis write marks TTS unavailable
+  and releases pending playback; a 30-second flush acknowledgment watchdog
+  prevents lost `Flushed` events from keeping the microphone session alive forever.
 - There is no wake-word or indefinite screen-off listener. An active user-started
   microphone service can continue when the screen turns off, subject to OEM battery
   and microphone policies. The default-assistant gesture remains the entrypoint.

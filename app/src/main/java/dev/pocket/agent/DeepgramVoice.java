@@ -11,6 +11,8 @@ import android.media.audiofx.NoiseSuppressor;
 import android.media.AudioTrack;
 import android.media.MediaRecorder;
 import android.os.Process;
+import android.os.Handler;
+import android.os.Looper;
 import java.util.ArrayDeque;
 import java.util.Arrays;
 import java.util.concurrent.ExecutorService;
@@ -39,6 +41,7 @@ final class DeepgramVoice implements AutoCloseable {
         void onStatus(String message);
     }
 
+    private static final long FLUSH_TIMEOUT_MS = 30000L;
     private static final String STT_URL = "wss://api.deepgram.com/v2/listen?model=flux-general-en&encoding=linear16&sample_rate=16000";
     private static final String TTS_URL = "wss://api.deepgram.com/v1/speak?model=aura-2-thalia-en&encoding=linear16&sample_rate=24000";
     private final Context context;
@@ -51,6 +54,8 @@ final class DeepgramVoice implements AutoCloseable {
         return thread;
     });
     private final VoiceTextChunker chunker = new VoiceTextChunker();
+    private final Handler timeoutHandler = new Handler(Looper.getMainLooper());
+    private Runnable flushTimeout;
     private final ArrayDeque<String> speechQueue = new ArrayDeque<>();
     private volatile boolean closed;
     private volatile boolean listening;
@@ -88,7 +93,9 @@ final class DeepgramVoice implements AutoCloseable {
         ttsSocket = client.newWebSocket(request(TTS_URL), new WebSocketListener() {
             @Override public void onOpen(WebSocket webSocket, Response response) {
                 synchronized (DeepgramVoice.this) {
-                    if (closed) { webSocket.close(1000, "closed"); return; }
+                    if (closed || ttsSocket != webSocket) {
+                        webSocket.close(1000, "stale"); return;
+                    }
                     if (waitingForClear) webSocket.send("{\"type\":\"Clear\"}");
                     else {
                         ttsReady = true;
@@ -96,32 +103,103 @@ final class DeepgramVoice implements AutoCloseable {
                     }
                 }
             }
-            @Override public void onMessage(WebSocket webSocket, ByteString bytes) { handleAudio(bytes.toByteArray()); }
+            @Override public void onMessage(WebSocket webSocket, ByteString bytes) {
+                synchronized (DeepgramVoice.this) {
+                    if (closed || ttsSocket != webSocket) return;
+                    handleAudio(bytes.toByteArray());
+                }
+            }
             @Override public void onMessage(WebSocket webSocket, String text) {
                 try {
                     String kind = new JSONObject(text).optString("type");
-                    if ("Cleared".equals(kind)) {
-                        synchronized (DeepgramVoice.this) {
+                    boolean flushComplete = false;
+                    synchronized (DeepgramVoice.this) {
+                        if (closed || ttsSocket != webSocket) return;
+                        if ("Cleared".equals(kind) && waitingForClear) {
                             waitingForClear = false;
                             ttsReady = true;
-                            while (!speechQueue.isEmpty()) webSocket.send(speechQueue.removeFirst());
+                            while (!speechQueue.isEmpty()) {
+                                if (!webSocket.send(speechQueue.removeFirst())) {
+                                    speakerLost(webSocket); return;
+                                }
+                            }
+                        } else if ("Flushed".equals(kind) && waitingForFlush && !waitingForClear) {
+                            cancelFlushTimeout();
+                            flushComplete = true;
                         }
-                    } else if ("Flushed".equals(kind)) finishPlayback();
+                    }
+                    if (flushComplete) finishPlayback();
                 } catch (Exception ignored) { }
             }
+            @Override public void onClosing(WebSocket webSocket, int code, String reason) {
+                webSocket.close(1000, null);
+                speakerLost(webSocket);
+            }
+            @Override public void onClosed(WebSocket webSocket, int code, String reason) {
+                speakerLost(webSocket);
+            }
             @Override public void onFailure(WebSocket webSocket, Throwable error, Response response) {
-                if (!closed) {
-                    callback.onStatus("Speech output unavailable; check Deepgram credentials or network");
-                    boolean notify;
-                    synchronized (DeepgramVoice.this) {
-                        ttsReady = false; ttsFailed = true; waitingForClear = false;
-                        notify = waitingForFlush;
-                        waitingForFlush = false;
-                    }
-                    if (notify) callback.onPlaybackFinished();
-                }
+                speakerLost(webSocket);
             }
         });
+    }
+
+    private void cancelFlushTimeout() {
+        if (flushTimeout != null) {
+            timeoutHandler.removeCallbacks(flushTimeout);
+            flushTimeout = null;
+        }
+    }
+
+    /** Normal WebSocket closure must complete outstanding speech, not pin the mic forever. */
+    private void speakerLost(WebSocket webSocket) {
+        boolean notify;
+        synchronized (this) {
+            if (closed || ttsSocket != webSocket) return;
+            ttsSocket = null;
+            ttsReady = false;
+            ttsFailed = true;
+            waitingForClear = false;
+            notify = waitingForFlush;
+            waitingForFlush = false;
+            cancelFlushTimeout();
+            speechQueue.clear();
+            ++playbackEpoch;
+            stopSpeakerLocked();
+        }
+        callback.onStatus("Speech output unavailable; check Deepgram credentials or network");
+        if (notify) callback.onPlaybackFinished();
+    }
+
+    private void stopSpeakerLocked() {
+        if (speaker == null) return;
+        try { speaker.pause(); speaker.flush(); } catch (Exception ignored) { }
+        try { speaker.release(); } catch (Exception ignored) { }
+        speaker = null;
+        totalFrames = 0;
+    }
+
+    private void armFlushTimeout() {
+        cancelFlushTimeout();
+        final long generation = playbackEpoch;
+        Runnable timeout = () -> {
+            synchronized (DeepgramVoice.this) {
+                if (closed || !waitingForFlush || generation != playbackEpoch) return;
+                waitingForFlush = false;
+                ttsReady = false;
+                ttsFailed = true;
+                speechQueue.clear();
+                ++playbackEpoch;
+                stopSpeakerLocked();
+                WebSocket stalled = ttsSocket;
+                ttsSocket = null;
+                if (stalled != null) stalled.cancel();
+            }
+            callback.onStatus("Speech synthesis timed out; continuing to listen");
+            callback.onPlaybackFinished();
+        };
+        flushTimeout = timeout;
+        timeoutHandler.postDelayed(timeout, FLUSH_TIMEOUT_MS);
     }
 
     synchronized void listen() {
@@ -231,6 +309,7 @@ final class DeepgramVoice implements AutoCloseable {
 
     synchronized void startReply() {
         if (closed) return;
+        cancelFlushTimeout();
         chunker.clear();
         responseOpen = true;
         waitingForFlush = false;
@@ -243,6 +322,7 @@ final class DeepgramVoice implements AutoCloseable {
     synchronized void interruptReply() {
         if (closed) return;
         ++playbackEpoch;
+        cancelFlushTimeout();
         responseOpen = false;
         waitingForFlush = false;
         chunker.clear();
@@ -256,12 +336,7 @@ final class DeepgramVoice implements AutoCloseable {
             // Do not enqueue a duplicate Clear that might erase the next reply.
             waitingForClear = false;
         }
-        if (speaker != null) {
-            try { speaker.pause(); speaker.flush(); } catch (Exception ignored) { }
-            try { speaker.release(); } catch (Exception ignored) { }
-            speaker = null;
-        }
-        totalFrames = 0;
+        stopSpeakerLocked();
         firstAudio = false;
         hasSpeech = false;
     }
@@ -280,7 +355,10 @@ final class DeepgramVoice implements AutoCloseable {
 
     private void queueTts(String json) {
         if (closed) return;
-        if (ttsReady && !waitingForClear && ttsSocket != null) ttsSocket.send(json);
+        if (ttsReady && !waitingForClear && ttsSocket != null) {
+            WebSocket socket = ttsSocket;
+            if (!socket.send(json)) speakerLost(socket);
+        }
         else if (speechQueue.size() < 64) speechQueue.addLast(json);
         else callback.onStatus("Speech synthesis queue full");
     }
@@ -296,6 +374,7 @@ final class DeepgramVoice implements AutoCloseable {
             return;
         }
         waitingForFlush = true;
+        armFlushTimeout();
         queueTts("{\"type\":\"Flush\"}");
     }
 
@@ -375,6 +454,7 @@ final class DeepgramVoice implements AutoCloseable {
         if (closed) return;
         closed = true;
         ++playbackEpoch;
+        cancelFlushTimeout();
         stopListening();
         if (ttsSocket != null) { ttsSocket.cancel(); ttsSocket = null; }
         ttsReady = false;

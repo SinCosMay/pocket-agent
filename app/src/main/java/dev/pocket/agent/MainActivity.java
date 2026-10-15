@@ -191,7 +191,7 @@ public final class MainActivity extends Activity implements AgentService.Observe
         panel.addView(button("Accessibility settings", () -> startActivity(new Intent(Settings.ACTION_ACCESSIBILITY_SETTINGS))));
         panel.addView(button("Notification access settings", () -> startActivity(new Intent(Settings.ACTION_NOTIFICATION_LISTENER_SETTINGS))));
         panel.addView(button("Choose phone permissions", this::permissions));
-        panel.addView(text("Voice uses Deepgram streaming speech recognition and synthesis, with the existing Pi main agent. Closing the voice window stops audio only."));
+        panel.addView(text("Voice uses Deepgram streaming speech recognition and synthesis with the Pi main agent. Listening stops after six seconds of idle silence or when you tap Stop listening in the notification. Background workers continue."));
         panel.addView(button("Deepgram voice key", this::voiceKeySettings));
         panel.addView(button("Allow microphone", () -> requestPermissions(new String[]{Manifest.permission.RECORD_AUDIO}, 103)));
         panel.addView(button("Allow voice notification", () -> {
@@ -222,7 +222,14 @@ public final class MainActivity extends Activity implements AgentService.Observe
     }
     private void voiceKeySettings() {
         EditText key = new EditText(this);
-        key.setHint(new VoiceCredentialStore(this).configured() ? "Configured · enter new key to replace" : "Deepgram API key");
+        String hint;
+        try {
+            hint = new VoiceCredentialStore(this).configured()
+                ? "Configured · enter new key to replace" : "Deepgram API key";
+        } catch (RuntimeException unreadable) {
+            hint = "Saved voice key unavailable · enter a new key";
+        }
+        key.setHint(hint);
         key.setInputType(InputType.TYPE_CLASS_TEXT | InputType.TYPE_TEXT_VARIATION_PASSWORD);
         key.setImportantForAutofill(View.IMPORTANT_FOR_AUTOFILL_NO_EXCLUDE_DESCENDANTS);
         key.setSaveEnabled(false);
