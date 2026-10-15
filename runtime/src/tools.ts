@@ -6,8 +6,8 @@ export function toolResult(data:any):any {
   const images=data?.images ?? [];
   const text={...data};delete text.images;
   const json=JSON.stringify(text);
-  const content:any[]=[{type:'text',text:json.length>100000?JSON.stringify({isError:true,code:'OUTPUT_LIMIT',message:'Native output exceeded 100 KB; narrow the query.'}):json}];
-  for(const im of images.slice(0,1)) if(im.data && im.mimeType) content.push({type:'image',data:im.data,mimeType:im.mimeType});
+  const content:any[]=[{type:'text',text:json.length>32000?JSON.stringify({isError:true,code:'OUTPUT_LIMIT',message:'Native output exceeded 32 KB; narrow the query.'}):json}];
+  for(const im of images.slice(0,1)) if(im.data && im.mimeType && im.data.length<=2000000) content.push({type:'image',data:im.data,mimeType:im.mimeType});
   return {content,details:text};
 }
 export function nativeTools(host:any,owner:string,grant?:readonly string[]):any[] {
@@ -42,19 +42,19 @@ export function subagentTool(app:any,parent?:any):any {
           if(parent && r.conversationDepth(parent.conversationId)>=4) throw new Error('Maximum recursive mobile worker depth is 4');
           for(const task of tasks) {
             if('error' in task) {results.push({ok:false,...task});continue;}
-            const h=r.startTasks(app.context,[task],{caller,initiatedBy:'model'});
+            const h=app.startTasks([task],{caller,initiatedBy:'model'});
             results.push(...h.starts);void h.completion.catch(app.reportError);
           }
           break;
         }
-        case 'steer': for(const x of invocation.messages) {try {results.push('error'in x?{ok:false,...x}:{ok:true,...await r.steerSubagent(x.subagentId,x.message,caller)});}catch(e){results.push({ok:false,error:String(e)});}}break;
+        case 'steer': for(const x of invocation.messages) {try {results.push('error'in x?{ok:false,...x}:{ok:true,...await app.steer(x.subagentId,x.message,caller)});}catch(e){results.push({ok:false,error:String(e)});}}break;
         case 'cancel': case 'inspect': case 'remove': {
           for(const target of invocation.subagentIds) {
             if(typeof target!=='string'){results.push({ok:false,...target});continue;}
             try {
               if(action==='cancel') results.push({ok:true,...await r.cancelSubagent(target,caller)});
               if(action==='inspect') results.push({ok:true,...r.projectSubagent(target,caller)});
-              if(action==='remove') results.push(...await r.removeConversations([target],caller));
+              if(action==='remove') {results.push(...await r.removeConversations([target],caller));app.cleanupRemoved();}
             } catch(e){results.push({ok:false,subagentId:target,error:String(e)});}
           } break;
         }

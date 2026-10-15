@@ -81,3 +81,36 @@ test('stop current main leaves worker running; cancel worker and stop all are di
  command(r,{action:'stop_all'});await until(()=>!r.state().active);
  assert.equal(r.state().tasks[1].status,'cancelled');
 });
+test('recursive tool grants intersect with the parent and survive durable restore',async()=>{
+ const bridge=new Bridge(),r=new PocketRuntime(bridge,{maxExecuting:1,maxConversations:12});
+ const handle=r.startTasks([{kind:'spawn',agent:'researcher',label:'Read only parent',prompt:'nested task'}],{initiatedBy:'model'});
+ await handle.completion;await until(()=>!r.state().active);
+ const child=r.state().tasks.find((t:any)=>t.parentConversationId);
+ assert.ok(child);assert.ok(child.requestedConfig.tools.includes('phone_capabilities'));
+ assert.ok(!child.requestedConfig.tools.includes('phone_act'));
+ assert.ok(!child.effectiveConfig.tools.includes('phone_act'));
+ const restored=new PocketRuntime(bridge);
+ const reloaded=restored.state().tasks.find((t:any)=>t.conversationId===child.conversationId);
+ assert.ok(!reloaded.requestedConfig.tools.includes('phone_act'));
+ assert.ok(!restored.sessions.get(child.conversationId)!.agent.state.tools.some((x:any)=>x.name==='phone_act'));
+});
+test('scripted fixture executes the real typed tool loop and verifies exact postcondition',async()=>{
+ class FixtureBridge extends Bridge {
+   count=0;typed='';
+   override call(method:string,json:string):string {
+     const a=JSON.parse(json);
+     if(method==='tool'){
+       if(a.name==='phone_act'){if(a.args.kind==='type')this.typed=a.args.text;else if(a.args.kind==='click')this.count++;}
+       if(a.name==='phone_observe')return JSON.stringify({ok:true,result:{package_name:'dev.pocket.agent.fixture',snapshot_id:`s${this.tools.length}`,nodes:[{description:'AGENT_INPUT'},{text:`STATUS_CLICKED:${this.typed} COUNT:${this.count}`} ]}});
+     }
+     return super.call(method,json);
+   }
+ }
+ const bridge=new FixtureBridge(),r=new PocketRuntime(bridge);
+ command(r,{action:'send',text:'delegate fixture delay=10'});
+ await until(()=>r.state().tasks[0]?.status==='completed'&&!r.state().active);
+ assert.equal(bridge.count,1);assert.equal(bridge.typed,'PocketWorks');
+ assert.match(r.state().tasks[0].output,/Verified fixture outcome/);
+ assert.ok(bridge.tools.some(x=>x.name==='phone_batch'));
+ assert.equal(bridge.tools.filter(x=>x.name==='phone_act').length,2);
+});

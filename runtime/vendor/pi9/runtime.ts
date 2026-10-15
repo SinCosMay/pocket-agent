@@ -164,7 +164,12 @@ export class SubagentRuntime {
     if (this.conversations.size >= this.maxConversations) return { error: this.capacityError() };
     const conversationId = this.conversationIds.allocate();
     if (!conversationId) return { error: "Conversation ID space exhausted." };
-    const conversation = new Conversation(conversationId, definition, task, (changed, kind) => this.updated(changed, kind), {
+    // Pocket mobile: grants may narrow recursively, never widen in descendants.
+    const inheritedTools = caller?.conversation.requestedConfig.tools;
+    const effectiveDefinition = inheritedTools
+      ? { ...definition, tools: (definition.tools ?? []).filter(tool => inheritedTools.includes(tool)) }
+      : definition;
+    const conversation = new Conversation(conversationId, effectiveDefinition, task, (changed, kind) => this.updated(changed, kind), {
       ...(caller ? { parentConversationId: caller.conversation.conversationId, startedInParentGeneration: caller.generation.number } : {}),
       initiatedBy,
       resolvedSkillBlocks: skills.value,

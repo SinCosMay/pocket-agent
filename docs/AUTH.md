@@ -30,7 +30,7 @@ The development relay uses this machine's existing `~/.codex/auth.json` only for
 inference. Start it in a separate terminal:
 
 ```sh
-python3 scripts/codex_relay.py --port 8787 --model gpt-6-sol
+python3 scripts/codex_relay.py --port 8787 --model gpt-6-luna
 ```
 
 Python `aiohttp` is required. The relay prints the private bearer **file path**, not
@@ -40,7 +40,7 @@ protected provider configuration through the local test setup; never paste it
 into a checked-in file, APK asset, shell command log or public URL. Configure:
 
 ```json
-{"authMode":"codex","endpoint":"http://10.0.2.2:8787/v1","model":"gpt-6-sol","apiKey":"<private development bearer>"}
+{"authMode":"codex","endpoint":"http://10.0.2.2:8787/v1","model":"gpt-6-luna","apiKey":"<private development bearer>"}
 ```
 
 The example placeholder is not a working credential. `10.0.2.2` is the Android
@@ -99,3 +99,21 @@ server-tool rejection, streaming, structured function history preservation, safe
 bounded failures without retries, and cancellation before the first upstream
 response byte. A real Codex model tool-call test is separate from these synthetic
 tests; phone tool execution must still be demonstrated on the exact APK artifact.
+
+On 2026-10-15, the cached account and `gpt-6-luna` completed a real two-request
+Responses roundtrip through the relay: requested `fixture_status({})`, accepted
+its structured synthetic read-only result, then answered that the fixture was
+ready. A separate run through the pinned Pi `Agent` and this app's `makeStream`
+adapter executed that local test tool exactly once and completed with the same
+answer. These are host protocol checks, not device acceptance claims.
+
+The opt-in Android instrumentation class `LiveProviderDeviceTest` accepts
+`providerConfigPath` pointing directly inside the target app's external-files
+directory. Provision a temporary JSON containing only the relay bearer (never
+Codex account tokens), then run that class on the selected emulator. It removes
+the file immediately after importing the credential, requires a real background
+worker and concurrent main answer, and checks persisted native tool results for
+`STATUS_CLICKED:LiveCodex COUNT:1`. Its cleanup stops work and restores scripted
+mode. Force-stop the fixture first so its counter begins at zero. The result line
+contains assertions and fixture evidence only; it must not include credentials or
+full transcripts.

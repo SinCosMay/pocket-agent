@@ -26,6 +26,10 @@ jobs:
       - name: Build and test trimmed runtime
         working-directory: runtime
         run: npm ci && npm test && npm run build
+      - name: Test local inference relay without account credentials
+        run: |
+          python3 -m pip install aiohttp==3.13.5
+          python3 -m unittest discover -s scripts -p test_codex_relay.py -v
       - uses: actions/setup-java@v4
         with:
           distribution: temurin
@@ -65,6 +69,14 @@ jobs:
           path: artifacts/
           retention-days: 90
           if-no-files-found: error
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: build-diagnostics
+          path: |
+            app/build/reports/lint-results-release.*
+            app/build/outputs/mapping/**/missing_rules.txt
+          if-no-files-found: ignore
       - name: Remove signing material
         if: always()
         run: rm -f "$APK_KEYSTORE"

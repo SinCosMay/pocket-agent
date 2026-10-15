@@ -92,6 +92,7 @@ export interface NestedJoinAttemptSnapshot {
 }
 
 export interface GenerationSnapshot {
+  readonly modelSubscribed?: boolean;
   readonly generation: number;
   readonly kind: GenerationKind;
   readonly initiatedBy: GenerationInitiator;
@@ -338,6 +339,7 @@ export class Conversation {
   /** Pocket mobile persistence hook. No running execution is replayed after process death. */
   restoreCheckpoint(snapshot: ConversationSnapshot, session: AgentSession): void {
     this.generations.length = 0;
+    Object.assign(this.requestedConfig, snapshot.requestedConfig);
     Object.defineProperty(this, "createdAt", { value: snapshot.createdAt });
     this.session = session;
     for (const saved of snapshot.generations) {
@@ -349,6 +351,8 @@ export class Conversation {
             ...(status.kind === "running" ? { startedAt: status.startedAt } : {}),
             error: "Android process ended. Prior operations may have unknown outcomes; inspect receipts before resuming." };
       Object.assign(generation.receipts, saved.receipts);
+      if (saved.modelSubscribed) generation.subscribeModel();
+      generation.activity.restoreCheckpoint(saved.activity, saved.usage);
       generation.nestedJoins.push(...(saved.nestedJoins ?? []).map(join => ({...join, targets: [...join.targets],
         ...(join.state === "running" ? {state: "interrupted" as const, completedAt: Date.now(), error: "Process ended"} : {})})));
       generation.steers.push(...saved.steers.map(steer => ({...steer, state: steer.state === "queued" || steer.state === "delivered" ? "discarded" as const : steer.state, deliveryText: "", sentBy: "user" as const})));
@@ -499,6 +503,6 @@ export class Conversation {
       ...(attempt.completedAt !== undefined ? { completedAt: attempt.completedAt } : {}),
       ...(attempt.error !== undefined ? { error: attempt.error } : {}),
     }));
-    return Object.freeze({ generation: generation.number, kind: generation.kind, initiatedBy: generation.initiatedBy, ...(generation.startedInParentGeneration !== undefined ? { startedInParentGeneration: generation.startedInParentGeneration } : {}), prompt: generation.prompt, createdAt: generation.createdAt, status: Object.freeze(status), activity: Object.freeze(generation.activity.snapshot()), usage: generation.activity.usage, activeCollectionCount: generation.activeCollectionCount, receipts: Object.freeze({ ...generation.receipts }), nestedJoins: Object.freeze(nestedJoins), steers: Object.freeze(generation.steers.map(projectSteer)) });
+    return Object.freeze({ modelSubscribed: generation.isModelSubscribed, generation: generation.number, kind: generation.kind, initiatedBy: generation.initiatedBy, ...(generation.startedInParentGeneration !== undefined ? { startedInParentGeneration: generation.startedInParentGeneration } : {}), prompt: generation.prompt, createdAt: generation.createdAt, status: Object.freeze(status), activity: Object.freeze(generation.activity.snapshot()), usage: generation.activity.usage, activeCollectionCount: generation.activeCollectionCount, receipts: Object.freeze({ ...generation.receipts }), nestedJoins: Object.freeze(nestedJoins), steers: Object.freeze(generation.steers.map(projectSteer)) });
   }
 }

@@ -28,6 +28,16 @@ export class GenerationActivity {
 
   get usage(): Usage { return this._latestUsage }
 
+  /** Pocket mobile checkpoint hydration; metrics survive service process death. */
+  restoreCheckpoint(snapshot: GenerationActivitySnapshot, usage: Usage): void {
+    this._phase = snapshot.phase;
+    this._message = snapshot.messageSnippet ?? "";
+    this._turns = snapshot.turns;
+    this._compactions = snapshot.compactions;
+    this._toolHistory = snapshot.toolHistory.map(tool => ({...tool}));
+    this._latestUsage = usage;
+  }
+
   snapshot(): GenerationActivitySnapshot {
     return {
       phase: this._phase,

@@ -10,7 +10,7 @@ export function scriptedStream(owner='main'): StreamFn {
     const m:any={role:'assistant',content:[],api:model.api,provider:model.provider,model:model.id,usage:usage(),stopReason:'stop',timestamp:Date.now()};
     queueMicrotask(async()=>{
       try {
-        const last=context.messages.at(-1), text=messageText(last);
+        const last=context.messages.filter((x:any)=>x.role!=='system').at(-1), text=messageText(last);
         let answer=''; let call:any;
         const fixture=owner!=='main' && !/nested/i.test(context.messages.find((m:any)=>m.role==='user') ? messageText(context.messages.find((m:any)=>m.role==='user')) : '')
           ? await fixtureStep(context,owner,options.signal):undefined;

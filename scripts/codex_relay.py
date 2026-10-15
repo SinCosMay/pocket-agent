@@ -155,7 +155,7 @@ def main() -> None:
     parser.add_argument("--port", type=int, default=8787)
     parser.add_argument("--token-file", type=Path, default=TOKEN_FILE)
     parser.add_argument("--auth-file", type=Path, default=AUTH_FILE)
-    parser.add_argument("--model", default="gpt-6-sol")
+    parser.add_argument("--model", default="gpt-6-luna")
     args = parser.parse_args()
     if not 1024 <= args.port <= 65535:
         parser.error("Use an unprivileged port between 1024 and 65535")
