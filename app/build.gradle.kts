@@ -34,7 +34,7 @@ dependencies {
     implementation("com.caoccao.javet:javet-node-android-i18n:6.0.2")
     implementation("com.squareup.okhttp3:okhttp:4.12.0")
     androidTestImplementation("androidx.test:runner:1.6.2")
-    androidTestImplementation("org.jetbrains.kotlin:kotlin-stdlib:2.2.0")
+    androidTestImplementation("org.jetbrains.kotlin:kotlin-stdlib:1.9.10")
     androidTestImplementation("androidx.test:rules:1.6.1")
     androidTestImplementation("androidx.test.ext:junit:1.2.1")
     androidTestImplementation("com.google.errorprone:error_prone_annotations:2.36.0")

@@ -35,7 +35,7 @@ final class DeepgramVoice implements AutoCloseable {
         void onStatus(String message);
     }
 
-    private static final String STT_URL = "wss://api.deepgram.com/v1/listen?model=nova-3&language=en-US&encoding=linear16&sample_rate=16000&channels=1&interim_results=true&punctuate=true&smart_format=true&endpointing=350";
+    private static final String STT_URL = "wss://api.deepgram.com/v2/listen?model=flux-general-en&encoding=linear16&sample_rate=16000";
     private static final String TTS_URL = "wss://api.deepgram.com/v1/speak?model=aura-2-thalia-en&encoding=linear16&sample_rate=24000";
     private final Context context;
     private final Callback callback;
@@ -46,7 +46,6 @@ final class DeepgramVoice implements AutoCloseable {
         thread.setDaemon(true);
         return thread;
     });
-    private final VoiceTranscript transcript = new VoiceTranscript();
     private final VoiceTextChunker chunker = new VoiceTextChunker();
     private final ArrayDeque<String> speechQueue = new ArrayDeque<>();
     private volatile boolean closed;
@@ -113,7 +112,6 @@ final class DeepgramVoice implements AutoCloseable {
             callback.onStatus("Microphone permission required. Open Pocket Agent settings.");
             return;
         }
-        transcript.reset();
         listening = true;
         sttSocket = client.newWebSocket(request(STT_URL), new WebSocketListener() {
             @Override public void onOpen(WebSocket socket, Response response) {
@@ -124,17 +122,14 @@ final class DeepgramVoice implements AutoCloseable {
                 if (!listening || closed) return;
                 try {
                     JSONObject packet = new JSONObject(text);
-                    String finalText;
-                    synchronized (transcript) { finalText = transcript.accept(packet); }
+                    String finalText = VoiceTranscript.completedTurn(packet);
                     if (finalText != null) {
                         stopListening();
                         callback.onUtterance(finalText);
-                    } else if ("Results".equals(packet.optString("type")) && !packet.optBoolean("is_final")) {
-                        JSONObject channel = packet.optJSONObject("channel");
-                        if (channel != null && channel.optJSONArray("alternatives") != null) {
-                            JSONObject first = channel.optJSONArray("alternatives").optJSONObject(0);
-                            if (first != null) callback.onInterim(first.optString("transcript"));
-                        }
+                    } else if ("TurnInfo".equals(packet.optString("type"))) {
+                        callback.onInterim(packet.optString("transcript", ""));
+                    } else if ("Error".equals(packet.optString("type"))) {
+                        stopListening(); callback.onStatus("Speech recognition stopped; check Deepgram or the network");
                     }
                 } catch (Exception ignored) { }
             }
@@ -162,7 +157,7 @@ final class DeepgramVoice implements AutoCloseable {
             record.startRecording();
             Thread capture = new Thread(() -> {
                 Process.setThreadPriority(Process.THREAD_PRIORITY_AUDIO);
-                byte[] samples = new byte[1280]; // 40ms of 16kHz mono PCM16.
+                byte[] samples = new byte[2560]; // Flux recommends 80ms of 16 kHz mono PCM16.
                 while (listening && !closed) {
                     int size = record.read(samples, 0, samples.length);
                     if (size <= 0) { if (listening) callback.onStatus("Microphone capture interrupted"); break; }

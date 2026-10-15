@@ -27,9 +27,11 @@ not copied into this Android implementation.
 
 Pocket Agent instead uses directly documented Deepgram APIs:
 
-- STT: `wss://api.deepgram.com/v1/listen` using Nova-3, raw 16 kHz
-  signed PCM16 mono, 40 ms microphone packets, interim transcripts and 350 ms endpointing.
-  Completed utterances concatenate `is_final` fragments until `speech_final`.
+- STT: `wss://api.deepgram.com/v2/listen` using Flux `flux-general-en`, raw
+  16 kHz signed PCM16 mono with 80 ms microphone packets (the Deepgram-recommended
+  chunk size). Only `TurnInfo` events with `event=EndOfTurn` submit a user turn;
+  interim updates do not initiate model inference. Default Flux turn detection
+  is used without speculative eager-generation to avoid unwanted API calls.
 - TTS: `wss://api.deepgram.com/v1/speak` with Aura-2 Thalia,
   24 kHz signed PCM16 mono. The outgoing Pi response is cut at punctuation
   or a long whitespace boundary, preserving incomplete word fragments.
@@ -62,8 +64,8 @@ is needed. Default-assistant support and key mapping depend on OEM firmware.
 
 - Opening without microphone permission or a Deepgram key yields a setup prompt
   and does not open a microphone.
-- Malformed streaming recognition packets are ignored; finalized text is accumulated
-  once; silence does not send an empty prompt.
+- Malformed streaming recognition packets and provisional turn updates are ignored;
+  only a confirmed nonempty `EndOfTurn` sends a prompt.
 - While Pi is thinking or speaking, mic recording is stopped to prevent playback
   from becoming a second user instruction. This first implementation is intentionally
   **half duplex**; echo cancellation and interruption/barge-in are not yet implemented.
@@ -95,7 +97,7 @@ Validation checklist:
 
 1. Runtime unit tests: speech-tagged main reply produces text deltas and a
    final marker; user text and worker completion do not.
-2. Android instrumentation: recognition fragment assembly, early speech
+2. Android instrumentation: confirmed Flux turn filtering, early speech
    clause segmentation, assistant-service registration.
 3. Build and sign on GitHub Actions; install **that artifact** on Fedora Android
    emulator and select the assistant via the system voice-interaction role.
