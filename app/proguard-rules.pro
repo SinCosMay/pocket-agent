@@ -15,6 +15,6 @@
 
 -keep class dev.pocket.agent.CodexAccountAuth { *; }
 
-# The AndroidX instrumentation runner is compiled against Kotlin internals.
-# Keep constructors in the minified target APK so the test APK can link them.
--keep class kotlin.jvm.internal.** { *; }
+# AndroidX instrumentation uses Kotlin classes also packaged by OkHttp.
+# The test APK expects all runtime Kotlin types to remain linkable in the target.
+-keep class kotlin.** { *; }

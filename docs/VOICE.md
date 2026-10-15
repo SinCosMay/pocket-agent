@@ -86,6 +86,23 @@ is needed. Default-assistant support and key mapping depend on OEM firmware.
 
 ## Metrics and verification
 
+### Verified real network/model audio round trip (2026-10-15)
+
+On the separate Arch Linux test runner, Deepgram Aura synthesized a 4.96-second
+spoken question, which was resampled and streamed to Flux in paced 80 ms PCM frames.
+Flux finalized the correct utterance, and Pocket Agent's **real Pi main thread with
+an existing Codex-account model connection** answered: **“Two plus two is four.”**
+Deepgram Aura streamed 38 PCM response chunks totaling 1.52 seconds of audio.
+The resulting response audio was re-transcribed over another live Flux stream as
+exactly **“Two plus two is four.”** (normalized text similarity 1.0, non-silent PCM
+RMS 2345). The first model text arrived 3202 ms after finalized transcription,
+and first response PCM arrived after 3847 ms. Input speech transcription took
+8497 ms including the 4.96 seconds of spoken question. These are one-trial values,
+not typical latency guarantees. This confirms actual provider and model audio
+transport, **not** physical Android microphone/speaker playback. See
+[structured evidence](validation/2026-10-15-voice-e2e.json) and
+[the spoken response recording](validation/voice-e2e-response-2026-10-15.ogg).
+
 A voice session reports `PocketVoiceLatency` to logcat as:
 `first_token_ms=<elapsed since finalized utterance> first_audio_ms=<elapsed>`.
 These are application end-to-end intervals rather than Deepgram's Agent SDK's
