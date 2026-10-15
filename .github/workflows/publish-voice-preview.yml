@@ -13,7 +13,7 @@ jobs:
       - uses: actions/download-artifact@v4
         with:
           name: pocket-agent-release
-          run-id: 38777355506
+          run-id: 38785226512
           github-token: ${{ github.token }}
           path: artifacts
       - name: Verify signed source and release ARM64 preview
@@ -23,14 +23,14 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          test "$(cat artifacts/source-commit.txt)" = "5ace76b755c7d61485fdea8c5abcdf6966fe2631"
+          test "$(cat artifacts/source-commit.txt)" = "412905e534f105f9e2b4c7fb2177e0fa89e2a6cc"
           expected="$(awk '$2=="artifacts/Pocket-Agent-arm64.apk" {print $1}' artifacts/SHA256SUMS.txt)"
           test -n "$expected"
           actual="$(sha256sum artifacts/Pocket-Agent-arm64.apk | cut -d' ' -f1)"
           test "$actual" = "$expected"
-          gh release create v0.1.2-voice-preview.1 \
-            "artifacts/Pocket-Agent-arm64.apk#Pocket-Agent-Voice-arm64.apk" \
-            --target 5ace76b755c7d61485fdea8c5abcdf6966fe2631 \
+          gh release create v0.1.3-voice-preview.1 \
+            "artifacts/Pocket-Agent-arm64.apk#Pocket-Agent-Voice-Background-arm64.apk" \
+            --target 412905e534f105f9e2b4c7fb2177e0fa89e2a6cc \
             --prerelease \
-            --title "Pocket Agent Voice Preview 0.1.2" \
-            --notes "Signed ARM64 voice assistant preview from GitHub Actions run 38777355506. Includes Android digital-assistant integration, Deepgram Flux speech recognition, Aura speech synthesis, and Pi main-thread streaming. Configure Deepgram key, allow microphone, and select Pocket Agent as the default assistant. This is an experimental build; real network audio was verified but physical Android microphone/speaker playback has not yet been fully validated."
+            --title "Pocket Agent Voice Background Preview 0.1.3" \
+            --notes "Signed ARM64 background-voice preview from GitHub Actions run 38785226512. Android assistant invocation starts a microphone foreground service with an ongoing notification instead of an overlay. Listening continues while other apps are open and during spoken replies. Flux StartOfTurn interrupts old playback and TTS receives Clear; six seconds of idle silence stops microphone, while Pi workers continue. Five targeted Android emulator instrumentation tests passed. Grant microphone and notification permissions; configure Deepgram and model provider. Physical-device full-duplex echo/acoustic behavior still requires user testing."
