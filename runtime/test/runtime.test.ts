@@ -317,3 +317,26 @@ test('account credentials stay redacted from durable state and events after prov
  for(const secret of secrets){assert.ok(!JSON.stringify(bridge.state).includes(secret));assert.ok(!JSON.stringify(bridge.events).includes(secret));}
  await until(()=>!r.state().active);
 });
+
+
+test('voice input streams only its own main reply; ordinary turns and worker completions remain silent',async()=>{
+ const bridge=new Bridge(),runtime=new PocketRuntime(bridge);
+ const id='9ac6c359-d522-4fa3-a00b-a7efdf0c9571';
+ command(runtime,{action:'send',text:'hello voice',voiceSessionId:id});
+ await until(()=>!runtime.state().active);
+ const own=bridge.events.filter(e=>e.sessionId===id);
+ assert.ok(own.some(e=>e.type==='voice_delta'&&e.text.includes('Main is responsive: hello voice')));
+ assert.equal(own.filter(e=>e.type==='voice_end').length,1);
+ bridge.events.length=0;
+ command(runtime,{action:'send',text:'hello text'});
+ await until(()=>!runtime.state().active);
+ assert.ok(!bridge.events.some(e=>e.type.startsWith('voice_')));
+ bridge.events.length=0;
+ command(runtime,{action:'send',text:'delegate long task delay=100',voiceSessionId:id});
+ await until(()=>runtime.state().tasks.length===1&&!runtime.state().active);
+ assert.equal(bridge.events.filter(e=>e.type==='voice_end').length,1,'worker completion cannot trigger another spoken turn');
+ bridge.events.length=0;
+ command(runtime,{action:'send',text:'hello bad id',voiceSessionId:'not-a-session-id'});
+ await until(()=>!runtime.state().active);
+ assert.ok(!bridge.events.some(e=>e.type.startsWith('voice_')),'reject unscoped voice output');
+});

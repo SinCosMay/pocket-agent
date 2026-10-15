@@ -2,6 +2,7 @@ package dev.pocket.agent;
 
 import android.Manifest;
 import android.app.Activity;
+import android.app.role.RoleManager;
 import android.app.AlertDialog;
 import android.content.Intent;
 import android.net.Uri;
@@ -187,6 +188,10 @@ public final class MainActivity extends Activity implements AgentService.Observe
         panel.addView(button("Accessibility settings", () -> startActivity(new Intent(Settings.ACTION_ACCESSIBILITY_SETTINGS))));
         panel.addView(button("Notification access settings", () -> startActivity(new Intent(Settings.ACTION_NOTIFICATION_LISTENER_SETTINGS))));
         panel.addView(button("Choose phone permissions", this::permissions));
+        panel.addView(text("Voice uses Deepgram streaming speech recognition and synthesis, with the existing Pi main agent. Closing the voice window stops audio only."));
+        panel.addView(button("Deepgram voice key", this::voiceKeySettings));
+        panel.addView(button("Allow microphone", () -> requestPermissions(new String[]{Manifest.permission.RECORD_AUDIO}, 103)));
+        panel.addView(button("Choose default assistant", this::chooseAssistant));
         ScrollView scroll = new ScrollView(this); scroll.addView(panel);
         AlertDialog dialog = new AlertDialog.Builder(this).setTitle("Connection & permissions").setView(scroll).setNegativeButton("Close", null).setPositiveButton("Save", null).create(); settingsDialog[0] = dialog;
         dialog.setOnShowListener(ignored -> {
@@ -205,6 +210,29 @@ public final class MainActivity extends Activity implements AgentService.Observe
                 } catch (Exception error) { toast(error instanceof IllegalArgumentException ? error.getMessage() : "Could not save connection"); }
             });
         }); dialog.show();
+    }
+    private void voiceKeySettings() {
+        EditText key = new EditText(this);
+        key.setHint(new VoiceCredentialStore(this).configured() ? "Configured · enter new key to replace" : "Deepgram API key");
+        key.setInputType(InputType.TYPE_CLASS_TEXT | InputType.TYPE_TEXT_VARIATION_PASSWORD);
+        key.setImportantForAutofill(View.IMPORTANT_FOR_AUTOFILL_NO_EXCLUDE_DESCENDANTS);
+        key.setSaveEnabled(false);
+        new AlertDialog.Builder(this).setTitle("Deepgram voice connection").setView(key)
+            .setNegativeButton("Cancel", null).setPositiveButton("Save", (dialog, which) -> {
+                try { new VoiceCredentialStore(this).save(key.getText().toString()); toast("Voice key saved securely"); }
+                catch (Exception failure) { toast("Could not save Deepgram key"); }
+                key.setText("");
+            }).show();
+    }
+    private void chooseAssistant() {
+        try {
+            RoleManager roles = getSystemService(RoleManager.class);
+            if (roles != null && roles.isRoleAvailable(RoleManager.ROLE_ASSISTANT)) {
+                startActivityForResult(roles.createRequestRoleIntent(RoleManager.ROLE_ASSISTANT), 104);
+            } else {
+                startActivity(new Intent(Settings.ACTION_MANAGE_DEFAULT_APPS_SETTINGS));
+            }
+        } catch (Exception unavailable) { toast("Open Settings → Default apps → Digital assistant app"); }
     }
     private void saveAccount(JSONObject account) throws Exception {
         if (activeWork()) throw new IllegalStateException("Stop active work before changing accounts");
