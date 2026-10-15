@@ -1,6 +1,9 @@
 import { Agent } from '@earendil-works/pi-agent-core';
 import { makeStream, modelFor } from './provider.js';
 
+/** Finite but generous budgets for multi-step phone and puzzle workflows. */
+export const MOBILE_SESSION_BUDGET={turnsPerGeneration:200,toolCallsPerGeneration:800,maxMessages:2048,maxSerializedChars:8_000_000} as const;
+
 /** The deliberately narrow Pi9 coding-AgentSession interface implemented by Pi Agent. */
 export class MobileSession {
   readonly agent: Agent;
@@ -11,12 +14,12 @@ export class MobileSession {
     this.agent=new Agent({streamFn:makeStream(config,credentials,owner),initialState:{
       model:modelFor(config,credentials),systemPrompt,tools,messages,
     },toolExecution:'sequential',sessionId:owner,
-      beforeToolCall:()=>{if(++this.calls>48)throw new Error('Mobile tool-call budget reached (48 per generation)');return undefined;},
-      finishTurn:()=>{if(++this.turns>24||this.full())throw new Error('Mobile conversation budget reached; saved context was retained');return undefined;},
+      beforeToolCall:()=>{if(++this.calls>MOBILE_SESSION_BUDGET.toolCallsPerGeneration)throw new Error(`Mobile tool-call budget reached (${MOBILE_SESSION_BUDGET.toolCallsPerGeneration} per generation); saved context was retained`);return undefined;},
+      finishTurn:()=>{if(++this.turns>MOBILE_SESSION_BUDGET.turnsPerGeneration)throw new Error(`Mobile generation turn budget reached (${MOBILE_SESSION_BUDGET.turnsPerGeneration}); saved context was retained`);if(this.full())throw new Error('Mobile saved conversation context limit reached; saved context was retained');return undefined;},
     });
   }
   get messages():any[] {return this.agent.state.messages;}
-  full():boolean {return this.messages.length>=256||JSON.stringify(this.messages,(_key,value)=>value?.type==='image'?{type:'image'}:value).length>=1000000;}
+  full():boolean {return this.messages.length>=MOBILE_SESSION_BUDGET.maxMessages||JSON.stringify(this.messages,(_key,value)=>value?.type==='image'?{type:'image'}:value).length>=MOBILE_SESSION_BUDGET.maxSerializedChars;}
   dropPriorImages():void {
     // Mutate shared message objects so the active Pi loop's shallow context copy
     // releases prior image data too; retain every text block/result and receipt.

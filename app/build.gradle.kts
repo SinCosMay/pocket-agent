@@ -7,8 +7,8 @@ android {
         applicationId = "dev.pocket.agent"
         minSdk = 31
         targetSdk = 36
-        versionCode = 4
-        versionName = "0.1.4-display-preview.1"
+        versionCode = 5
+        versionName = "0.1.5-long-tasks-preview.1"
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
     }
     buildFeatures { buildConfig = true; aidl = true }
