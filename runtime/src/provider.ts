@@ -41,7 +41,9 @@ export function modelFor(config: ProviderConfig, credentials: ProviderCredential
     baseUrl: url.toString().replace(/\/$/, ''), input: ['text', 'image'],
     reasoning: true, contextWindow: 128000, maxTokens: 4096,
     cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
-    compat: { supportsMaxOutputTokens: !relay, supportsStrictMode: false },
+    // Pi uses this flag to *emit* `strict:false`, retaining optional action fields.
+    // Omitting strict lets Responses normalize them as mandatory strict properties.
+    compat: { supportsMaxOutputTokens: !relay, supportsStrictMode: true },
   };
 }
 

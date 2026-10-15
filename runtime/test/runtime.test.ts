@@ -3,7 +3,8 @@ import assert from 'node:assert/strict';
 import {PocketRuntime,NativeBridge} from '../src/runtime.js';
 import {delay} from '../src/scripted.js';
 import {AssistantMessageEventStream} from '@earendil-works/pi-ai';
-import {toolResult} from '../src/tools.js';
+import {toolResult,MobileSubagentParams} from '../src/tools.js';
+import {SubagentParams,parseSubagentInvocation} from '../vendor/pi9/schema.js';
 
 class Bridge implements NativeBridge {
  state:any={};events:any[]=[];tools:any[]=[];credentials:any={authMode:'scripted'};
@@ -19,6 +20,22 @@ class Bridge implements NativeBridge {
 }
 async function until(fn:()=>any,timeout=4000):Promise<void>{const end=Date.now()+timeout;while(!fn()){if(Date.now()>end)throw new Error('Timed out');await delay(10);}}
 const command=(r:PocketRuntime,cmd:any)=>assert.equal(JSON.parse(r.dispatch(JSON.stringify(cmd))).ok,true);
+
+test('mobile spawn schema omits unsupported overrides while upstream actions and inherited grants stay intact',()=>{
+ const mobile:any=MobileSubagentParams,upstream:any=SubagentParams;
+ assert.deepEqual(Object.keys(mobile.properties.spawns.items.properties).sort(),['agent','label','prompt']);
+ assert.deepEqual(mobile.properties.spawns.items.required,['agent','prompt','label']);
+ assert.equal(mobile.properties.spawns.items.additionalProperties,false);
+ for(const field of ['cwd','model','skills','thinking'])assert.ok(field in upstream.properties.spawns.items.properties,'upstream schema must remain unmodified');
+ for(const field of Object.keys(upstream.properties).filter(x=>x!=='spawns'))assert.deepEqual(mobile.properties[field],upstream.properties[field]);
+ assert.ok(!('error' in parseSubagentInvocation({action:'spawn',spawns:[{agent:'phone-operator',label:'Upstream contract',prompt:'Read state',model:'configured-model',cwd:'.',skills:[],thinking:'off'}]})));
+ const runtime=new PocketRuntime(new Bridge());
+ const tool=runtime.main.agent.state.tools.find((t:any)=>t.name==='subagent')!;
+ assert.equal(tool.parameters,MobileSubagentParams);
+ assert.match(tool.description,/Tools are inherited by children/);
+ assert.ok(runtime.registry.agents.get('phone-operator')!.tools!.includes('phone_act'));
+ assert.ok(!runtime.registry.agents.get('researcher')!.tools!.includes('phone_act'));
+});
 
 test('batch vision keeps only latest bounded image and preserves image-free operation receipts',()=>{
  const first='Zmlyc3Qtc2NyZWVu',latest='bGF0ZXN0LXNjcmVlbg==';

@@ -2,6 +2,14 @@ import { Type } from 'typebox';
 import schemas from '../../app/src/main/assets/tools.json';
 import { SubagentParams, parseSubagentInvocation } from '../vendor/pi9/schema.js';
 
+// Keep upstream parsing/contracts intact; advertise only mobile-supported spawn
+// inputs. Agent selection still determines the recursively inherited tool grant.
+const mobileSpawn:any={...SubagentParams.properties.spawns.items,properties:{...SubagentParams.properties.spawns.items.properties}};
+const unsupportedSpawnOverrides=['cwd','model','skills','thinking'];
+for(const field of unsupportedSpawnOverrides)delete mobileSpawn.properties[field];
+if(mobileSpawn.required)mobileSpawn.required=mobileSpawn.required.filter((field:string)=>!unsupportedSpawnOverrides.includes(field));
+export const MobileSubagentParams=Type.Unsafe({...SubagentParams,properties:{...SubagentParams.properties,spawns:{...SubagentParams.properties.spawns,items:mobileSpawn}}});
+
 export function toolResult(data:any):any {
   let latestImage:any;
   const withoutImages=(value:any):any=>{
@@ -43,7 +51,7 @@ export function nativeTools(host:any,owner:string,grant?:readonly string[]):any[
 }
 export function subagentTool(app:any,parent?:any):any {
   const owner=()=>parent?{conversation:parent,generation:parent.requireCurrentGeneration()}:undefined;
-  return {name:'subagent',label:'Subagent',description:'Delegate asynchronously. spawn returns immediately. End your turn and remain available; host delivers completion. inspect does not collect. join collects; use only for explicit dependencies. resume requires the initiator collection receipt. Tools are inherited by children.',parameters:SubagentParams,
+  return {name:'subagent',label:'Subagent',description:'Delegate asynchronously. spawn returns immediately. End your turn and remain available; host delivers completion. inspect does not collect. join collects; use only for explicit dependencies. resume requires the initiator collection receipt. Tools are inherited by children.',parameters:MobileSubagentParams,
     execute:async(id:string,params:any,signal?:AbortSignal)=>{
       const invocation=parseSubagentInvocation(params,{maxTasks:4});
       if('error' in invocation) return toolResult({action:params.action,error:invocation.error});
