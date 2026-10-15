@@ -1,4 +1,6 @@
-# Validation record — 2026-10-15
+# Preview.1 baseline validation — 2026-10-15
+
+This historical record covers the first preview. Direct Codex account support is validated separately in [CODEX_AUTH_VALIDATION.md](CODEX_AUTH_VALIDATION.md).
 
 This is a working preview, with **ARM64 execution and native standalone account login still open**. It is not a stable release or a completed resource-optimization benchmark. [Machine-readable evidence](validation/2026-10-15.json) contains the exact artifact hashes, device assertions and samples.
 
