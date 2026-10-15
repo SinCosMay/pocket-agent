@@ -70,6 +70,10 @@ public class RuntimeDeviceTest {
         String prefix=caps.getString("operation_prefix");String nonce=Long.toString(System.nanoTime());
         JSONObject open=new JSONObject().put("package_name","dev.pocket.agent.fixture").put("operation_id",prefix+"_open"+nonce);
         try {
+            JSONObject invalidId=tools.execute("phone_open_app",new JSONObject(open.toString()).put("operation_id",prefix+"_type001"),owner);
+            assertEquals("INVALID_ARGUMENT",invalidId.optString("code"));
+            assertTrue(invalidId.toString(),invalidId.optString("message").contains("8..48"));
+            assertTrue(invalidId.toString(),invalidId.optString("message").contains("not dispatched"));
             JSONObject opened=tools.execute("phone_open_app",open,owner);assertFalse(opened.toString(),opened.optBoolean("isError"));
             JSONObject observation=fixtureObservation(tools,owner);assertEquals(observation.toString(),"dev.pocket.agent.fixture",observation.optString("package_name"));
             JSONObject type=new JSONObject().put("kind","type").put("snapshot_id",observation.getString("snapshot_id")).put("selector",new JSONObject().put("description","AGENT_INPUT")).put("text","PocketWorks").put("operation_id",prefix+"_type"+nonce);

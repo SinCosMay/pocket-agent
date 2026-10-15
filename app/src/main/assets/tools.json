@@ -1,7 +1,7 @@
 [
   {
     "name": "phone_capabilities",
-    "description": "First call: inspect permissions, accessibility, lock/power state, phone accounts and tunnel readiness. Direct Android APIs are preferred.",
+    "description": "First call: inspect permissions, accessibility, lock/power state, phone accounts, operation_prefix and nonce length bounds. Direct Android APIs are preferred.",
     "inputSchema": {
       "type": "object",
       "properties": {},
@@ -150,9 +150,10 @@
         },
         "operation_id": {
           "type": "string",
-          "minLength": 8,
-          "maxLength": 80,
-          "description": "Current operation_prefix from phone_capabilities, an underscore, then a unique nonce. Bound to this installation and retry window."
+          "minLength": 27,
+          "maxLength": 78,
+          "description": "Current phone_capabilities.operation_prefix + '_' + a unique 8..48 character nonce using only ASCII letters, digits, '_' or '-'. Include owner/generation/action/attempt or a timestamp for uniqueness. A valid suffix example is _type_0001; never reuse the example across actions. Preserve identical IDs/arguments after uncertain results.",
+          "pattern": "^[0-9]{1,12}-[0-9a-f]{16}_[A-Za-z0-9_-]{8,48}$"
         }
       },
       "required": [
@@ -198,9 +199,10 @@
         },
         "operation_id": {
           "type": "string",
-          "minLength": 8,
-          "maxLength": 80,
-          "description": "Current operation_prefix from phone_capabilities, an underscore, then a unique nonce. Bound to this installation and retry window."
+          "minLength": 27,
+          "maxLength": 78,
+          "description": "Current phone_capabilities.operation_prefix + '_' + a unique 8..48 character nonce using only ASCII letters, digits, '_' or '-'. Include owner/generation/action/attempt or a timestamp for uniqueness. A valid suffix example is _type_0001; never reuse the example across actions. Preserve identical IDs/arguments after uncertain results.",
+          "pattern": "^[0-9]{1,12}-[0-9a-f]{16}_[A-Za-z0-9_-]{8,48}$"
         }
       },
       "required": [
@@ -271,9 +273,10 @@
         },
         "operation_id": {
           "type": "string",
-          "minLength": 8,
-          "maxLength": 80,
-          "description": "Current operation_prefix from phone_capabilities, an underscore, then a unique nonce. Bound to this installation and retry window."
+          "minLength": 27,
+          "maxLength": 78,
+          "description": "Current phone_capabilities.operation_prefix + '_' + a unique 8..48 character nonce using only ASCII letters, digits, '_' or '-'. Include owner/generation/action/attempt or a timestamp for uniqueness. A valid suffix example is _type_0001; never reuse the example across actions. Preserve identical IDs/arguments after uncertain results.",
+          "pattern": "^[0-9]{1,12}-[0-9a-f]{16}_[A-Za-z0-9_-]{8,48}$"
         }
       },
       "required": [
@@ -337,9 +340,10 @@
         },
         "operation_id": {
           "type": "string",
-          "minLength": 8,
-          "maxLength": 80,
-          "description": "Current operation_prefix from phone_capabilities, an underscore, then a unique nonce. Bound to this installation and retry window."
+          "minLength": 27,
+          "maxLength": 78,
+          "description": "Current phone_capabilities.operation_prefix + '_' + a unique 8..48 character nonce using only ASCII letters, digits, '_' or '-'. Include owner/generation/action/attempt or a timestamp for uniqueness. A valid suffix example is _type_0001; never reuse the example across actions. Preserve identical IDs/arguments after uncertain results.",
+          "pattern": "^[0-9]{1,12}-[0-9a-f]{16}_[A-Za-z0-9_-]{8,48}$"
         }
       },
       "required": [
@@ -382,9 +386,10 @@
         },
         "operation_id": {
           "type": "string",
-          "minLength": 8,
-          "maxLength": 80,
-          "description": "Current operation_prefix from phone_capabilities, an underscore, then a unique nonce. Bound to this installation and retry window."
+          "minLength": 27,
+          "maxLength": 78,
+          "description": "Current phone_capabilities.operation_prefix + '_' + a unique 8..48 character nonce using only ASCII letters, digits, '_' or '-'. Include owner/generation/action/attempt or a timestamp for uniqueness. A valid suffix example is _type_0001; never reuse the example across actions. Preserve identical IDs/arguments after uncertain results.",
+          "pattern": "^[0-9]{1,12}-[0-9a-f]{16}_[A-Za-z0-9_-]{8,48}$"
         }
       },
       "required": [
@@ -419,9 +424,10 @@
         },
         "operation_id": {
           "type": "string",
-          "minLength": 8,
-          "maxLength": 80,
-          "description": "Current operation_prefix from phone_capabilities, an underscore, then a unique nonce. Bound to this installation and retry window."
+          "minLength": 27,
+          "maxLength": 78,
+          "description": "Current phone_capabilities.operation_prefix + '_' + a unique 8..48 character nonce using only ASCII letters, digits, '_' or '-'. Include owner/generation/action/attempt or a timestamp for uniqueness. A valid suffix example is _type_0001; never reuse the example across actions. Preserve identical IDs/arguments after uncertain results.",
+          "pattern": "^[0-9]{1,12}-[0-9a-f]{16}_[A-Za-z0-9_-]{8,48}$"
         }
       },
       "required": [
@@ -460,9 +466,10 @@
         },
         "operation_id": {
           "type": "string",
-          "minLength": 8,
-          "maxLength": 80,
-          "description": "Current operation_prefix from phone_capabilities, an underscore, then a unique nonce. Bound to this installation and retry window."
+          "minLength": 27,
+          "maxLength": 78,
+          "description": "Current phone_capabilities.operation_prefix + '_' + a unique 8..48 character nonce using only ASCII letters, digits, '_' or '-'. Include owner/generation/action/attempt or a timestamp for uniqueness. A valid suffix example is _type_0001; never reuse the example across actions. Preserve identical IDs/arguments after uncertain results.",
+          "pattern": "^[0-9]{1,12}-[0-9a-f]{16}_[A-Za-z0-9_-]{8,48}$"
         }
       },
       "required": [
@@ -523,9 +530,10 @@
         },
         "operation_id": {
           "type": "string",
-          "minLength": 8,
-          "maxLength": 80,
-          "description": "Current operation_prefix from phone_capabilities, an underscore, then a unique nonce. Bound to this installation and retry window."
+          "minLength": 27,
+          "maxLength": 78,
+          "description": "Current phone_capabilities.operation_prefix + '_' + a unique 8..48 character nonce using only ASCII letters, digits, '_' or '-'. Include owner/generation/action/attempt or a timestamp for uniqueness. A valid suffix example is _type_0001; never reuse the example across actions. Preserve identical IDs/arguments after uncertain results.",
+          "pattern": "^[0-9]{1,12}-[0-9a-f]{16}_[A-Za-z0-9_-]{8,48}$"
         }
       },
       "required": [
@@ -574,9 +582,10 @@
         },
         "operation_id": {
           "type": "string",
-          "minLength": 8,
-          "maxLength": 80,
-          "description": "Current operation_prefix from phone_capabilities, an underscore, then a unique nonce. Bound to this installation and retry window."
+          "minLength": 27,
+          "maxLength": 78,
+          "description": "Current phone_capabilities.operation_prefix + '_' + a unique 8..48 character nonce using only ASCII letters, digits, '_' or '-'. Include owner/generation/action/attempt or a timestamp for uniqueness. A valid suffix example is _type_0001; never reuse the example across actions. Preserve identical IDs/arguments after uncertain results.",
+          "pattern": "^[0-9]{1,12}-[0-9a-f]{16}_[A-Za-z0-9_-]{8,48}$"
         }
       },
       "required": [

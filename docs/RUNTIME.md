@@ -18,6 +18,8 @@ Upstream MIT notices remain in `runtime/vendor/pi9/LICENSE`, `runtime/PI-LICENSE
 
 A `phone_act` stale-screen rejection recorded with `dispatch_status: "not_dispatched"` occurs before any action. Reobserve, verify current preconditions, and plan a new request with a new ID; the old receipt stays immutable. Unknown outcomes remain non-retryable without outcome inspection. Screen freshness is rechecked on the Android main thread immediately before dispatch. Batches expose this classification per entry; it does not apply to already completed entries.
 
+Mutation IDs use the current `phone_capabilities.operation_prefix`, an underscore, and a unique 8..48 character nonce containing only ASCII letters, digits, underscores or hyphens. The same format is declared in each mutation argument's anchored JSON Schema pattern and enforced by the persistent native ledger. Capabilities expose nonce bounds; validation failures explain that dispatch did not occur. Historical `phone_operation` lookup does not impose current-prefix rules.
+
 `PocketAgent.dispatch(json)` returns synchronous `{ok,accepted}` or `{ok:false,error}`; model work runs asynchronously. Supported commands:
 
 - `send {text,conversationId?}`: main message, or a worker follow-up. Active worker follow-ups steer; terminal follow-ups collect for the user and request a new generation.

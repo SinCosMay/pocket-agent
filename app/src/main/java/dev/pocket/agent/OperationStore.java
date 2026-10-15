@@ -62,7 +62,7 @@ final class OperationStore extends SQLiteOpenHelper {
         }
         long current=epoch(),issued;
         java.util.regex.Matcher parsed=java.util.regex.Pattern.compile("([0-9]{1,12})-([0-9a-f]{16})_[A-Za-z0-9_-]{8,48}").matcher(id);
-        if(!parsed.matches() || !parsed.group(2).equals(meta("installation"))) return Json.failure("INVALID_ARGUMENT","Use phone_capabilities.operation_prefix + '_' + a unique nonce for operation_id");
+        if(!parsed.matches() || !parsed.group(2).equals(meta("installation"))) return Json.failure("INVALID_ARGUMENT","Invalid operation_id: use phone_capabilities.operation_prefix + '_' + a unique 8..48 character nonce containing only ASCII letters, digits, '_' or '-'. Example suffix: _type_0001 (use a distinct nonce per action/attempt). This request was not dispatched.");
         issued=Long.parseLong(parsed.group(1));
         if(issued<current-1 || issued>current) return Json.failure("OPERATION_EXPIRED","Operation ID window expired; inspect the actual outcome, never blindly repeat an old action");
         // Expired IDs cannot be dispatched again, so old records can be pruned safely.

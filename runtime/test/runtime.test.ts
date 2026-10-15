@@ -2,8 +2,8 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import {PocketRuntime,NativeBridge} from '../src/runtime.js';
 import {delay} from '../src/scripted.js';
-import {AssistantMessageEventStream} from '@earendil-works/pi-ai';
-import {toolResult,MobileSubagentParams} from '../src/tools.js';
+import {AssistantMessageEventStream,validateToolArguments} from '@earendil-works/pi-ai';
+import {toolResult,MobileSubagentParams,nativeTools} from '../src/tools.js';
 import {SubagentParams,parseSubagentInvocation} from '../vendor/pi9/schema.js';
 
 class Bridge implements NativeBridge {
@@ -13,13 +13,24 @@ class Bridge implements NativeBridge {
   if(method==='credentials.get')result=this.credentials;
   if(method==='store.load')result=this.state;
   if(method==='store.save'){this.state=structuredClone(args.state);result={saved:true};}
-  if(method==='tool'){this.tools.push(args);result={available:true,operation_prefix:'fixture',owner:args.owner};}
+  if(method==='tool'){this.tools.push(args);result={available:true,operation_prefix:'20741-0123456789abcdef',owner:args.owner};}
   return JSON.stringify({ok:true,result});
  }
  emit(json:string):void {this.events.push(JSON.parse(json));}
 }
 async function until(fn:()=>any,timeout=4000):Promise<void>{const end=Date.now()+timeout;while(!fn()){if(Date.now()>end)throw new Error('Timed out');await delay(10);}}
 const command=(r:PocketRuntime,cmd:any)=>assert.equal(JSON.parse(r.dispatch(JSON.stringify(cmd))).ok,true);
+
+test('Pi validates the full mutation ID contract before dispatch; historical receipt lookup remains separate',()=>{
+ const tools=nativeTools({call:()=>{throw new Error('Validation must not dispatch');}},'contract');
+ const open=tools.find(t=>t.name==='phone_open_app')!;
+ const validate=(id:string)=>validateToolArguments(open,{type:'toolCall',id:'contract-call',name:open.name,arguments:{package_name:'dev.pocket.agent.fixture',operation_id:id}});
+ const prefix='20741-0123456789abcdef_';
+ for(const suffix of ['type001','x'.repeat(49),'invalid.nonce','unicode_é'])assert.throws(()=>validate(prefix+suffix),/operation_id/);
+ for(const suffix of ['type0001','x'.repeat(48),'owner_gen1_type_0001'])assert.equal(validate(prefix+suffix).operation_id,prefix+suffix);
+ const lookup=tools.find(t=>t.name==='phone_operation')!;
+ assert.equal(validateToolArguments(lookup,{type:'toolCall',id:'history-call',name:lookup.name,arguments:{operation_id:'old-history-id'}}).operation_id,'old-history-id');
+});
 
 test('mobile spawn schema omits unsupported overrides while upstream actions and inherited grants stay intact',()=>{
  const mobile:any=MobileSubagentParams,upstream:any=SubagentParams;
