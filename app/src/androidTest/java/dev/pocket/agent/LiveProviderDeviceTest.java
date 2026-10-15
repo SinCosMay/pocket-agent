@@ -78,13 +78,22 @@ public class LiveProviderDeviceTest {
         assertEquals("Provider file must be directly inside this app's external files directory",allowed,provisioned.getParentFile());
         assertTrue("Provider file is missing or too large",provisioned.isFile()&&provisioned.length()<=16384);
         CredentialStore credentials=new CredentialStore(c);RuntimeHost h=null;
-        long deadline=SystemClock.elapsedRealtime()+165000;
+        long deadline=SystemClock.elapsedRealtime()+165000;String authMode="";boolean direct=false;
         try(StateStore store=new StateStore(c)) {
             try {
                 JSONObject settings;
                 try {settings=new JSONObject(new String(Files.readAllBytes(provisioned.toPath()),StandardCharsets.UTF_8));}
                 catch(org.json.JSONException invalid) {throw new AssertionError("Invalid provider configuration JSON");}
-                assertTrue("This test requires emulator relay mode",settings.optString("authMode").equals("codex"));
+                authMode=settings.optString("authMode");direct=authMode.equals("codex-account");
+                assertTrue("This test requires an explicit direct account or legacy emulator relay configuration",direct||authMode.equals("codex")||authMode.equals("codex-relay")||authMode.equals("codexRelay"));
+                assertEquals("Live validation must use Luna","gpt-6-luna",settings.optString("model"));
+                if(direct) {
+                    assertTrue("Direct account mode must not carry a provider endpoint",!settings.has("endpoint")||settings.optString("endpoint").isEmpty());
+                    assertTrue("Direct account access token is missing",settings.optString("accessToken").length()>0);
+                    assertTrue("Direct account refresh token is missing",settings.optString("refreshToken").length()>0);
+                    assertTrue("Direct account identity is missing",settings.optString("accountId").length()>0);
+                    assertTrue("Direct account access token is already expired",settings.optLong("expiresAt")>System.currentTimeMillis());
+                }
                 credentials.save(settings);
             } finally {
                 assertTrue("Could not remove transient provider configuration",!provisioned.exists()||provisioned.delete());
@@ -133,7 +142,7 @@ public class LiveProviderDeviceTest {
                 assertTrue("Worker did not execute required native tool: "+expected,toolNames.contains(expected));
             assertTrue("No native observation verified the actual fixture outcome",observedFixture(messages));
             assertTrue("Main answer arrived only after worker completion",answeredWhileActive);
-            System.out.println("LIVE_DEVICE_RESULT="+new JSONObject().put("modelInference",true).put("backgroundWorker",true).put("mainAnsweredFour",true).put("answeredWhileWorkerActive",answeredWhileActive).put("fixtureObserved","STATUS_CLICKED:LiveCodex COUNT:1").put("workerNativeToolResults",toolCount));
+            System.out.println("LIVE_DEVICE_RESULT="+new JSONObject().put("authMode",authMode).put("direct",direct).put("directAccountInference",direct).put("model","gpt-6-luna").put("modelInference",true).put("backgroundWorker",true).put("mainAnsweredFour",true).put("answeredWhileWorkerActive",answeredWhileActive).put("fixtureObserved","STATUS_CLICKED:LiveCodex COUNT:1").put("workerNativeToolResults",toolCount));
         } finally {
             // A subsequent ordinary device test must never unexpectedly spend inference.
             if(h!=null) {

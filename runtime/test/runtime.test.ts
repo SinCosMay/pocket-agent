@@ -301,3 +301,19 @@ test('fixture never retries unknown mutations or stale errors without a pre-disp
   assert.match(r.state().tasks[0].output,/Fixture failed/);
  }
 });
+
+test('account credentials stay redacted from durable state and events after provider changes',async()=>{
+ const bridge=new Bridge();
+ Object.assign(bridge.credentials,{accessToken:'synthetic-access-token',refreshToken:'synthetic-refresh-token',idToken:'synthetic-id-token',accountId:'synthetic-account-id'});
+ const r=new PocketRuntime(bridge);
+ const secrets=['synthetic-access-token','synthetic-refresh-token','synthetic-id-token','synthetic-account-id'];
+ r.reportError(new Error(secrets.join(' ')));
+ r.main.agent.state.messages.push({role:'assistant',content:[{type:'text',text:secrets.join(' ')}],timestamp:Date.now()} as any);
+ r.save();r.publish();
+ for(const secret of secrets){assert.ok(!JSON.stringify(bridge.state).includes(secret));assert.ok(!JSON.stringify(bridge.events).includes(secret));}
+ bridge.credentials={authMode:'scripted'};
+ command(r,{action:'configure'});
+ r.reportError(new Error(secrets.join(' ')));r.save();r.publish();
+ for(const secret of secrets){assert.ok(!JSON.stringify(bridge.state).includes(secret));assert.ok(!JSON.stringify(bridge.events).includes(secret));}
+ await until(()=>!r.state().active);
+});
