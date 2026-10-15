@@ -8,15 +8,20 @@ import android.util.Base64;
 import java.net.URI;
 import java.nio.charset.StandardCharsets;
 import java.security.KeyStore;
+import java.security.MessageDigest;
 import javax.crypto.Cipher;
 import javax.crypto.KeyGenerator;
 import javax.crypto.SecretKey;
 import javax.crypto.spec.GCMParameterSpec;
 import org.json.JSONObject;
 
-/** Secrets never enter Intents, state snapshots, logs, backups, or APK assets. */
+/** Allowlisted credentials encrypted with a non-exportable Android Keystore key. */
 public final class CredentialStore {
     private static final String ALIAS = "pocket-agent-provider-v1";
+    // Runtime refresh and the settings Activity use different store instances.
+    private static final Object LOCK = new Object();
+    public static final String CODEX_ACCOUNT = "codex-account";
+    public static final String CODEX_MODEL = "gpt-6-luna";
     private final Context context;
     public CredentialStore(Context context) { this.context = context.getApplicationContext(); }
     private SecretKey key() throws Exception {
@@ -27,7 +32,8 @@ public final class CredentialStore {
                 .setBlockModes(KeyProperties.BLOCK_MODE_GCM).setEncryptionPaddings(KeyProperties.ENCRYPTION_PADDING_NONE).build());
         return generator.generateKey();
     }
-    public synchronized JSONObject get() throws Exception {
+    public JSONObject get() throws Exception { synchronized (LOCK) { return read(); } }
+    private JSONObject read() throws Exception {
         String saved = context.getSharedPreferences("provider-secrets", Context.MODE_PRIVATE).getString("encrypted", null);
         if (saved == null) return new JSONObject().put("authMode", "scripted").put("endpoint", "https://api.openai.com/v1").put("model", "gpt-4.1-mini");
         JSONObject envelope = new JSONObject(saved);
@@ -35,20 +41,63 @@ public final class CredentialStore {
         cipher.init(Cipher.DECRYPT_MODE, key(), new GCMParameterSpec(128, Base64.decode(envelope.getString("iv"), Base64.NO_WRAP)));
         return new JSONObject(new String(cipher.doFinal(Base64.decode(envelope.getString("data"), Base64.NO_WRAP)), StandardCharsets.UTF_8));
     }
-    public synchronized void save(JSONObject settings) throws Exception {
-        validateEndpoint(settings.optString("endpoint"), settings.optString("authMode"));
-        JSONObject allowed = new JSONObject();
-        for (String field : new String[]{"endpoint", "model", "apiKey", "authMode"}) allowed.put(field, settings.optString(field));
+    private void write(JSONObject allowed) throws Exception {
         Cipher cipher = Cipher.getInstance("AES/GCM/NoPadding"); cipher.init(Cipher.ENCRYPT_MODE, key());
         byte[] data = cipher.doFinal(allowed.toString().getBytes(StandardCharsets.UTF_8));
         JSONObject envelope = new JSONObject().put("iv", Base64.encodeToString(cipher.getIV(), Base64.NO_WRAP)).put("data", Base64.encodeToString(data, Base64.NO_WRAP));
         if (!context.getSharedPreferences("provider-secrets", Context.MODE_PRIVATE).edit().putString("encrypted", envelope.toString()).commit())
-            throw new IllegalStateException("Could not save provider configuration");
+            throw new IllegalStateException("Could not save protected connection");
+    }
+    public void save(JSONObject settings) throws Exception {
+        synchronized (LOCK) {
+            String mode = settings.optString("authMode"); validateEndpoint(settings.optString("endpoint"), mode);
+            JSONObject allowed = new JSONObject().put("authMode", mode);
+            if (CODEX_ACCOUNT.equals(mode)) {
+                JSONObject source = settings.has("accessToken") ? settings : read();
+                if (!CODEX_ACCOUNT.equals(source.optString("authMode")) && !settings.has("accessToken")) throw new IllegalArgumentException("Sign in or import an account first");
+                JSONObject account = CodexAccountAuth.validateCredentials(source, false);
+                for (String field : new String[]{"accessToken", "refreshToken", "accountId", "expiresAt", "idToken"})
+                    if (account.has(field)) allowed.put(field, account.get(field));
+                allowed.put("model", model(settings.optString("model", CODEX_MODEL)));
+            } else {
+                for (String field : new String[]{"endpoint", "model", "apiKey"}) allowed.put(field, settings.optString(field));
+            }
+            write(allowed);
+        }
+    }
+    /** Compare-and-save prevents an older concurrent refresh from overwriting rotated tokens. */
+    public JSONObject updateCodex(JSONObject update) throws Exception {
+        synchronized (LOCK) {
+            JSONObject current = read(); String old = update.optString("oldRefreshToken");
+            if (!CODEX_ACCOUNT.equals(current.optString("authMode")) || old.isEmpty()
+                    || !MessageDigest.isEqual(old.getBytes(StandardCharsets.UTF_8), current.optString("refreshToken").getBytes(StandardCharsets.UTF_8)))
+                throw new IllegalStateException("Account changed while refreshing; reload protected credentials");
+            for (String field : new String[]{"accessToken", "refreshToken", "accountId", "expiresAt"})
+                if (!update.has(field)) throw new IllegalArgumentException("Refreshed account credentials are incomplete");
+            JSONObject account = CodexAccountAuth.validateCredentials(update, true);
+            if (!current.optString("accountId").equals(account.getString("accountId"))) throw new IllegalArgumentException("Refreshed account does not match the signed-in account");
+            JSONObject allowed = new JSONObject().put("authMode", CODEX_ACCOUNT).put("model", model(current.optString("model", CODEX_MODEL)));
+            for (String field : new String[]{"accessToken", "refreshToken", "accountId", "expiresAt", "idToken"})
+                if (account.has(field)) allowed.put(field, account.get(field));
+            write(allowed);
+            return new JSONObject(allowed.toString());
+        }
+    }
+    public void signOutCodex() throws Exception {
+        synchronized (LOCK) {
+            JSONObject current = read();
+            if (CODEX_ACCOUNT.equals(current.optString("authMode"))) write(new JSONObject().put("authMode", "scripted").put("model", "scripted").put("endpoint", "https://api.openai.com/v1"));
+        }
+    }
+    private static String model(String value) {
+        if (value == null || !value.matches("[A-Za-z0-9._:-]{1,120}")) throw new IllegalArgumentException("Enter a valid model name");
+        return value;
     }
     public static void validateEndpoint(String endpoint, String authMode) throws Exception {
-        if (authMode.equals("scripted")) return;
+        if (authMode.equals("scripted") || authMode.equals(CODEX_ACCOUNT)) return;
         if (!authMode.equals("openai") && !authMode.equals("api-key") && !authMode.equals("codex") && !authMode.equals("codexRelay") && !authMode.equals("codex-relay")) throw new IllegalArgumentException("Unknown authentication mode");
-        URI uri = new URI(endpoint);
+        URI uri;
+        try { uri = new URI(endpoint); } catch (Exception invalid) { throw new IllegalArgumentException("Enter a valid API base URL"); }
         if (uri.getUserInfo() != null || uri.getFragment() != null || uri.getQuery() != null || uri.getHost() == null)
             throw new IllegalArgumentException("Endpoint must be an API base URL without credentials, query or fragment");
         boolean relay = authMode.equals("codex") || authMode.equals("codexRelay") || authMode.equals("codex-relay");

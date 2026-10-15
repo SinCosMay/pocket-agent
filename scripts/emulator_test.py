@@ -9,7 +9,10 @@ def run(*args, timeout=240, check=True):
     return result
 
 def main():
-    p=argparse.ArgumentParser();p.add_argument('--serial',required=True);p.add_argument('--artifacts',type=Path,required=True);p.add_argument('--live',action='store_true');p.add_argument('--fresh',action='store_true');p.add_argument('--case',action='append',default=[]);a=p.parse_args()
+    p=argparse.ArgumentParser();p.add_argument('--serial',required=True);p.add_argument('--artifacts',type=Path,required=True);p.add_argument('--live',action='store_true');p.add_argument('--codex-account',action='store_true',help='Opt in to direct Luna account inference using existing local Codex auth on emulator-5580');p.add_argument('--account-auth-tests',action='store_true',help='Include synthetic native account import, storage, rotation and sign-out tests');p.add_argument('--fresh',action='store_true');p.add_argument('--case',action='append',default=[]);a=p.parse_args()
+    if a.codex_account:
+        if a.serial!='emulator-5580':raise SystemExit('Direct account provisioning is restricted to emulator-5580')
+        a.live=True
     if not a.serial.startswith('emulator-'):raise SystemExit('Explicit emulator serial required; physical phones are excluded.')
     def adb(*args,**kw):return run('adb','-s',a.serial,*args,**kw)
     if adb('shell','getprop','ro.kernel.qemu').stdout.strip()!='1':raise SystemExit('Selected serial is not an emulator')
@@ -29,6 +32,7 @@ def main():
     adb('shell','pm','grant','dev.pocket.agent','android.permission.POST_NOTIFICATIONS')
     report={'serial':a.serial,'apkSha256':hashlib.sha256(apk.read_bytes()).hexdigest(),'cases':[]}
     cases=[('RuntimeDeviceTest','nodeEmbeddingStreamingAndCancellation'),('RuntimeDeviceTest','directNativeFixtureAndMutationLedger'),('AsyncAgentDeviceTest','delegatedFixtureKeepsMainResponsiveAndCompletesOnce'),('LifecycleDeviceTest','activityRecreationKeepsWorker'),('LifecycleDeviceTest','reportFootprint'),('LifecycleDeviceTest','prepareProcessDeath'),('LifecycleDeviceTest','verifyProcessDeath')]
+    if a.account_auth_tests:cases.extend([('CodexAuthDeviceTest','importEncryptAndSignOut'),('CodexAuthDeviceTest','rotationCompareAndSaveRejectsStaleAndSignedOut')])
     if a.live:cases.append(('LiveProviderDeviceTest','liveCodexDelegationAndFixture'))
     if a.case:cases=[case for case in cases if '#'.join(case) in a.case]
     if not cases:raise SystemExit('No matching device test case')
@@ -38,10 +42,21 @@ def main():
         if method=='verifyProcessDeath':adb('shell','am','force-stop','dev.pocket.agent')
         args=['shell','am','instrument','-w','-r','-e','class',f'dev.pocket.agent.{cls}#{method}']
         if cls=='LiveProviderDeviceTest':
-            run('python3',str(Path(__file__).with_name('provision_emulator.py')),'--serial',a.serial)
+            provision='provision_codex_account.py' if a.codex_account else 'provision_emulator.py'
+            run('python3',str(Path(__file__).with_name(provision)),'--serial',a.serial)
             args+=['-e','providerConfigPath','/sdcard/Android/data/dev.pocket.agent/files/provider-test.json']
         adb('logcat','-c')
-        result=adb(*args,'dev.pocket.agent.test/androidx.test.runner.AndroidJUnitRunner',timeout=240)
+        result=None
+        try:result=adb(*args,'dev.pocket.agent.test/androidx.test.runner.AndroidJUnitRunner',timeout=240)
+        finally:
+            if cls=='LiveProviderDeviceTest':
+                adb('shell','rm','-f','/sdcard/Android/data/dev.pocket.agent/files/provider-test.json',check=False)
+                if a.codex_account and (result is None or 'OK (' not in result.stdout or 'FAILURES!!!' in result.stdout):
+                    adb('shell','am','force-stop','dev.pocket.agent',check=False)
+                    try:
+                        cleanup=adb('shell','am','instrument','-w','-r','-e','class','dev.pocket.agent.CodexAuthDeviceTest#clearProvisionedAccount','dev.pocket.agent.test/androidx.test.runner.AndroidJUnitRunner',check=False,timeout=30)
+                        if 'OK (' not in cleanup.stdout:print('Account cleanup could not be verified; app remains stopped. Sign out in app settings before reuse.',flush=True)
+                    except Exception:print('Account cleanup could not run; app remains stopped. Sign out in app settings before reuse.',flush=True)
         evidence=adb('logcat','-d','-s','System.out:I','*:S').stdout
         (a.artifacts/f'{cls}-{method}-evidence.txt').write_text(evidence)
         log=a.artifacts/f'{cls}-{method}.txt';log.write_text(result.stdout+result.stderr)

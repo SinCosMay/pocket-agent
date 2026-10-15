@@ -4,6 +4,13 @@ import android.Manifest;
 import android.app.Activity;
 import android.app.AlertDialog;
 import android.content.Intent;
+import android.net.Uri;
+import android.view.WindowManager;
+import android.widget.AdapterView;
+import java.io.InputStream;
+import java.util.concurrent.ExecutorService;
+import java.util.concurrent.Executors;
+import java.util.concurrent.Future;
 import android.content.pm.PackageManager;
 import android.graphics.Typeface;
 import android.os.Build;
@@ -32,6 +39,14 @@ public final class MainActivity extends Activity implements AgentService.Observe
     private JSONObject state = new JSONObject();
     private String viewedWorker;
     private StateStore store;
+    private static final int IMPORT_CODEX = 90;
+    private final ExecutorService accountFiles = Executors.newSingleThreadExecutor();
+    private CodexAccountAuth accountFlow;
+    private AlertDialog accountDialog;
+    private long accountGeneration;
+    private long pendingPickerGeneration = -1;
+    private int pendingPickerRequest = -1;
+    private Future<?> pendingImport;
     @Override public void onCreate(Bundle saved) {
         super.onCreate(saved); store = new StateStore(this);
         LinearLayout root = column(); root.setPadding(dp(14), dp(12), dp(14), dp(12));
@@ -61,7 +76,10 @@ public final class MainActivity extends Activity implements AgentService.Observe
     }
     @Override protected void onStart() { super.onStart(); AgentService.observe(this); state = store.load(); render(); }
     @Override protected void onStop() { AgentService.unobserve(this); super.onStop(); }
-    @Override protected void onDestroy() { store.close(); super.onDestroy(); }
+    @Override protected void onDestroy() {
+        invalidateAccountOperations();
+        accountFiles.shutdownNow(); store.close(); super.onDestroy();
+    }
     @Override public void onAgentEvent(JSONObject event) {
         String type = event.optString("type");
         if (type.equals("state")) { state = event.optJSONObject("state"); if (state == null) state = new JSONObject(); render(); }
@@ -111,31 +129,155 @@ public final class MainActivity extends Activity implements AgentService.Observe
         Intent service = new Intent(this, AgentService.class).setAction(AgentService.ACTION_COMMAND).putExtra("command", command.toString());
         startForegroundService(service);
     }
+    private boolean activeWork() { return state.optBoolean("busy") || state.optBoolean("active"); }
     private void settings() {
         CredentialStore credentials = new CredentialStore(this); final JSONObject saved;
         try { saved = credentials.get(); } catch (Exception e) { toast("Unable to read protected credentials"); return; }
         LinearLayout panel = column(); panel.setPadding(dp(20), dp(4), dp(20), dp(8));
         panel.addView(text("Provider")); Spinner mode = new Spinner(this);
-        String[] names = {"Scripted model (local validation)", "API key (HTTPS)", "Codex emulator relay (development)"};
-        String[] modes = {"scripted", "openai", "codex"};
+        String[] names = {"Scripted model (local validation)", "API key (HTTPS)", "Codex emulator relay (development)", "Codex account (ChatGPT)"};
+        String[] modes = {"scripted", "openai", "codex", CredentialStore.CODEX_ACCOUNT};
         mode.setAdapter(new ArrayAdapter<>(this, android.R.layout.simple_spinner_dropdown_item, names));
-        String auth = saved.optString("authMode"); mode.setSelection(auth.equals("scripted") ? 0 : auth.equals("openai") || auth.equals("api-key") ? 1 : 2); panel.addView(mode);
-        EditText endpoint = field(panel, "API endpoint", saved.optString("endpoint", "https://api.openai.com/v1")); endpoint.setInputType(InputType.TYPE_CLASS_TEXT | InputType.TYPE_TEXT_VARIATION_URI);
-        EditText model = field(panel, "Model", saved.optString("model", "gpt-4.1-mini"));
-        EditText secret = field(panel, "API key / relay token (blank keeps saved value)", ""); secret.setInputType(InputType.TYPE_CLASS_TEXT | InputType.TYPE_TEXT_VARIATION_PASSWORD);
-        panel.addView(text("Codex relay uses http://10.0.2.2:port/v1 on an emulator. Account login on a standalone phone remains unavailable. Credentials stay in Android Keystore encrypted storage."));
+        String auth = saved.optString("authMode");
+        int selected = auth.equals("scripted") ? 0 : auth.equals("openai") || auth.equals("api-key") ? 1 : auth.equals(CredentialStore.CODEX_ACCOUNT) ? 3 : 2;
+        mode.setSelection(selected); panel.addView(mode);
+        LinearLayout endpointPanel = column(); panel.addView(endpointPanel);
+        EditText endpoint = field(endpointPanel, "API endpoint", saved.optString("endpoint", "https://api.openai.com/v1")); endpoint.setInputType(InputType.TYPE_CLASS_TEXT | InputType.TYPE_TEXT_VARIATION_URI);
+        EditText model = field(panel, "Model", saved.optString("model", selected == 3 ? CredentialStore.CODEX_MODEL : "gpt-4.1-mini"));
+        LinearLayout secretPanel = column(); panel.addView(secretPanel);
+        EditText secret = field(secretPanel, "API key / relay token (blank keeps saved value)", ""); secret.setInputType(InputType.TYPE_CLASS_TEXT | InputType.TYPE_TEXT_VARIATION_PASSWORD);
+        secret.setImportantForAutofill(View.IMPORTANT_FOR_AUTOFILL_NO_EXCLUDE_DESCENDANTS); secret.setSaveEnabled(false);
+        LinearLayout accountPanel = column(); panel.addView(accountPanel);
+        String accountStatus = "No account connected";
+        if (auth.equals(CredentialStore.CODEX_ACCOUNT) && !saved.optString("accountId").isEmpty()) {
+            accountStatus = saved.optLong("expiresAt") <= System.currentTimeMillis() ? "Account connected · access token needs refresh" : "Account connected · access token valid";
+        }
+        accountPanel.addView(text(accountStatus));
+        accountPanel.addView(text("Sign in using a device code, or select your Codex auth.json. Account tokens stay encrypted on this phone. Imported refresh tokens may share rotation with the original Codex installation."));
+        final AlertDialog[] settingsDialog = new AlertDialog[1];
+        accountPanel.addView(button("Sign in", () -> {
+            if (activeWork()) { toast("Stop active work before changing accounts"); return; }
+            settingsDialog[0].dismiss(); signInAccount();
+        }));
+        accountPanel.addView(button("Import Codex auth.json", () -> {
+            if (activeWork()) { toast("Stop active work before changing accounts"); return; }
+            settingsDialog[0].dismiss();
+            long generation = invalidateAccountOperations();
+            pendingPickerGeneration = generation;
+            pendingPickerRequest = IMPORT_CODEX + (int) (generation % 60000);
+            Intent pick = new Intent(Intent.ACTION_OPEN_DOCUMENT).addCategory(Intent.CATEGORY_OPENABLE).setType("*/*")
+                    .putExtra(Intent.EXTRA_MIME_TYPES, new String[]{"application/json", "text/plain", "application/octet-stream"});
+            try { startActivityForResult(pick, pendingPickerRequest); } catch (Exception unavailable) { invalidateAccountOperations(); toast("No document picker is available"); }
+        }));
+        accountPanel.addView(button("Sign out", () -> {
+            if (activeWork()) { toast("Stop active work before signing out"); return; }
+            try { credentials.signOutCodex(); invalidateAccountOperations(); if (AgentService.isRunning()) command(json("action", "configure")); settingsDialog[0].dismiss(); toast("Account signed out on this phone"); }
+            catch (Exception error) { toast("Unable to clear the protected account"); }
+        }));
+        TextView connectionHelp = text("Codex relay uses http://10.0.2.2:port/v1 on an emulator. Account mode connects directly and needs no API key or endpoint."); panel.addView(connectionHelp);
+        mode.setOnItemSelectedListener(new AdapterView.OnItemSelectedListener() {
+            @Override public void onItemSelected(AdapterView<?> parent, View view, int position, long id) {
+                boolean account = position == 3;
+                endpointPanel.setVisibility(account ? View.GONE : View.VISIBLE); secretPanel.setVisibility(account ? View.GONE : View.VISIBLE);
+                accountPanel.setVisibility(account ? View.VISIBLE : View.GONE);
+                if (account && !auth.equals(CredentialStore.CODEX_ACCOUNT)) model.setText(CredentialStore.CODEX_MODEL);
+            }
+            @Override public void onNothingSelected(AdapterView<?> parent) { }
+        });
         panel.addView(button("Accessibility settings", () -> startActivity(new Intent(Settings.ACTION_ACCESSIBILITY_SETTINGS))));
         panel.addView(button("Notification access settings", () -> startActivity(new Intent(Settings.ACTION_NOTIFICATION_LISTENER_SETTINGS))));
         panel.addView(button("Choose phone permissions", this::permissions));
         ScrollView scroll = new ScrollView(this); scroll.addView(panel);
-        AlertDialog dialog = new AlertDialog.Builder(this).setTitle("Connection & permissions").setView(scroll).setNegativeButton("Close", null).setPositiveButton("Save", null).create();
-        dialog.setOnShowListener(ignored -> dialog.getButton(AlertDialog.BUTTON_POSITIVE).setOnClickListener(view -> {
-            try {
-                if(state.optBoolean("busy") || state.optBoolean("active")) {toast("Stop active work before changing connections");return;}
-                JSONObject config = json("authMode", modes[mode.getSelectedItemPosition()], "endpoint", endpoint.getText().toString().trim(), "model", model.getText().toString().trim(), "apiKey", secret.getText().length() == 0 ? saved.optString("apiKey") : secret.getText().toString().trim());
-                credentials.save(config); if (AgentService.isRunning()) command(json("action", "configure")); dialog.dismiss(); toast("Connection saved");
-            } catch (Exception error) { toast(error instanceof IllegalArgumentException ? error.getMessage() : "Could not save connection"); }
-        })); dialog.show();
+        AlertDialog dialog = new AlertDialog.Builder(this).setTitle("Connection & permissions").setView(scroll).setNegativeButton("Close", null).setPositiveButton("Save", null).create(); settingsDialog[0] = dialog;
+        dialog.setOnShowListener(ignored -> {
+            dialog.getWindow().addFlags(WindowManager.LayoutParams.FLAG_SECURE);
+            dialog.getButton(AlertDialog.BUTTON_POSITIVE).setOnClickListener(view -> {
+                try {
+                    if (activeWork()) { toast("Stop active work before changing connections"); return; }
+                    String selectedMode = modes[mode.getSelectedItemPosition()];
+                    JSONObject config = json("authMode", selectedMode, "model", model.getText().toString().trim());
+                    if (!selectedMode.equals(CredentialStore.CODEX_ACCOUNT)) {
+                        config.put("endpoint", endpoint.getText().toString().trim());
+                        // Never substitute an account token into the API-key field.
+                        config.put("apiKey", secret.getText().length() == 0 ? saved.optString("apiKey") : secret.getText().toString().trim());
+                    }
+                    credentials.save(config); invalidateAccountOperations(); if (AgentService.isRunning()) command(json("action", "configure")); dialog.dismiss(); toast("Connection saved");
+                } catch (Exception error) { toast(error instanceof IllegalArgumentException ? error.getMessage() : "Could not save connection"); }
+            });
+        }); dialog.show();
+    }
+    private void saveAccount(JSONObject account) throws Exception {
+        if (activeWork()) throw new IllegalStateException("Stop active work before changing accounts");
+        JSONObject config = new JSONObject(account.toString()).put("authMode", CredentialStore.CODEX_ACCOUNT).put("model", CredentialStore.CODEX_MODEL);
+        new CredentialStore(this).save(config);
+        if (AgentService.isRunning()) command(json("action", "configure"));
+    }
+    /** A newer account choice/sign-out always wins over an older file read or login callback. */
+    private long invalidateAccountOperations() {
+        long generation = ++accountGeneration;
+        pendingPickerGeneration = -1; pendingPickerRequest = -1;
+        Future<?> importing = pendingImport; pendingImport = null; if (importing != null) importing.cancel(true);
+        CodexAccountAuth flow = accountFlow; accountFlow = null; if (flow != null) flow.close();
+        AlertDialog dialog = accountDialog; accountDialog = null; if (dialog != null) dialog.dismiss();
+        return generation;
+    }
+    @Override protected void onActivityResult(int request, int result, Intent data) {
+        super.onActivityResult(request, result, data);
+        if (request != pendingPickerRequest) return;
+        long generation = pendingPickerGeneration; pendingPickerGeneration = -1; pendingPickerRequest = -1;
+        if (generation != accountGeneration || result != RESULT_OK || data == null || data.getData() == null || isDestroyed()) return;
+        Uri document = data.getData();
+        if (!"content".equals(document.getScheme())) { toast("Select an account file from the document picker"); return; }
+        toast("Reading selected account file");
+        pendingImport = accountFiles.submit(() -> {
+            JSONObject account;
+            try (InputStream input = getContentResolver().openInputStream(document)) { account = CodexAccountAuth.readImport(input); }
+            catch (Exception invalid) {
+                runOnUiThread(() -> {
+                    if (!isDestroyed() && generation == accountGeneration) {
+                        pendingImport = null; toast("Unable to import account. Select a valid Codex auth.json with account and refresh tokens.");
+                    }
+                }); return;
+            }
+            runOnUiThread(() -> {
+                if (isDestroyed() || isFinishing() || generation != accountGeneration) return;
+                pendingImport = null;
+                try { saveAccount(account); invalidateAccountOperations(); toast(account.optLong("expiresAt") <= System.currentTimeMillis() ? "Account imported · refresh required on next request" : "Account imported"); settings(); }
+                catch (Exception error) { toast(activeWork() ? "Stop active work, then import the account again" : "Unable to save the protected account"); }
+            });
+        });
+    }
+    private void signInAccount() {
+        final long generation = invalidateAccountOperations();
+        CodexAccountAuth flow = new CodexAccountAuth(); accountFlow = flow;
+        LinearLayout panel = column(); panel.setPadding(dp(20), dp(8), dp(20), dp(8));
+        TextView instructions = text("Requesting a device code…"); panel.addView(instructions);
+        TextView code = text(""); code.setTextSize(26); code.setTypeface(null, Typeface.BOLD); code.setTextIsSelectable(true); panel.addView(code);
+        Button browser = button("Open OpenAI sign-in", () -> {
+            try { startActivity(new Intent(Intent.ACTION_VIEW, Uri.parse(CodexAccountAuth.VERIFICATION_URI))); }
+            catch (Exception unavailable) { toast("Open auth.openai.com/codex/device in a browser and enter the displayed code"); }
+        }); browser.setEnabled(false); panel.addView(browser);
+        AlertDialog dialog = new AlertDialog.Builder(this).setTitle("Sign in to Codex").setView(panel).setNegativeButton("Cancel", null).create(); accountDialog = dialog;
+        dialog.setOnDismissListener(ignored -> {
+            if (generation == accountGeneration) ++accountGeneration;
+            flow.close(); if (accountFlow == flow) accountFlow = null; if (accountDialog == dialog) accountDialog = null;
+        });
+        dialog.show(); dialog.getWindow().addFlags(WindowManager.LayoutParams.FLAG_SECURE);
+        flow.signIn(new CodexAccountAuth.Listener() {
+            @Override public void onDeviceCode(String userCode) {
+                if (isDestroyed() || generation != accountGeneration || !dialog.isShowing()) return;
+                instructions.setText("Open the sign-in page and enter this code. Do not share it. Waiting for authorization (up to 15 minutes)…"); code.setText(userCode); browser.setEnabled(true);
+            }
+            @Override public void onSuccess(JSONObject account) {
+                if (isDestroyed() || generation != accountGeneration || !dialog.isShowing()) return;
+                try { saveAccount(account); dialog.dismiss(); toast("Codex account connected"); settings(); }
+                catch (Exception error) { instructions.setText(activeWork() ? "Stop active work, then start sign-in again. The previous connection was preserved." : "Unable to save the protected account. The previous connection was preserved."); code.setText(""); browser.setEnabled(false); flow.close(); }
+            }
+            @Override public void onFailure(String safeMessage) {
+                if (isDestroyed() || generation != accountGeneration || !dialog.isShowing()) return;
+                instructions.setText(safeMessage + " The previous connection was preserved."); code.setText(""); browser.setEnabled(false); flow.close();
+            }
+        });
     }
     private void permissions() {
         String[] labels = {"Contacts", "Phone calls and phone status", "Send SMS", "Read and edit calendar", "Runtime notifications"};

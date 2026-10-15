@@ -70,7 +70,16 @@ jobs:
           assert validation['source']==(built/'source-commit.txt').read_text().strip()
           assert validation['instrumentation']['apkSha256']==hashes['Pocket-Agent-x86_64.apk']
           cases=validation['instrumentation']['cases']
-          assert len(cases)==8 and all(case['passed'] for case in cases), 'Local device suite did not pass'
+          required={('RuntimeDeviceTest','nodeEmbeddingStreamingAndCancellation'),('RuntimeDeviceTest','directNativeFixtureAndMutationLedger'),('AsyncAgentDeviceTest','delegatedFixtureKeepsMainResponsiveAndCompletesOnce'),('LifecycleDeviceTest','activityRecreationKeepsWorker'),('LifecycleDeviceTest','reportFootprint'),('LifecycleDeviceTest','prepareProcessDeath'),('LifecycleDeviceTest','verifyProcessDeath'),('LiveProviderDeviceTest','liveCodexDelegationAndFixture')}
+          if validation.get('suite')=='codex-account-focused':
+              assert validation.get('authMode')=='codex-account'
+              required={('CodexAuthDeviceTest','importEncryptAndSignOut'),('CodexAuthDeviceTest','rotationCompareAndSaveRejectsStaleAndSignedOut'),('LiveProviderDeviceTest','liveCodexDelegationAndFixture')}
+          observed={(case['class'],case['method']) for case in cases}
+          assert required <= observed and all(case['passed'] for case in cases), 'Local device suite did not pass'
+          if validation.get('authMode')=='codex-account':
+              assert validation['evidence']['LIVE_DEVICE_RESULT']['directAccountInference'] is True
+              assert validation['evidence']['LIVE_DEVICE_RESULT']['model']=='gpt-6-luna'
+              assert validation['relayStopped'] is True, 'Direct account evidence requires relay independence'
           for name in apks:assert validation['artifactSha256'][name]==hashes[name], name+' evidence mismatch'
           build_url=f"https://github.com/{os.environ['GITHUB_REPOSITORY']}/actions/runs/{os.environ['SOURCE_RUN_ID']}"
           assert validation['build']==build_url and (published/'build.txt').read_text().strip()==build_url

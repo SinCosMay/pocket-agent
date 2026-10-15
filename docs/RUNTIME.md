@@ -14,7 +14,7 @@ Upstream MIT notices remain in `runtime/vendor/pi9/LICENSE`, `runtime/PI-LICENSE
 
 ## Protocol and lifecycle
 
-`PocketNative.call(method, argsJson)` synchronously returns JSON `{ok,result,error}`. Methods are `tool` with `{name,args,owner}`, `store.load`, `store.save` with `{state}`, and `credentials.get`. `PocketNative.emit(eventJson)` delivers ready, state, activity, log, worker and error events. Native tools return direct data with structured `{isError,code,message,retry_safe}` failures. Observation images become Pi image content; saved screenshot histories are replaced by a text marker requesting a fresh observation.
+`PocketNative.call(method, argsJson)` synchronously returns JSON `{ok,result,error}`. Methods are `tool` with `{name,args,owner}`, `store.load`, `store.save` with `{state}`, and `credentials.get`. Trusted provider code can call `credentials.updateCodex` for encrypted compare-and-swap token rotation; this is never a model tool. `PocketNative.emit(eventJson)` delivers ready, state, activity, log, worker and error events. Native tools return direct data with structured `{isError,code,message,retry_safe}` failures. Observation images become Pi image content; saved screenshot histories are replaced by a text marker requesting a fresh observation.
 
 A `phone_act` stale-screen rejection recorded with `dispatch_status: "not_dispatched"` occurs before any action. Reobserve, verify current preconditions, and plan a new request with a new ID; the old receipt stays immutable. Unknown outcomes remain non-retryable without outcome inspection. Screen freshness is rechecked on the Android main thread immediately before dispatch. Batches expose this classification per entry; it does not apply to already completed entries.
 
@@ -28,7 +28,7 @@ Mutation IDs use the current `phone_capabilities.operation_prefix`, an underscor
 - `stop_all`: stop main and all workers, pause main completion inference until the next main user message.
 - `inspect_worker {conversationId}`: emit saved worker transcript/snapshot and record the user's terminal collection receipt. Inspection by the model does not collect.
 - `steer_worker {conversationId,text}`: queue user steering and expose upstream steer receipts.
-- `configure {config?}`: reload platform credentials and optional public `{mode,endpoint,model}`. Reject while work is active. Modes are scripted, openai and codex; API-key/codex-relay aliases are accepted from platform settings.
+- `configure {config?}`: reload platform credentials and optional public `{mode,endpoint,model}`. Reject while work is active. Modes are scripted, openai, codex-account and legacy codex; API-key/codex-relay aliases are accepted from platform settings.
 - `state`: republish current view.
 
 State view has `messages:[{id,role,text,timestamp}]`, `tasks:[{conversationId,label,status,generation,...Pi9Snapshot}]`, `workerMessages`, `busy` for main, `active` for any workers/queued delivery/coalescing timer, public provider config, `mainInterrupted` and `mainTurns`. `activity.active` tells the Android host when its Node event-loop pump has work. No repeating model-status polling occurs; the only runtime progress timer coalesces updates for 120 ms. Pi9's cancellation settlement timeout remains intact.

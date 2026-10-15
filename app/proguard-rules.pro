@@ -12,3 +12,5 @@
 -keep class dev.pocket.agent.RuntimeHost$Bridge { *; }
 -keep class dev.pocket.agent.MainActivity { *; }
 -keep class dev.pocket.agent.AgentAccessibility { *; }
+
+-keep class dev.pocket.agent.CodexAccountAuth { *; }

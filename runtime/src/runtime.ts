@@ -5,6 +5,7 @@ import { MobileSession } from './session.js';
 import { nativeTools,subagentTool } from './tools.js';
 import { messageText } from './scripted.js';
 import { modelFor,makeStream } from './provider.js';
+import { registerCodexCredentialUpdater,redactProviderSecrets,hasPendingCodexRefresh } from './codex-auth.js';
 
 const MAIN_PROMPT=`You are the user's persistent phone assistant. Delegate substantial multi-step phone navigation, screenshots and computer use promptly to phone-operator using subagent spawn. Give a concise assignment, relevant facts, outcome and verification criteria. End your turn after async dispatch, remain available and let the host deliver completion. Do not poll workers or block main with join on unfinished work. You may do a genuinely short lookup directly. Never claim requested/dispatched actions prove outcomes. Read phone_capabilities before mutation. Use its operation_prefix plus an underscore and a unique 8..48 character nonce (ASCII letters, digits, underscore or hyphen) for each mutation. Include owner/generation/action/attempt or a timestamp for uniqueness; a valid suffix example is _type_0001, never reuse the example across actions; inspect phone_operation after uncertain outcomes and reuse the same ID/arguments. Prefer direct APIs, then app actions, accessibility, screenshot fallback. Release screen after work. Main Stop does not stop workers.`;
 const WORKER_PROMPT=`You are a bounded phone operator worker. Complete the assignment using the granted direct native tools, verify actual outcome, report evidence and uncertainties. Read phone_capabilities first. Never invent unavailable permissions or task success. Prefer APIs, then app actions, accessibility and image/gesture fallback. Use fresh observations and honor screen leases. Mutations require operation_prefix plus underscore and a unique 8..48 character nonce containing only ASCII letters, digits, underscore or hyphen. Include owner/generation/action/attempt or a timestamp for uniqueness; a valid suffix example is _type_0001, never reuse the example across actions; preserve operation IDs across uncertain retries and inspect receipts before repeating. A phone_act STALE_OBSERVATION with dispatch_status=not_dispatched permits reobserving and replanning with a new operation ID; do not reuse the recorded ID with changed arguments. RESULT_UNKNOWN never permits blind replay. Recursive delegation is available with a shared concurrency cap. Join child dependencies, and return concise verified results. If interrupted after process death inspect app state/receipts before any side-effect replay.`;
@@ -34,7 +35,9 @@ export class PocketRuntime {
   private mainPaused=false;
   private totalStarts=0;
   private deliveryTransaction=false;
-  private sanitize=(text:string)=>text.replaceAll(this.credentials.apiKey||'\0','[redacted]').slice(0,2000);
+  private readonly credentialHistory=new Set<any>();
+  private redact=(text:string)=>{for(const credentials of this.credentialHistory)text=redactProviderSecrets(text,credentials);return text;};
+  private sanitize=(text:string)=>this.redact(text).slice(0,2000);
   readonly reportError=(e:any)=>{this.lastError=this.sanitize(String(e?.message??e));this.emit({type:'error',error:this.lastError});};
   constructor(readonly native:NativeBridge,limits={maxExecuting:2,maxConversations:12}) {
     const phoneTools=nativeTools(this,'placeholder').map(x=>x.name);
@@ -48,6 +51,7 @@ export class PocketRuntime {
     if(this.credentials.authMode) this.config.mode=normalizeMode(this.credentials.authMode);
     if(this.credentials.endpoint) this.config.endpoint=this.credentials.endpoint;
     if(this.credentials.model) this.config.model=this.credentials.model;
+    if(this.config.mode==='codex-account')delete this.config.endpoint;
     this.context={cwd:'.',model:modelFor(this.config,this.credentials),modelRegistry:{}};
     this.inbox=saved.inbox??[];this.delivered=new Set(saved.delivered??[]);this.mainTurns=saved.mainTurns??0;
     this.mainInterrupted=Boolean(saved.busy);
@@ -83,13 +87,15 @@ export class PocketRuntime {
   }
   call(method:string,args:any):any {
     const serialized=JSON.stringify(args);
-    const result=JSON.parse(this.native.call(method,method==='store.save'?serialized.replaceAll(this.credentials.apiKey||'\0','[redacted]'):serialized));
+    const result=JSON.parse(this.native.call(method,method==='store.save'?this.redact(serialized):serialized));
     if(!result.ok)throw new Error(result.error?.message??result.error??`${method} failed`);
     return result.result;
   }
-  emit(event:any):void {this.native.emit(JSON.stringify(event).replaceAll(this.credentials.apiKey||'\0','[redacted]'));}
+  emit(event:any):void {this.native.emit(this.redact(JSON.stringify(event)));}
   private reloadCredentials():void {
     this.credentials=this.call('credentials.get',{})??{};
+    this.credentialHistory.add(this.credentials);
+    registerCodexCredentialUpdater(this.credentials,args=>this.call('credentials.updateCodex',args),()=>this.coalesce());
     this.config={mode:normalizeMode(this.credentials.authMode??'scripted'),endpoint:this.credentials.endpoint,model:this.credentials.model};
   }
   private configureSessionTools(session:MobileSession,parent?:any):void {
@@ -252,7 +258,7 @@ export class PocketRuntime {
   }
   state():any {
     const tasks=this.runtime.listConversations().map(c=>{const g=c.generations.at(-1)!;return {...c,generation:g.generation,status:g.status.kind==='done'?({error:'failed',aborted:'cancelled',skipped:'cancelled'} as any)[g.status.outcome]??g.status.outcome:g.status.kind,output:g.status.kind==='done'?g.status.output:undefined};});
-    return {messages:textMessages(this.main.messages,this.sanitize),tasks,busy:this.busy,lastError:this.lastError,active:this.busy||tasks.some(t=>t.currentGeneration||t.isStopping)||(!this.mainPaused&&this.inbox.length>0)||Boolean(this.pendingSave),mainPaused:this.mainPaused,mainInterrupted:this.mainInterrupted,provider:{...this.config},mainTurns:this.mainTurns,
+    return {messages:textMessages(this.main.messages,this.sanitize),tasks,busy:this.busy,lastError:this.lastError,active:hasPendingCodexRefresh(this.credentials)||this.busy||tasks.some(t=>t.currentGeneration||t.isStopping)||(!this.mainPaused&&this.inbox.length>0)||Boolean(this.pendingSave),mainPaused:this.mainPaused,mainInterrupted:this.mainInterrupted,provider:{...this.config},mainTurns:this.mainTurns,
       workerMessages:Object.fromEntries([...this.sessions].map(([id,s])=>[id,textMessages(s.messages,this.sanitize)]))};
   }
   publish():void {if(!this.restoring){const state=this.state();this.emit({type:'state',state});this.emit({type:'activity',active:state.active});}}

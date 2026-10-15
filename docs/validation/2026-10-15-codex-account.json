@@ -1,0 +1,114 @@
+{
+  "date": "2026-10-15",
+  "source": "03c77648c970ecb5cdf7615e9daca51d19c9c9a9",
+  "build": "https://github.com/ru-aish/pocket-agent/actions/runs/38750427541",
+  "version": "0.1.1",
+  "authMode": "codex-account",
+  "suite": "codex-account-focused",
+  "harnessSource": "2a61ccd",
+  "model": "gpt-6-luna",
+  "platform": "Fedora local API35 x86_64 emulator-5580",
+  "relayStopped": true,
+  "hostAuthUnchanged": true,
+  "instrumentation": {
+    "serial": "emulator-5580",
+    "apkSha256": "685ca31b9f7eb9b4f7412eae0ac6c462cd1c3a6ead4510dc705ac4f2e1512539",
+    "cases": [
+      {
+        "class": "CodexAuthDeviceTest",
+        "method": "importEncryptAndSignOut",
+        "passed": true,
+        "log": "CodexAuthDeviceTest-importEncryptAndSignOut.txt"
+      },
+      {
+        "class": "CodexAuthDeviceTest",
+        "method": "rotationCompareAndSaveRejectsStaleAndSignedOut",
+        "passed": true,
+        "log": "CodexAuthDeviceTest-rotationCompareAndSaveRejectsStaleAndSignedOut.txt"
+      },
+      {
+        "class": "LiveProviderDeviceTest",
+        "method": "liveCodexDelegationAndFixture",
+        "passed": true,
+        "log": "LiveProviderDeviceTest-liveCodexDelegationAndFixture.txt"
+      }
+    ]
+  },
+  "artifactSha256": {
+    "Pocket-Agent-arm64.apk": "e24562f6ae9e3db569644ba755350751884b0aab19a5fd87dcce9a7e525a3aac",
+    "Pocket-Agent-x86_64.apk": "685ca31b9f7eb9b4f7412eae0ac6c462cd1c3a6ead4510dc705ac4f2e1512539",
+    "Pocket-Agent-tests.apk": "b25205b83b38203111cf9f886daab2e908214e0afbd3274eede0b5aab21ffd81",
+    "Pocket-Agent-fixture.apk": "de01a06ccc0720bc6f3f32d6e6502948ab30b253c23eebda2e36c6ce3eb17497"
+  },
+  "evidence": {
+    "LIVE_DEVICE_RESULT": {
+      "authMode": "codex-account",
+      "direct": true,
+      "directAccountInference": true,
+      "model": "gpt-6-luna",
+      "modelInference": true,
+      "backgroundWorker": true,
+      "mainAnsweredFour": true,
+      "answeredWhileWorkerActive": true,
+      "fixtureObserved": "STATUS_CLICKED:LiveCodex COUNT:1",
+      "workerNativeToolResults": 12
+    },
+    "CODEX_AUTH_RESULTS": [
+      {
+        "case": "importEncryptAndSignOut",
+        "synthetic": true,
+        "imported": true,
+        "encryptedAtRest": true,
+        "signedOut": true
+      },
+      {
+        "case": "rotationCompareAndSaveRejectsStaleAndSignedOut",
+        "synthetic": true,
+        "rotationSaved": true,
+        "staleRejected": true,
+        "signedOutRefreshRejected": true
+      }
+    ]
+  },
+  "payload": [
+    {
+      "apk": "Pocket-Agent-arm64.apk",
+      "sha256": "e24562f6ae9e3db569644ba755350751884b0aab19a5fd87dcce9a7e525a3aac",
+      "compressedApkBytes": 37360783,
+      "runtimeBytes": 634596,
+      "nativeUncompressedBytes": {
+        "lib/arm64-v8a/libjavet-node-android-i18n.v.6.0.2.so": 103523504
+      },
+      "packagingOnly": true
+    },
+    {
+      "apk": "Pocket-Agent-x86_64.apk",
+      "sha256": "685ca31b9f7eb9b4f7412eae0ac6c462cd1c3a6ead4510dc705ac4f2e1512539",
+      "compressedApkBytes": 38624748,
+      "runtimeBytes": 634596,
+      "nativeUncompressedBytes": {
+        "lib/x86_64/libjavet-node-android-i18n.v.6.0.2.so": 105686368
+      },
+      "packagingOnly": true
+    },
+    {
+      "apk": "Pocket-Agent-universal.apk",
+      "sha256": "75975fd13e5fc2ecc258f89a7dfc824723f88b573c3b11cd76c4f2d48eeaf4dc",
+      "compressedApkBytes": 75162489,
+      "runtimeBytes": 634596,
+      "nativeUncompressedBytes": {
+        "lib/arm64-v8a/libjavet-node-android-i18n.v.6.0.2.so": 103523504,
+        "lib/x86_64/libjavet-node-android-i18n.v.6.0.2.so": 105686368
+      },
+      "packagingOnly": true
+    }
+  ],
+  "runtimeTests": 32,
+  "pythonTests": 12,
+  "limitations": [
+    "ARM64 execution remains unverified.",
+    "Device-code sign-in is implemented; interactive browser approval was not exercised.",
+    "Real refresh was not forced on the shared host login; rotation/concurrency used synthetic credentials.",
+    "No new lifecycle, battery or comparative footprint benchmark was run for this auth change."
+  ]
+}

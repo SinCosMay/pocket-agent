@@ -97,8 +97,11 @@ public final class RuntimeHost implements AutoCloseable {
             if (error instanceof JavetException) event.put("javetCode", ((JavetException) error).getError().getCode());
             if(message.equals("Runtime startup failed")) {
                 String detail=String.valueOf(error.getMessage());
-                String secret=credentials.get().optString("apiKey");
-                if(!secret.isEmpty())detail=detail.replace(secret,"[redacted]");
+                JSONObject protectedValues=credentials.get();
+                for(String key:new String[]{"apiKey","accessToken","refreshToken","idToken","accountId"}) {
+                    String secret=protectedValues.optString(key);
+                    if(!secret.isEmpty())detail=detail.replace(secret,"[redacted]");
+                }
                 event.put("startupDiagnostic",detail.substring(0,Math.min(detail.length(),800)));
             }
             emit(event);
@@ -115,6 +118,7 @@ public final class RuntimeHost implements AutoCloseable {
                     case "store.load": result = store.loadDurable(); break;
                     case "store.save": store.saveDurable(args.getJSONObject("state")); result = true; break;
                     case "credentials.get": result = credentials.get(); break;
+                    case "credentials.updateCodex": result = credentials.updateCodex(args); break;
                     default: throw new IllegalArgumentException("Unknown native method");
                 }
                 return new JSONObject().put("ok", true).put("result", result).toString();

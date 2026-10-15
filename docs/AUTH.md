@@ -1,119 +1,95 @@
 # Model connections
 
-The Pi agent loop, subagent scheduler and native tool execution run inside Android.
-The provider adapter only sends model requests and receives text/function calls.
-Neither model path runs a desktop agent or desktop phone tools.
+Pi, Pi9 scheduling and every phone tool run inside the APK. Providers supply
+inference only; they do not run a desktop agent or phone tools.
 
-## Direct API key (independent operation)
+## Codex account
 
-Select `openai` authentication and set an HTTPS Responses base URL, model ID and API
-key. The default base URL is `https://api.openai.com/v1`; the model is configurable.
-This connection works without a PC once configured. An API key and a model available
-to that API account are required; a ChatGPT subscription is not an API key.
+Select **Codex account** in Settings. There is no API key, custom endpoint, PC
+relay, ngrok or MCP connection to configure. Choose a model available to your
+account; emulator acceptance uses `gpt-6-luna`.
 
-Native code stores credentials in the app's protected credential store and passes
-only the active credentials to the runtime. They must not be put in transcript
-persistence, APK assets, source control or diagnostic logs. Clearing app data clears
-these credentials. A configured custom HTTPS endpoint receives the supplied key and
-conversation, so use only a trusted provider.
+- **Sign in** uses the Codex device-code flow. Open the official verification
+  page in the system browser and approve the displayed code with your existing
+  ChatGPT account. Device-code login may need enabling in ChatGPT security or
+  workspace settings. Cancellation and expiration leave the active account alone.
+- **Import Codex auth.json** uses Android's document picker to read an existing
+  Codex login cache. The file contains account credentials: transfer it privately,
+  select it, and remove the source copy afterward. No endpoint or token pasting is
+  required. A cache containing only an API key is not an account login.
+- **Sign out** removes the app's saved account credentials. It does not revoke
+  other Codex installations or erase your retained conversation history.
 
-`runtime/src/provider.ts` selects only Pi's OpenAI Responses implementation. It
-retains SSE streaming, structured function calls and function results, images and
-`AbortSignal` cancellation. Requests have a 120-second timeout and zero automatic
-retries. Tool mutation receipts and unknown outcomes are handled by the Android
-host, never by replaying model requests blindly. The configured context/output
-limits are conservative host defaults, not a claim about a provider's full limits.
+The import accepts the normal `~/.codex/auth.json` token object. Android validates
+its shape, expiry and account-ID consistency before storing allowlisted fields
+in an AES-GCM envelope protected by Android Keystore. Import does not constitute
+independent signature verification of an arbitrary JWT; OpenAI validates the
+credential on inference/refresh. Never share an auth cache publicly or commit it.
+Imported caches share the original session's refresh-token lineage; a separate
+device-code login is preferable for ongoing use on multiple devices. If another
+installation rotates/revokes that shared token, sign in again rather than
+replaying a failed phone action.
 
-## Codex account: emulator development relay
+Direct inference uses the pinned Pi Codex Responses adapter and the fixed HTTPS
+Codex backend. Refresh uses the fixed HTTPS OpenAI token endpoint. Main and workers
+share a single refresh operation; replacement tokens must be durably encrypted
+before any request uses them. Native compare-and-swap prevents a stale refresh
+from overwriting a newly imported account or sign-out. Failed refresh requires a
+new sign-in; inference and tool mutations are not automatically replayed.
 
-The development relay uses this machine's existing `~/.codex/auth.json` only for
-inference. Start it in a separate terminal:
+Credentials are excluded from app backup/device transfer, public runtime state,
+transcripts and diagnostic events. Account mode never forwards tokens to a
+user-configured endpoint. Provider failures are bounded and sanitized. This is a
+Codex-compatible account connection using Pi's existing protocol, not an OpenAI
+endorsement or a separate registered Sign in with ChatGPT application.
 
-```sh
-python3 scripts/codex_relay.py --port 8787 --model gpt-6-luna
-```
+The [Codex authentication documentation](https://learn.chatgpt.com/docs/auth)
+describes device-code login and securely transferring an existing auth cache.
+The newer [ChatGPT plan usage flow](https://developers.openai.com/siwc/token-sharing-open-source/sign-in)
+uses separately issued dynamic-client credentials and public Responses inference;
+those credentials are different from an existing Codex auth cache.
 
-Python `aiohttp` is required. The relay prints the private bearer **file path**, not
-its value. Its default file is `~/.local/state/pocket-agent/relay.token`, created
-with mode `0600`. Provision that random development bearer into the emulator's
-protected provider configuration through the local test setup; never paste it
-into a checked-in file, APK asset, shell command log or public URL. Configure:
+## API key
 
-```json
-{"authMode":"codex","endpoint":"http://10.0.2.2:8787/v1","model":"gpt-6-luna","apiKey":"<private development bearer>"}
-```
+Choose **API key (HTTPS)**, then enter an HTTPS Responses base URL, a model and its
+API key. The default base URL is `https://api.openai.com/v1`. A configured provider
+receives the supplied key and conversation, so use a trusted endpoint. API billing
+is separate from a ChatGPT subscription. Keys receive the same encrypted storage
+and transcript redaction as account tokens.
 
-The example placeholder is not a working credential. `10.0.2.2` is the Android
-emulator's host alias. The server bind is hardcoded to `127.0.0.1`. The adapter
-rejects other non-loopback relay hosts. Do not tunnel, publish or expose this
-service; it is a local test aid, not the standalone production architecture.
-A physical phone cannot use this emulator-only configuration.
+Both inference adapters support SSE, structured function calls/results, images
+and cancellation. Requests have a 120-second timeout and no automatic retries.
+Screen leases, mutation receipts and unknown outcomes remain enforced locally.
 
-The relay replaces the local bearer with the cached Codex access token and account
-ID only on an HTTPS request to the fixed Codex inference endpoint. The account
-access/refresh tokens never go to Android. It rereads the auth file each request
-and does not refresh or rewrite Codex login state. If the login expires, sign in
-with the normal host Codex login flow and restart/retry the user request after
-checking any unknown tool outcomes. The relay allows one configured model, rejects
-server-executed tools, does not follow redirects, bounds request/output size,
-redacts upstream failure bodies, and cancels inference when its client disconnects.
-Astra models are disabled by its CLI.
+## Legacy emulator relay
 
-This path preserves the on-phone harness and tool execution, but it depends on the
-PC for inference authentication. It is explicitly a development test, not a
-completed independent ChatGPT-account connection.
-
-## Native ChatGPT-account login: remaining blocker
-
-Direct API-key inference is implemented. Native account sign-in is **not** yet
-implemented. Do not paste a Codex access token into the phone's API-key field or
-invent an Android OAuth redirect.
-
-The inspected Pi Codex OAuth module explicitly supports CLI Node environments,
-uses a localhost callback server, a specific Codex OAuth client ID and CLI/device
-login flows. Reusing that client registration as a new Android application's
-approved sign-in path has not been established. Before shipping native account
-login, establish a supported client registration and mobile redirect/device flow,
-secure refresh-token storage, refresh and revocation handling, and validate it on
-a device. [Codex authentication documentation](https://learn.chatgpt.com/docs/auth)
-describes Codex account/API-key login; it does not establish an Android OAuth
-registration for this app. [App-server documentation](https://developers.openai.com/codex/app-server/)
-is a separate host protocol, not proof of independent mobile login.
-
-Protocol evidence: Pi `@earendil-works/pi-ai` 1.2.0,
-`api/openai-codex-responses.ts` and `auth/oauth/openai-codex.ts`, inspected from Pi
-commit `dc939913f6142adce7c09da5707fdd6451b37fb0`. The dev relay follows its
-`/backend-api/codex/responses`, account-ID header, `store:false`, and streaming
-Responses format; no browser cookies or account tokens are exported.
+**Codex emulator relay (development)** remains available for older test setups.
+It requires `python3 scripts/codex_relay.py --model gpt-6-luna` on the emulator host,
+Python `aiohttp`, and the random bearer in
+`~/.local/state/pocket-agent/relay.token` (mode `0600`). Its endpoint is
+`http://10.0.2.2:8787/v1`; native settings reject this mode on physical devices.
+The server binds only to `127.0.0.1`. Do not publish or tunnel it. Direct account
+mode above does not require this relay.
 
 ## Validation
 
-Run local protocol/security tests without network access or account credentials:
+Run `npm test` in `runtime` for account refresh concurrency, durable rotation,
+origin restrictions, token redaction, stream cancellation and tool-schema checks.
+Relay-specific synthetic checks remain available through
+`python3 -m unittest discover -s scripts -p test_codex_relay.py -v`.
+
+After downloading exact signed Actions APKs, test direct account inference on the
+explicit emulator with:
 
 ```sh
-python3 -m unittest discover -s scripts -p test_codex_relay.py -v
+python3 scripts/emulator_test.py --serial emulator-5580 --artifacts artifacts/BUILD --fresh --codex-account
 ```
 
-These cover bearer/origin checks, private token-file permissions, model and
-server-tool rejection, streaming, structured function history preservation, safe
-bounded failures without retries, and cancellation before the first upstream
-response byte. A real Codex model tool-call test is separate from these synthetic
-tests; phone tool execution must still be demonstrated on the exact APK artifact.
-
-On 2026-10-15, the cached account and `gpt-6-luna` completed a real two-request
-Responses roundtrip through the relay: requested `fixture_status({})`, accepted
-its structured synthetic read-only result, then answered that the fixture was
-ready. A separate run through the pinned Pi `Agent` and this app's `makeStream`
-adapter executed that local test tool exactly once and completed with the same
-answer. These are host protocol checks, not device acceptance claims.
-
-The opt-in Android instrumentation class `LiveProviderDeviceTest` accepts
-`providerConfigPath` pointing directly inside the target app's external-files
-directory. Provision a temporary JSON containing only the relay bearer (never
-Codex account tokens), then run that class on the selected emulator. It removes
-the file immediately after importing the credential, requires a real background
-worker and concurrent main answer, and checks persisted native tool results for
-`STATUS_CLICKED:LiveCodex COUNT:1`. Its cleanup stops work and restores scripted
-mode. Force-stop the fixture first so its counter begins at zero. The result line
-contains assertions and fixture evidence only; it must not include credentials or
-full transcripts.
+This opt-in setup requires the rooted test AVD; the installed app itself does not
+require root. It privately reads the local Codex cache, provisions a transient
+app-scoped file, imports encrypted credentials and deletes that file. It never
+refreshes or rewrites the host cache. The live case requires a real Luna background
+worker, a concurrent main answer, and a native observation of
+`STATUS_CLICKED:LiveCodex COUNT:1`. Cleanup stops work and removes emulator account
+credentials. Device-code browser approval is a separate interactive check; import
+acceptance does not prove a user completed that sign-in flow.
