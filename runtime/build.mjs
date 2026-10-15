@@ -1,0 +1,17 @@
+import {build} from 'esbuild';
+import {writeFile,mkdir,stat,copyFile} from 'node:fs/promises';
+import {gzipSync} from 'node:zlib';
+const result=await build({entryPoints:['src/index.ts'],outfile:'dist/runtime.cjs',bundle:true,platform:'node',format:'cjs',target:'node22',minify:true,sourcemap:false,metafile:true,legalComments:'eof',logLevel:'info'});
+await mkdir('dist',{recursive:true});
+await writeFile('dist/bundle-meta.json',JSON.stringify(result.metafile,null,2));
+const bytes=(await stat('dist/runtime.cjs')).size;
+const {readFile}=await import('node:fs/promises');
+const report={bytes,gzipBytes:gzipSync(await readFile('dist/runtime.cjs')).length,inputs:Object.keys(result.metafile.inputs),note:'JavaScript bundle only; excludes Javet/Node native libraries and Android resources. Not APK size or RAM.'};
+await writeFile('dist/bundle-report.json',JSON.stringify(report,null,2));
+await writeFile('dist/THIRD_PARTY_NOTICES.txt',(await readFile('vendor/pi9/LICENSE','utf8'))+'\n\n'+(await readFile('PI-LICENSE','utf8')));
+const manifest={protocol:1,pi:'1.2.0',piCommit:'dc939913f6142adce7c09da5707fdd6451b37fb0',pi9:'0.12.0',pi9Commit:'94405f79bb1e400fcba5e1b973778ef82d8378b2',...report};
+await writeFile('dist/runtime-manifest.json',JSON.stringify(manifest,null,2));
+await copyFile('dist/runtime.cjs','../app/src/main/assets/runtime.cjs');
+await copyFile('dist/runtime-manifest.json','../app/src/main/assets/runtime-manifest.json');
+await copyFile('dist/THIRD_PARTY_NOTICES.txt','../app/src/main/assets/runtime-notices.txt');
+console.log(JSON.stringify({bytes,gzipBytes:report.gzipBytes,inputFiles:report.inputs.length}));

@@ -1,0 +1,80 @@
+import { Type } from 'typebox';
+import schemas from '../../app/src/main/assets/tools.json';
+import { SubagentParams, parseSubagentInvocation } from '../vendor/pi9/schema.js';
+
+export function toolResult(data:any):any {
+  const images=data?.images ?? [];
+  const text={...data};delete text.images;
+  const json=JSON.stringify(text);
+  const content:any[]=[{type:'text',text:json.length>100000?JSON.stringify({isError:true,code:'OUTPUT_LIMIT',message:'Native output exceeded 100 KB; narrow the query.'}):json}];
+  for(const im of images.slice(0,1)) if(im.data && im.mimeType) content.push({type:'image',data:im.data,mimeType:im.mimeType});
+  return {content,details:text};
+}
+export function nativeTools(host:any,owner:string,grant?:readonly string[]):any[] {
+  return schemas.filter(s=>!grant || grant.includes(s.name)).map(s=>({
+    name:s.name,label:s.name,description:s.description,
+    parameters:Type.Unsafe(s.inputSchema),
+    execute:async(_id:string,args:any,signal?:AbortSignal)=>{
+      if(signal?.aborted) throw new Error('Cancelled before native dispatch');
+      // Batch entries must also stay inside this conversation's grant.
+      if(s.name==='phone_batch' && args.calls?.some((x:any)=>!schemas.some(t=>t.name===x.name) || (grant && !grant.includes(x.name)))) throw new Error('Batch tool exceeds tool grant');
+      const result=host.call('tool',{name:s.name,args,owner});
+      return toolResult(result);
+    },
+  }));
+}
+export function subagentTool(app:any,parent?:any):any {
+  const owner=()=>parent?{conversation:parent,generation:parent.requireCurrentGeneration()}:undefined;
+  return {name:'subagent',label:'Subagent',description:'Delegate asynchronously. spawn returns immediately. End your turn and remain available; host delivers completion. inspect does not collect. join collects; use only for explicit dependencies. resume requires the initiator collection receipt. Tools are inherited by children.',parameters:SubagentParams,
+    execute:async(id:string,params:any,signal?:AbortSignal)=>{
+      const invocation=parseSubagentInvocation(params,{maxTasks:4});
+      if('error' in invocation) return toolResult({action:params.action,error:invocation.error});
+      const r=app.runtime,caller=owner(), action=invocation.action;
+      let results:any[]=[];
+      switch(action) {
+        case 'agents': results=[...app.registry.agents.values()].map((x:any)=>({name:x.name,description:x.description,tools:x.tools}));break;
+        case 'list': results=r.queryConversations(parent?.conversationId).filter((x:any)=>{
+          const g=x.generations.at(-1),status=r.subagentStatus(x.conversationId);
+          return (!invocation.statuses||invocation.statuses.includes(status)) && (invocation.collected===undefined||g.receipts.model===invocation.collected);
+        }).map((x:any)=>r.projectSubagent(x.conversationId,caller));break;
+        case 'spawn': case 'resume': {
+          const tasks=action==='spawn'?invocation.spawns:invocation.resumes;
+          if(parent && r.conversationDepth(parent.conversationId)>=4) throw new Error('Maximum recursive mobile worker depth is 4');
+          for(const task of tasks) {
+            if('error' in task) {results.push({ok:false,...task});continue;}
+            const h=r.startTasks(app.context,[task],{caller,initiatedBy:'model'});
+            results.push(...h.starts);void h.completion.catch(app.reportError);
+          }
+          break;
+        }
+        case 'steer': for(const x of invocation.messages) {try {results.push('error'in x?{ok:false,...x}:{ok:true,...await r.steerSubagent(x.subagentId,x.message,caller)});}catch(e){results.push({ok:false,error:String(e)});}}break;
+        case 'cancel': case 'inspect': case 'remove': {
+          for(const target of invocation.subagentIds) {
+            if(typeof target!=='string'){results.push({ok:false,...target});continue;}
+            try {
+              if(action==='cancel') results.push({ok:true,...await r.cancelSubagent(target,caller)});
+              if(action==='inspect') results.push({ok:true,...r.projectSubagent(target,caller)});
+              if(action==='remove') results.push(...await r.removeConversations([target],caller));
+            } catch(e){results.push({ok:false,subagentId:target,error:String(e)});}
+          } break;
+        }
+        case 'join': {
+          const targets=invocation.subagentIds.filter((x:any)=>typeof x==='string');
+          if(targets.length!==invocation.subagentIds.length) throw new Error('Invalid or duplicate subagent ID');
+          const binding=r.bindSubagentJoin(targets,caller,id);
+          let abort:()=>void=()=>{};
+          const cancelled=new Promise<never>((_,reject)=>{abort=()=>reject(new Error('Join cancelled'));if(signal?.aborted)abort();else signal?.addEventListener('abort',abort,{once:true});});
+          try {
+            const wait=()=>Promise.race([binding.completion,cancelled]);
+            await (parent?r.scheduler.suspendConversationSlotDuring(parent,wait):wait());
+            results=binding.finalizeCollection('model').map((x:any)=>({ok:true,...x}));
+          } catch(e){binding.interrupt?.(String(e));throw e;}
+          finally {binding.release();signal?.removeEventListener('abort',abort);}
+          break;
+        }
+      }
+      app.save();app.publish();
+      return toolResult({action,results});
+    },
+  };
+}

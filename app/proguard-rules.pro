@@ -1,0 +1,14 @@
+-keep class com.caoccao.javet.** { *; }
+-keep class dev.pocket.agent.RuntimeHost$NativeBridge { *; }
+-keep class dev.pocket.agent.RuntimeHost { *; }
+-keep class dev.pocket.agent.AgentService { *; }
+-keep class dev.pocket.agent.CredentialStore { *; }
+-keep class dev.pocket.agent.StateStore { *; }
+-keep class dev.pocket.agent.NativeTools { *; }
+-keep class dev.pocket.agent.Json { *; }
+-keepattributes RuntimeVisibleAnnotations,AnnotationDefault,Signature
+-dontwarn java.lang.management.**
+-dontwarn javax.management.**
+-keep class dev.pocket.agent.RuntimeHost$Bridge { *; }
+-keep class dev.pocket.agent.MainActivity { *; }
+-keep class dev.pocket.agent.AgentAccessibility { *; }

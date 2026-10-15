@@ -1,0 +1,337 @@
+package dev.pocket.android;
+
+import android.accessibilityservice.AccessibilityService;
+import android.accessibilityservice.GestureDescription;
+import android.app.KeyguardManager;
+import android.content.Context;
+import android.graphics.Bitmap;
+import android.graphics.Path;
+import android.graphics.Rect;
+import android.os.Bundle;
+import android.os.Handler;
+import android.os.Looper;
+import android.os.PowerManager;
+import android.view.Display;
+import android.view.WindowManager;
+import android.view.accessibility.AccessibilityNodeInfo;
+import dev.pocket.control.ControlBackend;
+import dev.pocket.control.ControlException;
+import java.io.ByteArrayOutputStream;
+import java.util.ArrayList;
+import java.util.LinkedHashMap;
+import java.util.List;
+import java.util.Map;
+import java.util.UUID;
+import java.util.concurrent.Callable;
+import java.util.concurrent.CompletableFuture;
+import java.util.concurrent.ExecutionException;
+import java.util.concurrent.TimeUnit;
+import java.util.concurrent.TimeoutException;
+import static dev.pocket.control.ControlException.Code.*;
+
+/** Fresh Android-only driver. Invoke public methods on a worker, never the main thread. */
+public final class AndroidScreenBackend implements ControlBackend {
+    private final AccessibilityService service;
+    private final Handler main = new Handler(Looper.getMainLooper());
+    private final Map<String, Observation> snapshots = new LinkedHashMap<>();
+    private final Map<String, Long> snapshotRevisions = new LinkedHashMap<>();
+    private final java.util.concurrent.atomic.AtomicLong revision = new java.util.concurrent.atomic.AtomicLong();
+    private static final long MAX_SNAPSHOT_AGE_MS = 15_000;
+
+    public AndroidScreenBackend(AccessibilityService service) { this.service = service; }
+    /** May be called from the accessibility callback without waiting on the worker lock. */
+    public void noteInteraction() { revision.incrementAndGet(); }
+
+    private <T> T onMain(Callable<T> action) throws ControlException {
+        if (Looper.myLooper() == Looper.getMainLooper()) {
+            throw new ControlException(INVALID_ARGUMENT, "Run the backend on a worker thread");
+        }
+        CompletableFuture<T> future = new CompletableFuture<>();
+        main.post(() -> {
+            if (future.isDone()) return;
+            try { future.complete(action.call()); }
+            catch (Throwable e) { future.completeExceptionally(e); }
+        });
+        return await(future, 5_000);
+    }
+
+    private static <T> T await(CompletableFuture<T> future, long millis) throws ControlException {
+        try { return future.get(millis, TimeUnit.MILLISECONDS); }
+        catch (InterruptedException e) {
+            Thread.currentThread().interrupt(); future.cancel(false);
+            throw new ControlException(RESULT_UNKNOWN, "Interrupted; inspect before repeating the action");
+        } catch (TimeoutException e) {
+            future.cancel(false);
+            throw new ControlException(RESULT_UNKNOWN, "Timed out; inspect before repeating the action");
+        } catch (ExecutionException e) {
+            Throwable cause = e.getCause();
+            if (cause instanceof ControlException c) throw c;
+            if (cause instanceof SecurityException) throw new ControlException(PERMISSION_REQUIRED, "Android denied the operation");
+            throw new ControlException(ACTION_REJECTED, cause.getClass().getSimpleName());
+        }
+    }
+
+    private boolean interactive() {
+        return ((PowerManager) service.getSystemService(Context.POWER_SERVICE)).isInteractive();
+    }
+    private boolean locked() {
+        return ((KeyguardManager) service.getSystemService(Context.KEYGUARD_SERVICE)).isKeyguardLocked();
+    }
+    private Rect dimensions() {
+        return ((WindowManager) service.getSystemService(Context.WINDOW_SERVICE)).getMaximumWindowMetrics().getBounds();
+    }
+    private AccessibilityNodeInfo freshRoot() {
+        if (android.os.Build.VERSION.SDK_INT>=33) service.clearCache();
+        AccessibilityNodeInfo root=service.getRootInActiveWindow();
+        if(root!=null && android.os.Build.VERSION.SDK_INT<33 && !root.refresh()) {root.recycle();return null;}
+        return root;
+    }
+
+    @Override public synchronized Observation observe(boolean image, int maxDimension, int maxNodes) throws ControlException {
+        long before = revision.get();
+        if (maxDimension < 256 || maxDimension > 2048 || maxNodes < 0 || maxNodes > 500) {
+            throw new ControlException(INVALID_ARGUMENT, "Image dimension 256..2048; nodes 0..500");
+        }
+        Observation base = onMain(() -> {
+            Rect bounds = dimensions();
+            AccessibilityNodeInfo root = freshRoot();
+            List<Node> nodes = new ArrayList<>();
+            String pkg = ""; int window = -1; boolean[] truncated = {false};
+            if (root != null) {
+                try {
+                    pkg = String.valueOf(root.getPackageName()); window = root.getWindowId();
+                    if (maxNodes > 0) dump(root, nodes, maxNodes, 0, truncated);
+                } finally { root.recycle(); }
+            }
+            return new Observation(UUID.randomUUID().toString(), System.currentTimeMillis(), pkg, window,
+                bounds.width(), bounds.height(), interactive(), locked(), nodes, truncated[0], null, null, 0, 0);
+        });
+        if (image) {
+            if (!base.interactive()) throw new ControlException(SCREEN_OFF, "The display is asleep; no usable screenshot");
+            Capture captured = screenshot(maxDimension);
+            base = new Observation(base.snapshotId(), base.capturedAtMs(), base.packageName(), base.windowId(),
+                base.coordinateWidth(), base.coordinateHeight(), base.interactive(), base.locked(), base.nodes(),
+                base.nodesTruncated(), captured.bytes, "image/jpeg", captured.width, captured.height);
+            Observation expected = base;
+            onMain(() -> { validateContext(expected); return null; });
+        }
+        // Retain only target metadata, never screenshots or captured app text.
+        if (before != revision.get()) throw new ControlException(STALE_OBSERVATION,"Screen changed during observation; observe again");
+        snapshotRevisions.put(base.snapshotId(), before);
+        snapshots.put(base.snapshotId(), new Observation(base.snapshotId(), base.capturedAtMs(), base.packageName(),
+            base.windowId(), base.coordinateWidth(), base.coordinateHeight(), base.interactive(), base.locked(),
+            List.of(), false, null, null, 0, 0));
+        while (snapshots.size() > 8) {String oldest=snapshots.keySet().iterator().next();snapshots.remove(oldest);snapshotRevisions.remove(oldest);}
+        return base;
+    }
+
+    private static String text(CharSequence value) { return value == null ? "" : value.toString(); }
+    private static String clipped(String text) { return text.length() <= 1000 ? text : text.substring(0,1000); }
+    private static void dump(AccessibilityNodeInfo node, List<Node> nodes, int limit, int depth, boolean[] truncated) {
+        if (nodes.size() >= limit || depth > 30) { truncated[0] = true; return; }
+        if(android.os.Build.VERSION.SDK_INT<33 && !node.refresh()) {truncated[0]=true;return;}
+        if (node.isVisibleToUser()) {
+            Rect b = new Rect(); node.getBoundsInScreen(b);
+            boolean password = node.isPassword();
+            nodes.add(new Node(nodes.size(), text(node.getViewIdResourceName()),
+                password ? "[password]" : clipped(text(node.getText())),
+                password ? "" : clipped(text(node.getContentDescription())), text(node.getClassName()),
+                b.left,b.top,b.right,b.bottom,node.isEnabled(),node.isFocused(),node.isEditable(),
+                node.isClickable(),node.isLongClickable(),node.isScrollable()));
+        }
+        for (int i=0;i<node.getChildCount();i++) {
+            AccessibilityNodeInfo child = node.getChild(i);
+            if (child != null) try { dump(child,nodes,limit,depth+1,truncated); } finally { child.recycle(); }
+            if (nodes.size() >= limit) { if (i + 1 < node.getChildCount()) truncated[0] = true; break; }
+        }
+    }
+
+    private record Capture(byte[] bytes, int width, int height) {}
+    private Capture screenshot(int maxDimension) throws ControlException {
+        CompletableFuture<Capture> future = new CompletableFuture<>();
+        onMain(() -> {
+            service.takeScreenshot(Display.DEFAULT_DISPLAY, service.getMainExecutor(), new AccessibilityService.TakeScreenshotCallback() {
+                @Override public void onSuccess(AccessibilityService.ScreenshotResult screenshot) {
+                    Bitmap hardware = null, software = null, scaled = null;
+                    try {
+                        if (future.isDone()) return;
+                        hardware = Bitmap.wrapHardwareBuffer(screenshot.getHardwareBuffer(), screenshot.getColorSpace());
+                        if (hardware == null) throw new IllegalStateException("Empty screenshot buffer");
+                        software = hardware.copy(Bitmap.Config.ARGB_8888, false);
+                        double scale = Math.min(1.0, (double) maxDimension / Math.max(software.getWidth(),software.getHeight()));
+                        scaled = Bitmap.createScaledBitmap(software, Math.max(1,(int)Math.round(software.getWidth()*scale)), Math.max(1,(int)Math.round(software.getHeight()*scale)), true);
+                        ByteArrayOutputStream bytes = new ByteArrayOutputStream();
+                        if (!scaled.compress(Bitmap.CompressFormat.JPEG,75,bytes)) throw new IllegalStateException("JPEG failed");
+                        future.complete(new Capture(bytes.toByteArray(),scaled.getWidth(),scaled.getHeight()));
+                    } catch (Throwable e) { future.completeExceptionally(e); }
+                    finally {
+                        if (scaled != null && scaled != software) scaled.recycle();
+                        if (software != null) software.recycle();
+                        if (hardware != null) hardware.recycle();
+                        screenshot.getHardwareBuffer().close();
+                    }
+                }
+                @Override public void onFailure(int errorCode) {
+                    future.completeExceptionally(new ControlException(ACTION_REJECTED,"Screenshot rejected by Android: " + errorCode));
+                }
+            });
+            return null;
+        });
+        return await(future,5_000);
+    }
+
+    private void validateContext(Observation expected) throws ControlException {
+        Rect d = dimensions();
+        AccessibilityNodeInfo root = freshRoot();
+        if (root == null) throw new ControlException(NOT_READY,"No active accessibility window");
+        try {
+            if (!expected.packageName().equals(text(root.getPackageName())) || expected.windowId()!=root.getWindowId()
+                || d.width()!=expected.coordinateWidth() || d.height()!=expected.coordinateHeight()) {
+                throw new ControlException(STALE_OBSERVATION,"Window, package, or display geometry changed; observe again");
+            }
+        } finally { root.recycle(); }
+    }
+
+    @Override public synchronized Result execute(Action a) throws ControlException {
+        if (a == null || a.kind() == null) throw new ControlException(INVALID_ARGUMENT,"Action kind required");
+        Observation observed = snapshots.get(a.snapshotId());
+        if (observed == null || System.currentTimeMillis()-observed.capturedAtMs()>MAX_SNAPSHOT_AGE_MS) {
+            throw new ControlException(STALE_OBSERVATION,"A recent snapshot ID is required");
+        }
+        if (!java.util.Objects.equals(snapshotRevisions.get(a.snapshotId()),revision.get()))
+            throw new ControlException(STALE_OBSERVATION,"Screen interaction occurred; observe again");
+        onMain(() -> {
+            if (!interactive()) throw new ControlException(SCREEN_OFF,"Display asleep");
+            if (locked()) throw new ControlException(LOCKED,"Unlock the device before controlling apps");
+            validateContext(observed); return null;
+        });
+        if (a.kind()==Kind.TAP || a.kind()==Kind.LONG_PRESS || a.kind()==Kind.SWIPE) {
+            point(a.x(),a.y(),observed);
+            if (a.kind()==Kind.SWIPE) point(a.endX(),a.endY(),observed);
+            int duration = a.kind()==Kind.TAP ? 100 : a.durationMs();
+            if (duration<100 || duration>4000) throw new ControlException(INVALID_ARGUMENT,"Duration 100..4000ms");
+            return gesture(a,duration);
+        }
+        if (a.selector()==null && (a.x()!=null || a.y()!=null)) point(a.x(),a.y(),observed);
+        return onMain(() -> { validateContext(observed); return nativeAction(a); });
+    }
+
+    private static void point(Integer x,Integer y,Observation o) throws ControlException {
+        if (x==null || y==null || x<0 || y<0 || x>=o.coordinateWidth() || y>=o.coordinateHeight()) {
+            throw new ControlException(INVALID_ARGUMENT,"Point outside full device coordinates");
+        }
+    }
+
+    private Result gesture(Action a,int duration) throws ControlException {
+        CompletableFuture<Result> future = new CompletableFuture<>();
+        onMain(() -> {
+            Observation expected = snapshots.get(a.snapshotId());
+            validateContext(expected);
+            Path path = new Path(); path.moveTo(a.x(),a.y());
+            if (a.kind()==Kind.SWIPE) path.lineTo(a.endX(),a.endY());
+            GestureDescription g = new GestureDescription.Builder().addStroke(new GestureDescription.StrokeDescription(path,0,duration)).build();
+            boolean dispatched = service.dispatchGesture(g,new AccessibilityService.GestureResultCallback() {
+                @Override public void onCompleted(GestureDescription ignored) { future.complete(new Result("dispatched","Gesture completed; task outcome not yet verified")); }
+                @Override public void onCancelled(GestureDescription ignored) { future.completeExceptionally(new ControlException(RESULT_UNKNOWN,"Gesture cancelled; observe before repeating")); }
+            },main);
+            if (!dispatched) future.completeExceptionally(new ControlException(ACTION_REJECTED,"Gesture was not dispatched"));
+            return null;
+        });
+        return await(future,duration+2000L);
+    }
+
+    private Result nativeAction(Action a) throws ControlException {
+        if (a.kind()==Kind.KEY && !"enter".equals(a.key())) {
+            int key = switch (a.key()==null ? "" : a.key()) {
+                case "home" -> AccessibilityService.GLOBAL_ACTION_HOME;
+                case "back" -> AccessibilityService.GLOBAL_ACTION_BACK;
+                case "recents" -> AccessibilityService.GLOBAL_ACTION_RECENTS;
+                default -> throw new ControlException(UNSUPPORTED,"Android key supports home/back/recents/enter");
+            };
+            if (!service.performGlobalAction(key)) throw new ControlException(ACTION_REJECTED,"System navigation rejected");
+            return new Result("dispatched","Android navigation accepted");
+        }
+        AccessibilityNodeInfo root = freshRoot();
+        if (root==null) throw new ControlException(NOT_READY,"No active window");
+        AccessibilityNodeInfo node = null;
+        try {
+            if (a.kind()==Kind.KEY || (a.kind()==Kind.TYPE && a.selector()==null && a.x()==null)) {
+                node = root.findFocus(AccessibilityNodeInfo.FOCUS_INPUT);
+            } else {
+                List<AccessibilityNodeInfo> matches = new ArrayList<>();
+                find(root,a,matches,0);
+                if (matches.size()!=1) {
+                    for (AccessibilityNodeInfo item:matches) item.recycle();
+                    throw new ControlException(matches.isEmpty()?ACTION_REJECTED:AMBIGUOUS_TARGET,"Target must match exactly one actionable node");
+                }
+                node=matches.get(0);
+            }
+            if (node==null || !node.isEnabled()) throw new ControlException(ACTION_REJECTED,"No enabled target");
+            if (a.kind()==Kind.TYPE) return setText(node,a);
+            int action = switch(a.kind()) {
+                case CLICK -> AccessibilityNodeInfo.ACTION_CLICK;
+                case LONG_CLICK -> AccessibilityNodeInfo.ACTION_LONG_CLICK;
+                case KEY -> AccessibilityNodeInfo.AccessibilityAction.ACTION_IME_ENTER.getId();
+                case SCROLL -> switch(a.direction()==null?"":a.direction()) {
+                    case "down" -> AccessibilityNodeInfo.AccessibilityAction.ACTION_SCROLL_DOWN.getId();
+                    case "up" -> AccessibilityNodeInfo.AccessibilityAction.ACTION_SCROLL_UP.getId();
+                    case "left" -> AccessibilityNodeInfo.AccessibilityAction.ACTION_SCROLL_LEFT.getId();
+                    case "right" -> AccessibilityNodeInfo.AccessibilityAction.ACTION_SCROLL_RIGHT.getId();
+                    default -> throw new ControlException(INVALID_ARGUMENT,"Invalid scroll direction");
+                };
+                default -> throw new ControlException(UNSUPPORTED,"Unsupported native action");
+            };
+            if(a.kind()==Kind.SCROLL && !supports(node,action)) {
+                // Native vertical widgets commonly advertise forward/backward rather than directional actions.
+                if("down".equals(a.direction())) action=AccessibilityNodeInfo.ACTION_SCROLL_FORWARD;
+                else if("up".equals(a.direction())) action=AccessibilityNodeInfo.ACTION_SCROLL_BACKWARD;
+                else throw new ControlException(UNSUPPORTED,"Horizontal native scrolling not advertised; use an observed swipe");
+                if(!supports(node,action)) throw new ControlException(UNSUPPORTED,"No native scroll action in this direction");
+            }
+            if (!node.performAction(action)) throw new ControlException(ACTION_REJECTED,"Native action rejected; no fake Enter or automatic input retry");
+            return new Result("dispatched","Native Android action accepted");
+        } finally { if (node!=null) node.recycle(); root.recycle(); }
+    }
+    private static boolean supports(AccessibilityNodeInfo node,int id) {
+        for(AccessibilityNodeInfo.AccessibilityAction action:node.getActionList()) if(action.getId()==id) return true;
+        return false;
+    }
+
+    private static void find(AccessibilityNodeInfo node,Action a,List<AccessibilityNodeInfo> out,int depth) throws ControlException {
+        if (depth>30 || out.size()>20) return;
+        boolean actionable = switch(a.kind()) {
+            case CLICK -> node.isClickable(); case LONG_CLICK -> node.isLongClickable();
+            case TYPE -> node.isEditable(); case SCROLL -> node.isScrollable(); default -> false;
+        };
+        boolean matches = actionable && node.isEnabled() && node.isVisibleToUser();
+        Selector s=a.selector();
+        if (s!=null) {
+            if (s.empty()) throw new ControlException(INVALID_ARGUMENT,"Selector must contain resource ID, text, or description");
+            matches &= (s.resourceId()==null || s.resourceId().equals(text(node.getViewIdResourceName())))
+                && (s.text()==null || s.text().equals(text(node.getText())))
+                && (s.description()==null || s.description().equals(text(node.getContentDescription())));
+        } else {
+            if (a.x()==null || a.y()==null) throw new ControlException(INVALID_ARGUMENT,"Selector or point required");
+            Rect b=new Rect();node.getBoundsInScreen(b);matches &= b.contains(a.x(),a.y());
+        }
+        if (matches) out.add(AccessibilityNodeInfo.obtain(node));
+        for(int i=0;i<node.getChildCount();i++) {
+            AccessibilityNodeInfo child=node.getChild(i);
+            if(child!=null) try { find(child,a,out,depth+1); } finally {child.recycle();}
+        }
+    }
+
+    private static Result setText(AccessibilityNodeInfo node,Action a) throws ControlException {
+        if(a.text()==null || a.text().length()>20000) throw new ControlException(INVALID_ARGUMENT,"Text required, maximum 20000 characters; empty is valid");
+        String existing=node.isShowingHintText()?"":text(node.getText());
+        int start=node.getTextSelectionStart(),end=node.getTextSelectionEnd();
+        start=start<0?existing.length():Math.min(start,existing.length());
+        end=end<0?start:Math.min(end,existing.length());
+        int left=Math.min(start,end),right=Math.max(start,end);
+        String expected=a.replace()?a.text():existing.substring(0,left)+a.text()+existing.substring(right);
+        Bundle args=new Bundle();args.putCharSequence(AccessibilityNodeInfo.ACTION_ARGUMENT_SET_TEXT_CHARSEQUENCE,expected);
+        if(!node.performAction(AccessibilityNodeInfo.ACTION_SET_TEXT,args)) throw new ControlException(ACTION_REJECTED,"Text input rejected");
+        if(!node.refresh() || !expected.equals(node.isShowingHintText()?"":text(node.getText()))) throw new ControlException(RESULT_UNKNOWN,"Text result not confirmed; observe before repeating");
+        return new Result("verified","Exact field text verified");
+    }
+}
