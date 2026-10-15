@@ -199,7 +199,7 @@ test('scripted fixture executes the real typed tool loop and verifies exact post
      const a=JSON.parse(json);
      if(method==='tool'){
        if(a.name==='phone_act'){if(a.args.kind==='type')this.typed=a.args.text;else if(a.args.kind==='click')this.count++;}
-       if(a.name==='phone_observe')return JSON.stringify({ok:true,result:{package_name:'dev.pocket.agent.fixture',snapshot_id:`s${this.tools.length}`,nodes:[{description:'AGENT_INPUT'},{text:`STATUS_CLICKED:${this.typed} COUNT:${this.count}`} ]}});
+       if(a.name==='phone_observe')return JSON.stringify({ok:true,result:{package_name:'dev.pocket.agent.fixture',snapshot_id:`s${this.tools.length}`,nodes:[{description:'AGENT_INPUT',text:this.typed},{text:this.count?`STATUS_CLICKED:${this.typed} COUNT:${this.count}`:'STATUS_READY'} ]}});
      }
      return super.call(method,json);
    }
@@ -224,7 +224,7 @@ test('scripted fixture retries cold-launch NOT_READY reads without replaying mut
          this.observes++;
          this.tools.push(a);
          if(this.observes<=2)return JSON.stringify({ok:true,result:{isError:true,code:'NOT_READY',message:'Foreground accessibility root is transitioning',retry_safe:false}});
-         return JSON.stringify({ok:true,result:{package_name:'dev.pocket.agent.fixture',snapshot_id:`cold-${this.observes}`,nodes:[{description:'AGENT_INPUT'},{text:`STATUS_CLICKED:${this.typed} COUNT:${this.count}`} ]}});
+         return JSON.stringify({ok:true,result:{package_name:'dev.pocket.agent.fixture',snapshot_id:`cold-${this.observes}`,nodes:[{description:'AGENT_INPUT',text:this.typed},{text:this.count?`STATUS_CLICKED:${this.typed} COUNT:${this.count}`:'STATUS_READY'} ]}});
        }
      }
      return super.call(method,json);
@@ -239,4 +239,54 @@ test('scripted fixture retries cold-launch NOT_READY reads without replaying mut
  assert.equal(bridge.tools.filter(x=>x.name==='phone_act'&&x.args.kind==='click').length,1);
  assert.equal(bridge.count,1);assert.equal(bridge.typed,'PocketWorks');
  assert.match(r.state().tasks[0].output,/Verified fixture outcome/);
+});
+
+test('fixture replans only confirmed pre-dispatch stale actions with fresh observations and IDs',async()=>{
+ class ChangingFixtureBridge extends Bridge {
+  count=0;typed='';rejected=new Set<string>();ids=new Set<string>();observes=0;
+  override call(method:string,json:string):string {
+   const a=JSON.parse(json);
+   if(method==='tool') {
+    if(a.name==='phone_act') {
+     assert.ok(!this.ids.has(a.args.operation_id));this.ids.add(a.args.operation_id);
+     this.tools.push(a);
+     if(!this.rejected.has(a.args.kind)) {
+      this.rejected.add(a.args.kind);
+      return JSON.stringify({ok:true,result:{isError:true,code:'STALE_OBSERVATION',dispatch_status:'not_dispatched',retry_safe:false}});
+     }
+     assert.equal(a.args.snapshot_id,`changing-${this.observes}`);
+     if(a.args.kind==='type')this.typed=a.args.text;else this.count++;
+     return JSON.stringify({ok:true,result:{status:'dispatched'}});
+    }
+    if(a.name==='phone_observe') {
+     this.observes++;this.tools.push(a);
+     return JSON.stringify({ok:true,result:{package_name:'dev.pocket.agent.fixture',snapshot_id:`changing-${this.observes}`,nodes:[{description:'AGENT_INPUT',text:this.typed},{text:this.count?`STATUS_CLICKED:${this.typed} COUNT:${this.count}`:'STATUS_READY'}]}});
+    }
+   }
+   return super.call(method,json);
+  }
+ }
+ const bridge=new ChangingFixtureBridge(),r=new PocketRuntime(bridge);
+ command(r,{action:'send',text:'delegate fixture delay=10'});
+ await until(()=>r.state().tasks[0]?.status==='completed'&&!r.state().active);
+ assert.equal(bridge.count,1);assert.equal(bridge.ids.size,4);assert.equal(bridge.observes,5);
+ assert.match(r.state().tasks[0].output,/Verified fixture outcome/);
+});
+
+test('fixture never retries unknown mutations or stale errors without a pre-dispatch receipt',async()=>{
+ for(const code of ['RESULT_UNKNOWN','STALE_OBSERVATION']) {
+  class UnknownFixtureBridge extends Bridge {
+   override call(method:string,json:string):string {
+    const a=JSON.parse(json);
+    if(method==='tool'&&a.name==='phone_act') {this.tools.push(a);return JSON.stringify({ok:true,result:{isError:true,code,retry_safe:false}});}
+    if(method==='tool'&&a.name==='phone_observe')return JSON.stringify({ok:true,result:{package_name:'dev.pocket.agent.fixture',snapshot_id:'unknown-fixture',nodes:[{description:'AGENT_INPUT'}]}});
+    return super.call(method,json);
+   }
+  }
+  const bridge=new UnknownFixtureBridge(),r=new PocketRuntime(bridge);
+  command(r,{action:'send',text:'delegate fixture delay=10'});
+  await until(()=>r.state().tasks[0]?.status==='completed'&&!r.state().active);
+  assert.equal(bridge.tools.filter(x=>x.name==='phone_act').length,1);
+  assert.match(r.state().tasks[0].output,/Fixture failed/);
+ }
 });

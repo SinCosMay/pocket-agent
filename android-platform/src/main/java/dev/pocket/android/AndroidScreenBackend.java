@@ -197,14 +197,19 @@ public final class AndroidScreenBackend implements ControlBackend {
         } finally { root.recycle(); }
     }
 
+    private void validateFreshness(Observation observed) throws ControlException {
+        if (System.currentTimeMillis()-observed.capturedAtMs()>MAX_SNAPSHOT_AGE_MS
+            || snapshotRevisions.getOrDefault(observed.snapshotId(),0L) < interactionTime.get())
+            throw new ControlException(STALE_OBSERVATION,"Screen interaction occurred; observe again");
+    }
+
     @Override public synchronized Result execute(Action a) throws ControlException {
         if (a == null || a.kind() == null) throw new ControlException(INVALID_ARGUMENT,"Action kind required");
         Observation observed = snapshots.get(a.snapshotId());
         if (observed == null || System.currentTimeMillis()-observed.capturedAtMs()>MAX_SNAPSHOT_AGE_MS) {
             throw new ControlException(STALE_OBSERVATION,"A recent snapshot ID is required");
         }
-        if (snapshotRevisions.getOrDefault(a.snapshotId(),0L) < interactionTime.get())
-            throw new ControlException(STALE_OBSERVATION,"Screen interaction occurred; observe again");
+        validateFreshness(observed);
         onMain(() -> {
             if (!interactive()) throw new ControlException(SCREEN_OFF,"Display asleep");
             if (locked()) throw new ControlException(LOCKED,"Unlock the device before controlling apps");
@@ -218,7 +223,7 @@ public final class AndroidScreenBackend implements ControlBackend {
             return gesture(a,duration);
         }
         if (a.selector()==null && (a.x()!=null || a.y()!=null)) point(a.x(),a.y(),observed);
-        return onMain(() -> { validateContext(observed); return nativeAction(a); });
+        return onMain(() -> { validateContext(observed); validateFreshness(observed); return nativeAction(a); });
     }
 
     private static void point(Integer x,Integer y,Observation o) throws ControlException {
@@ -232,6 +237,7 @@ public final class AndroidScreenBackend implements ControlBackend {
         onMain(() -> {
             Observation expected = snapshots.get(a.snapshotId());
             validateContext(expected);
+            validateFreshness(expected);
             Path path = new Path(); path.moveTo(a.x(),a.y());
             if (a.kind()==Kind.SWIPE) path.lineTo(a.endX(),a.endY());
             GestureDescription g = new GestureDescription.Builder().addStroke(new GestureDescription.StrokeDescription(path,0,duration)).build();

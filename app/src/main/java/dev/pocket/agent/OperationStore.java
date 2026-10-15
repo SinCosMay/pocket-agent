@@ -74,7 +74,13 @@ final class OperationStore extends SQLiteOpenHelper {
         db.insertOrThrow("operations",null,values);
         JSONObject result;
         try {result=work.run();}
-        catch(dev.pocket.control.ControlException e) {result=Json.failure(e.code.name(),e.getMessage());}
+        catch(dev.pocket.control.ControlException e) {
+            result=Json.failure(e.code.name(),e.getMessage());
+            // Screen backend raises STALE_OBSERVATION only before any action dispatch.
+            // The recorded request remains stale; a fresh observation requires a new ID.
+            if(tool.equals("phone_act") && e.code==dev.pocket.control.ControlException.Code.STALE_OBSERVATION)
+                result.put("dispatch_status","not_dispatched");
+        }
         catch(SecurityException e) {result=Json.failure("PERMISSION_REQUIRED","Android denied the operation; inspect before repeating");}
         catch(Exception e) {result=Json.failure("RESULT_UNKNOWN","Dispatch outcome unavailable; inspect before repeating");}
         ContentValues done=new ContentValues();done.put("result",result.toString());

@@ -59,6 +59,13 @@ async function fixtureStep(context:any,owner:string,signal?:AbortSignal):Promise
  const call=(name:string,args:any)=>({call:{name,arguments:args}});
  const launch=tools.find((m:any)=>m.toolName==='phone_open_app');
  const acts=tools.filter((m:any)=>m.toolName==='phone_act');
+ const successfulActs=acts.filter((m:any)=>!JSON.parse(messageText(m)).isError);
+ // Only an explicit pre-dispatch receipt permits replanning. Never retry an
+ // unknown mutation, and never reuse its recorded ID with a changed snapshot.
+ if(last?.toolName==='phone_act'&&data?.code==='STALE_OBSERVATION'&&data?.dispatch_status==='not_dispatched') {
+  if(acts.length-successfulActs.length>3)return {answer:'Fixture failed: screen did not settle after three pre-dispatch rejections.'};
+  await delay(250,signal);return call('phone_observe',{max_nodes:150});
+ }
  if(launch&&!acts.length&&last?.toolName==='phone_observe') {
   const transitional=data?.code==='NOT_READY'||(!data?.isError&&(data?.package_name!=='dev.pocket.agent.fixture'||!data.nodes?.some((n:any)=>n.description==='AGENT_INPUT')));
   if(transitional) {
@@ -69,23 +76,31 @@ async function fixtureStep(context:any,owner:string,signal?:AbortSignal):Promise
    await delay(Math.min(500,remaining),signal);return call('phone_observe',{max_nodes:150});
   }
  }
+ if(last?.toolName==='phone_observe'&&data?.isError&&['NOT_READY','STALE_OBSERVATION'].includes(data.code)) {
+  const failedReads=tools.filter((m:any)=>m.toolName==='phone_observe'&&JSON.parse(messageText(m)).isError).length;
+  if(failedReads<=3){await delay(250,signal);return call('phone_observe',{max_nodes:150});}
+ }
  if(data?.isError)return {answer:`Fixture failed: ${JSON.stringify(data)}`};
  const caps=tools.find((m:any)=>m.toolName==='phone_capabilities');
  if(!caps) {await delay(Math.min(Number(task.match(/delay[=: ](\d+)/i)?.[1]??300),30000),signal);return call('phone_capabilities',{});}
  const prefix=JSON.parse(messageText(caps)).operation_prefix;
  if(!prefix)return {answer:'Fixture failed: capabilities did not provide an operation prefix.'};
  const nonce=`${owner.replaceAll('-','').slice(0,12)}${scope[0].timestamp}`;
- const op=(kind:string)=>`${prefix}_${nonce}${kind}`;
+ const op=(kind:string)=>`${prefix}_${nonce}${kind}${acts.length}`;
  if(!tools.some((m:any)=>m.toolName==='phone_batch'))return call('phone_batch',{calls:[{name:'phone_apps',args:{}},{name:'phone_capabilities',args:{}}]});
  if(!tools.some((m:any)=>m.toolName==='phone_open_app'))return call('phone_open_app',{package_name:'dev.pocket.agent.fixture',operation_id:op('open')});
  if(last.toolName==='phone_open_app'||last.toolName==='phone_act'){await delay(last.toolName==='phone_open_app'?500:250,signal);return call('phone_observe',{max_nodes:150});}
  if(last.toolName!=='phone_observe')return {answer:'Fixture failed: unexpected tool sequence.'};
  if(data.package_name!=='dev.pocket.agent.fixture')return {answer:`Fixture failed: foreground package was ${data.package_name??'unavailable'}`};
- if(!acts.length) {
+ if(!successfulActs.length) {
   if(!data.nodes?.some((n:any)=>n.description==='AGENT_INPUT'))return {answer:'Fixture failed: input selector missing.'};
   return call('phone_act',{kind:'type',snapshot_id:data.snapshot_id,selector:{description:'AGENT_INPUT'},text:'PocketWorks',replace:true,operation_id:op('type')});
  }
- if(acts.length===1)return call('phone_act',{kind:'click',snapshot_id:data.snapshot_id,selector:{text:'AGENT_CLICK'},operation_id:op('click')});
+ if(successfulActs.length===1) {
+  if(!data.nodes?.some((n:any)=>n.description==='AGENT_INPUT'&&n.text==='PocketWorks'))return {answer:'Fixture failed: typed input did not match before clicking.'};
+  if(!data.nodes?.some((n:any)=>n.text==='STATUS_READY'||n.text==='STATUS_CLICKED:PocketWorks COUNT:0'))return {answer:'Fixture failed: click precondition changed; no repeat dispatched.'};
+  return call('phone_act',{kind:'click',snapshot_id:data.snapshot_id,selector:{text:'AGENT_CLICK'},operation_id:op('click')});
+ }
  const verified=data.nodes?.some((n:any)=>n.text==='STATUS_CLICKED:PocketWorks COUNT:1');
  return {answer:verified?'Verified fixture outcome: STATUS_CLICKED:PocketWorks COUNT:1':`Fixture failed: expected status absent; observed ${JSON.stringify(data.nodes)}`};
 }

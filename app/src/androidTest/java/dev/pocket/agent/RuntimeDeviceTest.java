@@ -66,6 +66,9 @@ public class RuntimeDeviceTest {
             JSONObject partialBatch=new JSONObject().put("calls",new org.json.JSONArray().put(new JSONObject().put("name","phone_act").put("args",first)).put(new JSONObject().put("name","phone_act").put("args",second)));
             JSONObject partial=tools.execute("phone_batch",partialBatch,owner);
             assertEquals(partial.toString(),"partial",partial.optString("status"));
+            JSONObject stale=partial.getJSONArray("results").getJSONObject(1).getJSONObject("result");
+            assertEquals("STALE_OBSERVATION",stale.optString("code"));
+            assertEquals("not_dispatched",stale.optString("dispatch_status"));
             assertEquals(partial.toString(),tools.execute("phone_batch",partialBatch,owner).toString());
             Thread.sleep(300);
             assertTrue(tools.execute("phone_observe",new JSONObject(),owner).toString().contains("STATUS_CLICKED:PocketWorks COUNT:2"));

@@ -16,6 +16,8 @@ Upstream MIT notices remain in `runtime/vendor/pi9/LICENSE`, `runtime/PI-LICENSE
 
 `PocketNative.call(method, argsJson)` synchronously returns JSON `{ok,result,error}`. Methods are `tool` with `{name,args,owner}`, `store.load`, `store.save` with `{state}`, and `credentials.get`. `PocketNative.emit(eventJson)` delivers ready, state, activity, log, worker and error events. Native tools return direct data with structured `{isError,code,message,retry_safe}` failures. Observation images become Pi image content; saved screenshot histories are replaced by a text marker requesting a fresh observation.
 
+A `phone_act` stale-screen rejection recorded with `dispatch_status: "not_dispatched"` occurs before any action. Reobserve, verify current preconditions, and plan a new request with a new ID; the old receipt stays immutable. Unknown outcomes remain non-retryable without outcome inspection. Screen freshness is rechecked on the Android main thread immediately before dispatch. Batches expose this classification per entry; it does not apply to already completed entries.
+
 `PocketAgent.dispatch(json)` returns synchronous `{ok,accepted}` or `{ok:false,error}`; model work runs asynchronously. Supported commands:
 
 - `send {text,conversationId?}`: main message, or a worker follow-up. Active worker follow-ups steer; terminal follow-ups collect for the user and request a new generation.

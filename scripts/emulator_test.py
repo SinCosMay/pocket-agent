@@ -9,7 +9,7 @@ def run(*args, timeout=240, check=True):
     return result
 
 def main():
-    p=argparse.ArgumentParser();p.add_argument('--serial',required=True);p.add_argument('--artifacts',type=Path,required=True);p.add_argument('--live',action='store_true');p.add_argument('--fresh',action='store_true');a=p.parse_args()
+    p=argparse.ArgumentParser();p.add_argument('--serial',required=True);p.add_argument('--artifacts',type=Path,required=True);p.add_argument('--live',action='store_true');p.add_argument('--fresh',action='store_true');p.add_argument('--case',action='append',default=[]);a=p.parse_args()
     if not a.serial.startswith('emulator-'):raise SystemExit('Explicit emulator serial required; physical phones are excluded.')
     def adb(*args,**kw):return run('adb','-s',a.serial,*args,**kw)
     if adb('shell','getprop','ro.kernel.qemu').stdout.strip()!='1':raise SystemExit('Selected serial is not an emulator')
@@ -30,6 +30,8 @@ def main():
     report={'serial':a.serial,'apkSha256':hashlib.sha256(apk.read_bytes()).hexdigest(),'cases':[]}
     cases=[('RuntimeDeviceTest','nodeEmbeddingStreamingAndCancellation'),('RuntimeDeviceTest','directNativeFixtureAndMutationLedger'),('AsyncAgentDeviceTest','delegatedFixtureKeepsMainResponsiveAndCompletesOnce'),('LifecycleDeviceTest','activityRecreationKeepsWorker'),('LifecycleDeviceTest','reportFootprint'),('LifecycleDeviceTest','prepareProcessDeath'),('LifecycleDeviceTest','verifyProcessDeath')]
     if a.live:cases.append(('LiveProviderDeviceTest','liveCodexDelegationAndFixture'))
+    if a.case:cases=[case for case in cases if '#'.join(case) in a.case]
+    if not cases:raise SystemExit('No matching device test case')
     for cls,method in cases:
         adb('shell','am','force-stop','dev.pocket.agent.fixture');
         if method=='verifyProcessDeath':adb('shell','am','force-stop','dev.pocket.agent')
