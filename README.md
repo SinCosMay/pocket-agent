@@ -2,7 +2,7 @@
 
 An Android text assistant that delegates phone work to background agents while you keep talking to the main conversation. Pi and the adapted `@pi9/subagent` runtime run inside the app; workers call native Android tools directly.
 
-**Preview:** the planned first prerelease is `v0.1.0-preview.1`. Publication and full device QA are not claimed here. Check [Releases](https://github.com/ru-aish/pocket-agent/releases) for published downloads and [Actions](https://github.com/ru-aish/pocket-agent/actions/workflows/apk.yml) for successful build artifacts. See the [validation record](docs/VALIDATION.md) for evidence and outstanding checks.
+**Preview:** [v0.1.0-preview.1](https://github.com/ru-aish/pocket-agent/releases/tag/v0.1.0-preview.1) provides signed APKs and provenance. All eight local x86_64 emulator cases pass, including real Luna delegation and native fixture verification. ARM64 execution and standalone account login remain unfinished. See the [validation record](docs/VALIDATION.md) for measured results and remaining checks.
 
 ## Install and connect
 

@@ -1,0 +1,294 @@
+{
+  "date": "2026-10-15",
+  "source": "9aa40403a805e6f206714920320803e7cc505a96",
+  "build": "https://github.com/ru-aish/pocket-agent/actions/runs/38730703363",
+  "model": "gpt-6-luna",
+  "platform": "Fedora local API35 x86_64 emulator-5580",
+  "instrumentation": {
+    "serial": "emulator-5580",
+    "apkSha256": "de7fb029008239309fe1989e4ee0dd2fd342817c31b2fe50d1c627b2025717df",
+    "cases": [
+      {
+        "class": "RuntimeDeviceTest",
+        "method": "nodeEmbeddingStreamingAndCancellation",
+        "passed": true,
+        "log": "RuntimeDeviceTest-nodeEmbeddingStreamingAndCancellation.txt"
+      },
+      {
+        "class": "RuntimeDeviceTest",
+        "method": "directNativeFixtureAndMutationLedger",
+        "passed": true,
+        "log": "RuntimeDeviceTest-directNativeFixtureAndMutationLedger.txt"
+      },
+      {
+        "class": "AsyncAgentDeviceTest",
+        "method": "delegatedFixtureKeepsMainResponsiveAndCompletesOnce",
+        "passed": true,
+        "log": "AsyncAgentDeviceTest-delegatedFixtureKeepsMainResponsiveAndCompletesOnce.txt"
+      },
+      {
+        "class": "LifecycleDeviceTest",
+        "method": "activityRecreationKeepsWorker",
+        "passed": true,
+        "log": "LifecycleDeviceTest-activityRecreationKeepsWorker.txt"
+      },
+      {
+        "class": "LifecycleDeviceTest",
+        "method": "reportFootprint",
+        "passed": true,
+        "log": "LifecycleDeviceTest-reportFootprint.txt"
+      },
+      {
+        "class": "LifecycleDeviceTest",
+        "method": "prepareProcessDeath",
+        "passed": true,
+        "log": "LifecycleDeviceTest-prepareProcessDeath.txt"
+      },
+      {
+        "class": "LifecycleDeviceTest",
+        "method": "verifyProcessDeath",
+        "passed": true,
+        "log": "LifecycleDeviceTest-verifyProcessDeath.txt"
+      },
+      {
+        "class": "LiveProviderDeviceTest",
+        "method": "liveCodexDelegationAndFixture",
+        "passed": true,
+        "log": "LiveProviderDeviceTest-liveCodexDelegationAndFixture.txt"
+      }
+    ]
+  },
+  "artifactSha256": {
+    "Pocket-Agent-arm64.apk": "340d09377d32ad9a6d79df3e7c472fb8f354b1a66501c36348b319e5b28cb9ef",
+    "Pocket-Agent-x86_64.apk": "de7fb029008239309fe1989e4ee0dd2fd342817c31b2fe50d1c627b2025717df",
+    "Pocket-Agent-tests.apk": "cdfbd73e1e7fd5cb3d6c3c7f3f47c708fcfa19e0dde587d501f88d7ae8842411",
+    "Pocket-Agent-fixture.apk": "f0043eb65ad19b79ae348fc20b49bfbd6aa8d67fab34c2f10c374874ffa1cef8"
+  },
+  "payload": [
+    {
+      "apk": "Pocket-Agent-arm64.apk",
+      "sha256": "340d09377d32ad9a6d79df3e7c472fb8f354b1a66501c36348b319e5b28cb9ef",
+      "compressedApkBytes": 37331651,
+      "runtimeBytes": 604718,
+      "nativeUncompressedBytes": {
+        "lib/arm64-v8a/libjavet-node-android-i18n.v.6.0.2.so": 103523504
+      },
+      "packagingOnly": true
+    },
+    {
+      "apk": "Pocket-Agent-x86_64.apk",
+      "sha256": "de7fb029008239309fe1989e4ee0dd2fd342817c31b2fe50d1c627b2025717df",
+      "compressedApkBytes": 38595616,
+      "runtimeBytes": 604718,
+      "nativeUncompressedBytes": {
+        "lib/x86_64/libjavet-node-android-i18n.v.6.0.2.so": 105686368
+      },
+      "packagingOnly": true
+    },
+    {
+      "apk": "Pocket-Agent-universal.apk",
+      "sha256": "636b4ad1610443b37c637201dfcf05fbe0cb7eaafed36d21fa9f5eabe3bac170",
+      "compressedApkBytes": 75133357,
+      "runtimeBytes": 604718,
+      "nativeUncompressedBytes": {
+        "lib/arm64-v8a/libjavet-node-android-i18n.v.6.0.2.so": 103523504,
+        "lib/x86_64/libjavet-node-android-i18n.v.6.0.2.so": 105686368
+      },
+      "packagingOnly": true
+    }
+  ],
+  "evidence": {
+    "POCKET_NODE_GATE": {
+      "type": "gate",
+      "ok": true,
+      "node": "26.10.0",
+      "v8": "14.6.202.34-node.34",
+      "crypto": true,
+      "streamingReads": 2,
+      "cancelled": true,
+      "uuid": "aafe890b-c351-4f09-b9b3-dae0ef0814ba",
+      "memory": {
+        "rss": 223059968,
+        "heapTotal": 15450112,
+        "heapUsed": 9560928,
+        "external": 4454466,
+        "arrayBuffers": 201229
+      }
+    },
+    "POCKET_ASYNC_VERIFIED": {
+      "workerId": "gargantuan-otter",
+      "generation": 1,
+      "mainResponsive": true,
+      "completionOnce": true,
+      "nativeFixtureVerified": true,
+      "resumedGeneration": 2
+    },
+    "POCKET_ACTIVITY_RECREATION": {
+      "workerId": "lively-octopus",
+      "generation": 1,
+      "sameHost": true,
+      "completed": true
+    },
+    "POCKET_PROCESS_DEATH_PREPARED": {
+      "workerId": "frosty-stream",
+      "generation": 1,
+      "pid": 6953
+    },
+    "POCKET_PROCESS_DEATH_VERIFIED": {
+      "workerId": "frosty-stream",
+      "generation": 1,
+      "status": "interrupted",
+      "ledgerUnchanged": true,
+      "transcriptPreserved": true
+    },
+    "POCKET_FOOTPRINT": {
+      "pid": 6889,
+      "sdk": 35,
+      "abis": [
+        "x86_64"
+      ],
+      "version": "0.1.0",
+      "before": {
+        "pssKiB": 95766,
+        "node": {
+          "rss": 225538048,
+          "heapTotal": 17915904,
+          "heapUsed": 10538568,
+          "external": 4220946,
+          "arrayBuffers": 81115
+        },
+        "retainedWorkers": 2
+      },
+      "cycles": [
+        {
+          "cycle": 1,
+          "completionMs": 1266,
+          "sample": {
+            "pssKiB": 123608,
+            "node": {
+              "rss": 254169088,
+              "heapTotal": 18100224,
+              "heapUsed": 11807096,
+              "external": 4175101,
+              "arrayBuffers": 81115
+            },
+            "retainedWorkers": 3
+          }
+        },
+        {
+          "cycle": 2,
+          "completionMs": 1517,
+          "sample": {
+            "pssKiB": 98166,
+            "node": {
+              "rss": 230080512,
+              "heapTotal": 18399232,
+              "heapUsed": 11479648,
+              "external": 4175101,
+              "arrayBuffers": 81115
+            },
+            "retainedWorkers": 4
+          }
+        },
+        {
+          "cycle": 3,
+          "completionMs": 1546,
+          "sample": {
+            "pssKiB": 103842,
+            "node": {
+              "rss": 235859968,
+              "heapTotal": 19619840,
+              "heapUsed": 11923728,
+              "external": 4175101,
+              "arrayBuffers": 81115
+            },
+            "retainedWorkers": 5
+          }
+        },
+        {
+          "cycle": 4,
+          "completionMs": 1730,
+          "sample": {
+            "pssKiB": 109218,
+            "node": {
+              "rss": 236859392,
+              "heapTotal": 19779584,
+              "heapUsed": 12360464,
+              "external": 4175101,
+              "arrayBuffers": 81115
+            },
+            "retainedWorkers": 6
+          }
+        },
+        {
+          "cycle": 5,
+          "completionMs": 1714,
+          "sample": {
+            "pssKiB": 117466,
+            "node": {
+              "rss": 249724928,
+              "heapTotal": 20738048,
+              "heapUsed": 12924896,
+              "external": 4175101,
+              "arrayBuffers": 81115
+            },
+            "retainedWorkers": 7
+          }
+        }
+      ],
+      "after": {
+        "pssKiB": 118389,
+        "node": {
+          "rss": 250642432,
+          "heapTotal": 20738048,
+          "heapUsed": 12925920,
+          "external": 4175101,
+          "arrayBuffers": 81115
+        },
+        "retainedWorkers": 7
+      },
+      "idleCpuMs": 202,
+      "idleWallMs": 1001,
+      "apkBytes": 38595616,
+      "nativeLibraryBytes": 105686368,
+      "privateDataBytes": 1066288,
+      "scope": "Single device sample; includes Android and instrumentation overhead. No stock-runtime comparison or physical battery claim."
+    },
+    "LIVE_DEVICE_RESULT": {
+      "modelInference": true,
+      "backgroundWorker": true,
+      "mainAnsweredFour": true,
+      "answeredWhileWorkerActive": true,
+      "fixtureObserved": "STATUS_CLICKED:LiveCodex COUNT:1",
+      "workerNativeToolResults": 12
+    }
+  },
+  "normalIdle": {
+    "serial": "emulator-5580",
+    "pid": 7172,
+    "wallSeconds": 30.176920910998888,
+    "cpuMs": 10.0,
+    "cpuPercentOfOneCore": 0.033137907043243764,
+    "before": {
+      "cpuTicks": 591,
+      "startTicks": 717384,
+      "status": {
+        "VmSize": "17078964 kB",
+        "VmRSS": "236640 kB",
+        "Threads": "30"
+      }
+    },
+    "after": {
+      "cpuTicks": 592,
+      "startTicks": 717384,
+      "status": {
+        "VmSize": "17078964 kB",
+        "VmRSS": "236640 kB",
+        "Threads": "30"
+      }
+    },
+    "scope": "One normal app process on a rooted x86 emulator. No instrumentation in the app. CPU/RSS only; no battery, wakeup, network or stock-runtime comparison claim."
+  },
+  "arm64ExecutionVerified": false,
+  "standaloneAccountLoginImplemented": false
+}

@@ -32,6 +32,7 @@ def main():
     if a.live:cases.append(('LiveProviderDeviceTest','liveCodexDelegationAndFixture'))
     if a.case:cases=[case for case in cases if '#'.join(case) in a.case]
     if not cases:raise SystemExit('No matching device test case')
+    (a.artifacts/'emulator-results.json').write_text(json.dumps(report,indent=2)+'\n')
     for cls,method in cases:
         adb('shell','am','force-stop','dev.pocket.agent.fixture');
         if method=='verifyProcessDeath':adb('shell','am','force-stop','dev.pocket.agent')
@@ -46,6 +47,7 @@ def main():
         log=a.artifacts/f'{cls}-{method}.txt';log.write_text(result.stdout+result.stderr)
         passed='OK (' in result.stdout and 'FAILURES!!!' not in result.stdout
         report['cases'].append({'class':cls,'method':method,'passed':passed,'log':log.name})
+        (a.artifacts/'emulator-results.json').write_text(json.dumps(report,indent=2)+'\n')
         print(json.dumps(report['cases'][-1]),flush=True)
         if not passed:raise RuntimeError(result.stdout+result.stderr)
     (a.artifacts/'emulator-results.json').write_text(json.dumps(report,indent=2)+'\n')
