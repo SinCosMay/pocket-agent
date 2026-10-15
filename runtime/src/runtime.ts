@@ -244,7 +244,7 @@ export class PocketRuntime {
   }
   state():any {
     const tasks=this.runtime.listConversations().map(c=>{const g=c.generations.at(-1)!;return {...c,generation:g.generation,status:g.status.kind==='done'?({error:'failed',aborted:'cancelled',skipped:'cancelled'} as any)[g.status.outcome]??g.status.outcome:g.status.kind,output:g.status.kind==='done'?g.status.output:undefined};});
-    return {messages:textMessages(this.main.messages),tasks,busy:this.busy,active:this.busy||tasks.some(t=>t.currentGeneration)||(!this.mainPaused&&this.inbox.length>0)||Boolean(this.pendingSave),mainPaused:this.mainPaused,mainInterrupted:this.mainInterrupted,provider:{...this.config},mainTurns:this.mainTurns,
+    return {messages:textMessages(this.main.messages),tasks,busy:this.busy,active:this.busy||tasks.some(t=>t.currentGeneration||t.isStopping)||(!this.mainPaused&&this.inbox.length>0)||Boolean(this.pendingSave),mainPaused:this.mainPaused,mainInterrupted:this.mainInterrupted,provider:{...this.config},mainTurns:this.mainTurns,
       workerMessages:Object.fromEntries([...this.sessions].map(([id,s])=>[id,textMessages(s.messages)]))};
   }
   publish():void {if(!this.restoring){const state=this.state();this.emit({type:'state',state});this.emit({type:'activity',active:state.active});}}

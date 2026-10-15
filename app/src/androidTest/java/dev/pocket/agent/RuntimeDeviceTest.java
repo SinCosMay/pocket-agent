@@ -53,6 +53,16 @@ public class RuntimeDeviceTest {
             JSONObject other=tools.execute("phone_observe",new JSONObject(),"competing-worker");assertEquals(other.toString(),"SCREEN_BUSY",other.optString("code"));
             JSONObject invalidBatch=new JSONObject().put("calls",new org.json.JSONArray().put(new JSONObject().put("name","phone_act").put("args",click)).put(new JSONObject().put("name","phone_missing").put("args",new JSONObject())));
             assertTrue(tools.execute("phone_batch",invalidBatch,owner).optBoolean("isError"));
+            JSONObject first=new JSONObject(click.toString()).put("snapshot_id",verified.getString("snapshot_id")).put("operation_id",prefix+"_partial"+nonce);
+            JSONObject second=new JSONObject(click.toString()).put("snapshot_id","unknown-snapshot").put("operation_id",prefix+"_failed"+nonce);
+            JSONObject partialBatch=new JSONObject().put("calls",new org.json.JSONArray().put(new JSONObject().put("name","phone_act").put("args",first)).put(new JSONObject().put("name","phone_act").put("args",second)));
+            JSONObject partial=tools.execute("phone_batch",partialBatch,owner);
+            assertEquals(partial.toString(),"partial",partial.optString("status"));
+            assertEquals(partial.toString(),tools.execute("phone_batch",partialBatch,owner).toString());
+            Thread.sleep(300);
+            assertTrue(tools.execute("phone_observe",new JSONObject(),owner).toString().contains("STATUS_CLICKED:PocketWorks COUNT:2"));
+            JSONObject unavailable=tools.execute("phone_contacts",new JSONObject().put("query","Synthetic missing permission"),owner);
+            assertEquals(unavailable.toString(),"PERMISSION_REQUIRED",unavailable.optString("code"));
             System.out.println("POCKET_FIXTURE_VERIFIED="+verified);
         } finally {tools.releaseOwner(owner);}
     }

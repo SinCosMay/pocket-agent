@@ -8,7 +8,7 @@ export function toolResult(data:any):any {
   const json=JSON.stringify(text);
   const content:any[]=[{type:'text',text:json.length>32000?JSON.stringify({isError:true,code:'OUTPUT_LIMIT',message:'Native output exceeded 32 KB; narrow the query.'}):json}];
   for(const im of images.slice(0,1)) if(im.data && im.mimeType && im.data.length<=2000000) content.push({type:'image',data:im.data,mimeType:im.mimeType});
-  return {content,details:text};
+  return {content,details:json.length>32000?{isError:true,code:'OUTPUT_LIMIT'}:text,isError:Boolean(data?.isError)||json.length>32000};
 }
 export function nativeTools(host:any,owner:string,grant?:readonly string[]):any[] {
   return schemas.filter(s=>!grant || grant.includes(s.name)).map(s=>({

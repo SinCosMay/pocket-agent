@@ -177,6 +177,12 @@ public class LifecycleDeviceTest {
     private JSONObject sample(RuntimeHost h) throws Exception {
         return new JSONObject().put("pssKiB", Debug.getPss()).put("node", h.memoryStats().get(5, TimeUnit.SECONDS)).put("retainedWorkers", taskIds().size());
     }
+    private long directoryBytes(java.io.File path) {
+        if(path.isFile()) return path.length();
+        java.io.File[] children=path.listFiles();long size=0;
+        if(children!=null)for(java.io.File child:children)size+=directoryBytes(child);
+        return size;
+    }
     @Test public void reportFootprint() throws Exception {
         RuntimeHost h = scriptedHost();
         try {
@@ -195,6 +201,9 @@ public class LifecycleDeviceTest {
             JSONObject report = new JSONObject().put("pid", Process.myPid()).put("sdk", Build.VERSION.SDK_INT).put("abis", new JSONArray(Build.SUPPORTED_ABIS))
                     .put("version", context().getPackageManager().getPackageInfo(context().getPackageName(), 0).versionName)
                     .put("before", before).put("cycles", cycles).put("after", sample(h)).put("idleCpuMs", cpuMs).put("idleWallMs", wallMs)
+                    .put("apkBytes",new java.io.File(context().getApplicationInfo().sourceDir).length())
+                    .put("nativeLibraryBytes",directoryBytes(new java.io.File(context().getApplicationInfo().nativeLibraryDir)))
+                    .put("privateDataBytes",directoryBytes(context().getDataDir()))
                     .put("scope", "Single device sample; includes Android and instrumentation overhead. No stock-runtime comparison or physical battery claim.");
             System.out.println("POCKET_FOOTPRINT=" + report);
         } finally { stopAndIdle(h); }
