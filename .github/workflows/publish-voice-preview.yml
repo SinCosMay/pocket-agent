@@ -1,0 +1,36 @@
+name: Publish voice preview APK
+on:
+  push:
+    branches: ['feat/deepgram-voice-assistant']
+    paths: ['.github/workflows/publish-voice-preview.yml']
+permissions:
+  contents: write
+  actions: read
+jobs:
+  publish:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          name: pocket-agent-release
+          run-id: 38777355506
+          github-token: ${{ github.token }}
+          path: artifacts
+      - name: Verify signed source and release ARM64 preview
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ru-aish/pocket-agent
+        shell: bash
+        run: |
+          set -euo pipefail
+          test "$(cat artifacts/source-commit.txt)" = "5ace76b755c7d61485fdea8c5abcdf6966fe2631"
+          expected="$(awk '$2=="artifacts/Pocket-Agent-arm64.apk" {print $1}' artifacts/SHA256SUMS.txt)"
+          test -n "$expected"
+          actual="$(sha256sum artifacts/Pocket-Agent-arm64.apk | cut -d' ' -f1)"
+          test "$actual" = "$expected"
+          gh release create v0.1.2-voice-preview.1 \
+            "artifacts/Pocket-Agent-arm64.apk#Pocket-Agent-Voice-arm64.apk" \
+            --target 5ace76b755c7d61485fdea8c5abcdf6966fe2631 \
+            --prerelease \
+            --title "Pocket Agent Voice Preview 0.1.2" \
+            --notes "Signed ARM64 voice assistant preview from GitHub Actions run 38777355506. Includes Android digital-assistant integration, Deepgram Flux speech recognition, Aura speech synthesis, and Pi main-thread streaming. Configure Deepgram key, allow microphone, and select Pocket Agent as the default assistant. This is an experimental build; real network audio was verified but physical Android microphone/speaker playback has not yet been fully validated."
