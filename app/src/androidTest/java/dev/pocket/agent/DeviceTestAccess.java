@@ -16,6 +16,8 @@ final class DeviceTestAccess {
    java.util.LinkedHashSet<String> others=new java.util.LinkedHashSet<>();
    if(current!=null)for(String part:current.split(":"))if(!part.equals(name)&&!part.equals("dev.pocket.agent/dev.pocket.agent.AgentAccessibility")&&!part.isEmpty())others.add(part);
    Settings.Secure.putString(c.getContentResolver(),Settings.Secure.ENABLED_ACCESSIBILITY_SERVICES,String.join(":",others));
+   // Settings observers run asynchronously. Let the disabled state clear Android's crashed-service record.
+   Thread.sleep(300);
    others.add(name);Settings.Secure.putString(c.getContentResolver(),Settings.Secure.ENABLED_ACCESSIBILITY_SERVICES,String.join(":",others));
    Settings.Secure.putInt(c.getContentResolver(),Settings.Secure.ACCESSIBILITY_ENABLED,1);
   }finally{automation.dropShellPermissionIdentity();}
