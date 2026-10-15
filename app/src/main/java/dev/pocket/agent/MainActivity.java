@@ -25,6 +25,7 @@ import org.json.JSONObject;
 /** Small native text surface; service/session ownership never follows this Activity. */
 public final class MainActivity extends Activity implements AgentService.Observer {
     private TextView status, transcript, workerTranscript;
+    private ScrollView messages;
     private EditText input;
     private LinearLayout taskList;
     private Button send;
@@ -36,13 +37,15 @@ public final class MainActivity extends Activity implements AgentService.Observe
         LinearLayout root = column(); root.setPadding(dp(14), dp(12), dp(14), dp(12));
         root.setOnApplyWindowInsetsListener((view,insets)->{
             android.graphics.Insets bars=insets.getInsets(android.view.WindowInsets.Type.systemBars()|android.view.WindowInsets.Type.displayCutout()|android.view.WindowInsets.Type.ime());
+            android.view.WindowInsetsController controller=view.getWindowInsetsController();
+            if(controller!=null)controller.setSystemBarsAppearance(android.view.WindowInsetsController.APPEARANCE_LIGHT_STATUS_BARS|android.view.WindowInsetsController.APPEARANCE_LIGHT_NAVIGATION_BARS,android.view.WindowInsetsController.APPEARANCE_LIGHT_STATUS_BARS|android.view.WindowInsetsController.APPEARANCE_LIGHT_NAVIGATION_BARS);
             view.setPadding(dp(14)+bars.left,dp(12)+bars.top,dp(14)+bars.right,dp(12)+bars.bottom);return insets;
         });
         LinearLayout toolbar = row(); TextView title = text("Pocket Agent"); title.setTextSize(22); title.setTypeface(null, Typeface.BOLD);
         toolbar.addView(title, new LinearLayout.LayoutParams(0, -2, 1));
         toolbar.addView(button("Settings", this::settings)); root.addView(toolbar);
         status = text("Stopped · Send starts the runtime"); root.addView(status);
-        ScrollView messages = new ScrollView(this); transcript = text(""); transcript.setTextIsSelectable(true); transcript.setPadding(0, dp(12), 0, dp(12)); messages.addView(transcript);
+        messages = new ScrollView(this); transcript = text(""); transcript.setTextIsSelectable(true); transcript.setPadding(0, dp(12), 0, dp(12)); messages.addView(transcript);
         root.addView(messages, new LinearLayout.LayoutParams(-1, 0, 1));
         TextView tasksTitle = text("Tasks"); tasksTitle.setTypeface(null, Typeface.BOLD); root.addView(tasksTitle);
         ScrollView taskScroll = new ScrollView(this); taskList = column(); taskScroll.addView(taskList); root.addView(taskScroll, new LinearLayout.LayoutParams(-1, dp(112)));
@@ -67,8 +70,13 @@ public final class MainActivity extends Activity implements AgentService.Observe
     }
     private void render() {
         status.setText(!AgentService.isRunning() ? "Stopped · Send starts the runtime" : state.optBoolean("busy") ? "Main is responding" : state.optBoolean("active") ? "Workers active · Main is available" : "Ready");
-        if(AgentService.isRunning() && !state.optString("lastError").isEmpty()) status.setText("Error · "+state.optString("lastError"));
-        transcript.setText(formatMessages(state.optJSONArray("messages")));
+        if(AgentService.isRunning() && !state.isNull("lastError") && !state.optString("lastError").isEmpty()) status.setText("Error · "+state.optString("lastError"));
+        String rendered=formatMessages(state.optJSONArray("messages"));
+        if(!rendered.contentEquals(transcript.getText())) {
+            boolean follow=messages.getScrollY()+messages.getHeight()>=transcript.getHeight()-dp(48);
+            transcript.setText(rendered);
+            if(follow)messages.post(()->messages.fullScroll(View.FOCUS_DOWN));
+        }
         taskList.removeAllViews(); JSONArray tasks = state.optJSONArray("tasks");
         if (tasks == null || tasks.length() == 0) taskList.addView(text("No tasks yet"));
         else for (int i = 0; i < tasks.length(); i++) {
