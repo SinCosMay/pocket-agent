@@ -123,8 +123,10 @@ public final class VoiceListeningService extends Service implements AgentService
                 main.post(() -> {
                     if (!started) return;
                     streamingReady = true;
-                    showStatus("Listening");
-                    if (!responding && !userSpeaking) resetIdle();
+                    if (!responding && !userSpeaking) {
+                        showStatus("Listening");
+                        resetIdle();
+                    }
                 });
             }
             @Override public void onStatus(String status) {

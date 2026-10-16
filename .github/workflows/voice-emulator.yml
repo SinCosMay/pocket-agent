@@ -8,6 +8,7 @@ on:
       - 'app/src/main/java/dev/pocket/agent/VoiceListeningService.java'
       - 'app/src/androidTest/java/dev/pocket/agent/InstantVoiceCaptureDeviceTest.java'
       - 'app/proguard-rules.pro'
+      - 'app/build.gradle.kts'
   workflow_dispatch:
 permissions:
   contents: read
@@ -33,7 +34,14 @@ jobs:
           arch: x86_64
           target: google_apis
           emulator-options: -no-window -gpu swiftshader_indirect -no-snapshot -no-boot-anim -no-audio
-          script: ./gradlew --no-daemon :app:connectedDebugAndroidTest -PvoiceEmulatorTest=true -Pandroid.testInstrumentationRunnerArguments.class=dev.pocket.agent.InstantVoiceCaptureDeviceTest
+          script: |
+            # Grant permission only on this ephemeral CI emulator, then restore it.
+            ./gradlew --no-daemon :app:installDebug -PvoiceEmulatorTest=true
+            adb shell pm grant dev.pocket.agent android.permission.RECORD_AUDIO
+            result=0
+            ./gradlew --no-daemon :app:connectedDebugAndroidTest -PvoiceEmulatorTest=true -Pandroid.testInstrumentationRunnerArguments.class=dev.pocket.agent.InstantVoiceCaptureDeviceTest || result=$?
+            adb shell pm revoke dev.pocket.agent android.permission.RECORD_AUDIO
+            exit "$result"
       - name: Publish emulator test reports
         if: always()
         uses: actions/upload-artifact@v4
