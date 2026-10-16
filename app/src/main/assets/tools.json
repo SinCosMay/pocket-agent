@@ -219,6 +219,38 @@
     }
   },
   {
+    "name": "phone_open_url",
+    "description": "Open a validated HTTP(S) URL via Android ACTION_VIEW on the private agent display. Verify the actual browser after launch; not a page-read API.",
+    "inputSchema": {
+      "type": "object",
+      "properties": {
+        "url": {
+          "type": "string",
+          "minLength": 8,
+          "maxLength": 2048
+        },
+        "operation_id": {
+          "type": "string",
+          "minLength": 27,
+          "maxLength": 78,
+          "description": "Current phone_capabilities.operation_prefix + '_' + a unique 8..48 character nonce using only ASCII letters, digits, '_' or '-'. Include owner/generation/action/attempt or a timestamp for uniqueness. A valid suffix example is _type_0001; never reuse the example across actions. Preserve identical IDs/arguments after uncertain results.",
+          "pattern": "^[0-9]{1,12}-[0-9a-f]{16}_[A-Za-z0-9_-]{8,48}$"
+        }
+      },
+      "required": [
+        "url",
+        "operation_id"
+      ],
+      "additionalProperties": false
+    },
+    "annotations": {
+      "readOnlyHint": false,
+      "destructiveHint": true,
+      "idempotentHint": true,
+      "openWorldHint": true
+    }
+  },
+  {
     "name": "phone_contacts",
     "description": "Find phone contacts via Android Contacts Provider. Resolve ambiguous names or numbers before calling.",
     "inputSchema": {
@@ -293,11 +325,48 @@
   },
   {
     "name": "phone_calendars",
-    "description": "List Calendar Provider calendars and writable flags.",
+    "description": "List local calendars, their owning account name/type, visibility and write permission; choose calendar_id for direct event queries or creation.",
     "inputSchema": {
       "type": "object",
       "properties": {},
       "required": [],
+      "additionalProperties": false
+    },
+    "annotations": {
+      "readOnlyHint": true,
+      "destructiveHint": false,
+      "idempotentHint": true,
+      "openWorldHint": true
+    }
+  },
+  {
+    "name": "phone_calendar_events",
+    "description": "Read up to 50 expanded calendar instances between two epoch milliseconds, including recurring events, without screen access.",
+    "inputSchema": {
+      "type": "object",
+      "properties": {
+        "start_ms": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "end_ms": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "calendar_id": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "limit": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 50
+        }
+      },
+      "required": [
+        "start_ms",
+        "end_ms"
+      ],
       "additionalProperties": false
     },
     "annotations": {
@@ -444,6 +513,40 @@
     }
   },
   {
+    "name": "phone_clock_screen",
+    "description": "Open the device Clock alarms or timers page via standard Android intent on private agent display. Read on-screen list through phone_observe; no universal alarm-list API.",
+    "inputSchema": {
+      "type": "object",
+      "properties": {
+        "screen": {
+          "type": "string",
+          "enum": [
+            "alarms",
+            "timers"
+          ]
+        },
+        "operation_id": {
+          "type": "string",
+          "minLength": 27,
+          "maxLength": 78,
+          "description": "Current phone_capabilities.operation_prefix + '_' + a unique 8..48 character nonce using only ASCII letters, digits, '_' or '-'. Include owner/generation/action/attempt or a timestamp for uniqueness. A valid suffix example is _type_0001; never reuse the example across actions. Preserve identical IDs/arguments after uncertain results.",
+          "pattern": "^[0-9]{1,12}-[0-9a-f]{16}_[A-Za-z0-9_-]{8,48}$"
+        }
+      },
+      "required": [
+        "screen",
+        "operation_id"
+      ],
+      "additionalProperties": false
+    },
+    "annotations": {
+      "readOnlyHint": false,
+      "destructiveHint": true,
+      "idempotentHint": true,
+      "openWorldHint": true
+    }
+  },
+  {
     "name": "phone_sms",
     "description": "Submit SMS through SmsManager with per-part sent/delivery receipts. Check phone_operation afterward. Requires SEND_SMS and a valid/default SMS SIM; never replay with a new ID after uncertain result. operation_id must be phone_capabilities.operation_prefix + underscore + a unique 8..48 character nonce; reuse identical IDs and arguments after uncertain results.",
     "inputSchema": {
@@ -492,6 +595,38 @@
     "inputSchema": {
       "type": "object",
       "properties": {},
+      "required": [],
+      "additionalProperties": false
+    },
+    "annotations": {
+      "readOnlyHint": true,
+      "destructiveHint": false,
+      "idempotentHint": true,
+      "openWorldHint": true
+    }
+  },
+  {
+    "name": "phone_notification_read",
+    "description": "Read a bounded page of current notifications (not chat history). offset is a best-effort paging cursor; use next_offset when truncated. Requires notification listener access.",
+    "inputSchema": {
+      "type": "object",
+      "properties": {
+        "package_name": {
+          "type": "string",
+          "minLength": 3,
+          "maxLength": 200
+        },
+        "limit": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 50
+        },
+        "offset": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 2147483647
+        }
+      },
       "required": [],
       "additionalProperties": false
     },
