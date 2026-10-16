@@ -1,6 +1,8 @@
 package dev.pocket.agent;
 
 import android.content.Context;
+import android.os.Handler;
+import android.os.Looper;
 import dev.pocket.android.AndroidScreenBackend;
 import dev.pocket.control.ControlException;
 import java.util.LinkedHashMap;
@@ -14,6 +16,14 @@ final class AgentDisplayCoordinator implements AutoCloseable {
     private final Context context;
     private final Map<String,Integer> displays=new LinkedHashMap<>();
     private ShizukuDisplayClient client;
+    private final Handler idleHandler=new Handler(Looper.getMainLooper());
+    private final Runnable idleShutdown=()->{
+        synchronized(this) {
+            if(displays.isEmpty() && client!=null) {
+                ShizukuDisplayClient closing=client;client=null;closing.close();
+            }
+        }
+    };
 
     AgentDisplayCoordinator(Context context) {this.context=context.getApplicationContext();}
 
@@ -23,6 +33,7 @@ final class AgentDisplayCoordinator implements AutoCloseable {
     }
 
     synchronized JSONObject acquire(String owner) throws ControlException {
+        idleHandler.removeCallbacks(idleShutdown);
         Integer existing=displays.get(owner);
         if(existing!=null) return Json.obj("status","acquired","display_id",existing,"owner",owner);
         if(displays.size()>=MAX_DISPLAYS)
@@ -34,6 +45,7 @@ final class AgentDisplayCoordinator implements AutoCloseable {
                 throw new ControlException(NOT_READY,"Virtual display backend supplied invalid or duplicate display ID");
             }
             displays.put(owner,id);
+            try {launchWorkspace(owner);} catch(ControlException | RuntimeException error) {release(owner);throw error;}
             return Json.obj("status","acquired","display_id",id,"owner",owner);
         } catch(ControlException | RuntimeException error) {
             stopIfIdle();
@@ -56,6 +68,9 @@ final class AgentDisplayCoordinator implements AutoCloseable {
         return observer.backend(id);
     }
 
+    synchronized void launchWorkspace(String owner) throws ControlException {
+        client().launch(display(owner),new android.content.ComponentName(context,VirtualWorkspaceActivity.class).flattenToString());
+    }
     synchronized void launch(String owner,String component) throws ControlException {client().launch(display(owner),component);}
     synchronized void openUrl(String owner,String url) throws ControlException {int id=display(owner);client().openUrl(id,url);}
     synchronized void showClock(String owner,String screen) throws ControlException {int id=display(owner);client().showClock(id,screen);}
@@ -75,11 +90,14 @@ final class AgentDisplayCoordinator implements AutoCloseable {
         AgentAccessibility observer=AgentAccessibility.connected;
         if(observer!=null) for(int id:displays.values())observer.release(id);
         displays.clear();
+        stopIfIdle();
     }
 
     private synchronized void stopIfIdle() {
-        if(!displays.isEmpty()||client==null)return;
-        ShizukuDisplayClient closing=client;client=null;closing.close();
+        if(displays.isEmpty() && client!=null) {
+            idleHandler.removeCallbacks(idleShutdown);
+            idleHandler.postDelayed(idleShutdown,10_000);
+        }
     }
 
     synchronized int activeCount() {return displays.size();}
@@ -87,6 +105,7 @@ final class AgentDisplayCoordinator implements AutoCloseable {
 
     @Override public synchronized void close() {
         for(String owner:java.util.List.copyOf(displays.keySet()))release(owner);
-        stopIfIdle();
+        idleHandler.removeCallbacks(idleShutdown);
+        if(client!=null) {ShizukuDisplayClient closing=client;client=null;closing.close();}
     }
 }

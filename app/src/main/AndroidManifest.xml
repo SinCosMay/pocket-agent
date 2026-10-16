@@ -33,6 +33,7 @@
         <activity android:name=".MainActivity" android:exported="true" android:windowSoftInputMode="adjustResize">
             <intent-filter><action android:name="android.intent.action.MAIN" /><category android:name="android.intent.category.LAUNCHER" /></intent-filter>
         </activity>
+        <activity android:name=".VirtualWorkspaceActivity" android:exported="true" android:excludeFromRecents="true" />
         <service android:name=".PocketVoiceInteractionService" android:label="Pocket Agent" android:exported="true"
             android:permission="android.permission.BIND_VOICE_INTERACTION">
             <intent-filter><action android:name="android.service.voice.VoiceInteractionService" /></intent-filter>
