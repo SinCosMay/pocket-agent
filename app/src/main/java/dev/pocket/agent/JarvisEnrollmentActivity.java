@@ -56,7 +56,7 @@ public final class JarvisEnrollmentActivity extends Activity {
         title.setTextSize(25);
         layout.addView(title);
         TextView subtitle = new TextView(this);
-        subtitle.setText("Calibrate the wake phrase locally to reduce accidental triggers. This is not speaker identity verification. Say each prompted phrase, then try waking Pocket Agent. Raw audio is not retained.");
+        subtitle.setText("Speak only when the screen says Speak now. The first second warms up the microphone and model. This calibration is not speaker identity verification. Raw audio is not retained.");
         layout.addView(subtitle);
         prompt = new TextView(this);
         prompt.setTextSize(23);
@@ -120,7 +120,7 @@ public final class JarvisEnrollmentActivity extends Activity {
                 if (destroying || Thread.currentThread().isInterrupted()) return;
                 if(checkSelfPermission(Manifest.permission.RECORD_AUDIO)!=PackageManager.PERMISSION_GRANTED)
                     throw new SecurityException("Microphone permission revoked");
-                audio=new AudioRecord(MediaRecorder.AudioSource.VOICE_RECOGNITION,16000,
+                audio=new AudioRecord(WakeWordSettings.audioSource(this),16000,
                     AudioFormat.CHANNEL_IN_MONO,AudioFormat.ENCODING_PCM_16BIT,Math.max(size,4096));
                 if(audio.getState()!=AudioRecord.STATE_INITIALIZED)
                     throw new IllegalStateException("Microphone unavailable");
@@ -129,32 +129,41 @@ public final class JarvisEnrollmentActivity extends Activity {
                 audio.startRecording();
                 if(audio.getRecordingState()!=AudioRecord.RECORDSTATE_RECORDING)
                     throw new IllegalStateException("Microphone is busy");
-                runOnUiThread(()->info.setText("Listening now — "+PROMPTS[captureSlot]));
+                runOnUiThread(()->info.setText("Preparing microphone… speak when prompted"));
                 short[] frame=new short[1280];int pending=0;
-                long deadline=SystemClock.elapsedRealtime()+(captureSlot<5?3400:4800);
+                long startedAt=SystemClock.elapsedRealtime();
+                long warmupUntil=startedAt+1200;
+                long deadline=warmupUntil+(captureSlot<5?4200:5200);
                 float peak=0;float[] best=null;int frames=0;double energy=0;
-                double loudestSpeechFrame = 0;
+                int speechSamples=0;
+                double loudestSpeechFrame=0;
+                boolean prompted=false;
                 while(SystemClock.elapsedRealtime()<deadline&&!Thread.currentThread().isInterrupted()) {
                     int count=audio.read(frame,pending,frame.length-pending);
                     if(count<=0)throw new IllegalStateException("Microphone stopped");
-                    for(int i=pending;i<pending+count;i++)energy+=((double)frame[i]/32768)*((double)frame[i]/32768);
                     pending+=count;
                     if(pending<frame.length)continue;
                     pending=0;frames++;
                     float score=detector.process(frame);
+                    if (SystemClock.elapsedRealtime()<warmupUntil) continue;
+                    if (!prompted) {
+                        prompted=true;
+                        runOnUiThread(()->info.setText("Speak now — "+PROMPTS[captureSlot]));
+                    }
+                    double frameEnergy=0;
+                    for(short value:frame)frameEnergy+=((double)value/32768)*((double)value/32768);
+                    energy+=frameEnergy;
+                    speechSamples+=frame.length;
                     if (score>peak) { peak=score; if(captureSlot<5) best=detector.featureSnapshot(); }
-                    if (captureSlot>=5 && frames>=15) {
-                        double frameEnergy=0;
-                        for (short value:frame) frameEnergy += ((double)value/32768)*((double)value/32768);
-                        if (frameEnergy>loudestSpeechFrame) {
-                            loudestSpeechFrame=frameEnergy;
-                            best=detector.featureSnapshot();
-                        }
+                    if (captureSlot>=5 && frameEnergy>loudestSpeechFrame) {
+                        loudestSpeechFrame=frameEnergy;
+                        best=detector.featureSnapshot();
                     }
                 }
-                if(frames<15||energy<1)throw new IllegalStateException("Not enough audible speech; retake the phrase");
-                if(captureSlot<5&&peak<0.15f)
-                    throw new IllegalStateException("Hey Jarvis was not recognized; please retake clearly");
+                double rms=speechSamples==0?0:Math.sqrt(energy/speechSamples);
+                if(frames<15||speechSamples<16000||rms<0.003)
+                    throw new IllegalStateException("Microphone captured very little speech (level " +
+                        Math.round(rms*1000)/10.0 + "%). Check mic source, distance, and permission.");
                 if(best==null)throw new IllegalStateException("Could not extract voice features");
                 float[] retained=best;
                 float confidence=peak;
@@ -163,7 +172,11 @@ public final class JarvisEnrollmentActivity extends Activity {
                     samples[captureSlot]=retained;
                     busy=false;
                     render();
-                    info.setText("Recorded. Generic confidence: "+Math.round(confidence*100)+"%");
+                    info.setText("Generic confidence: "+Math.round(confidence*100)+"% · mic RMS level: "+
+                        String.format(java.util.Locale.ROOT,"%.1f%%",rms*100)+
+                        (captureSlot<5 && confidence<0.15f
+                        ? " · Low model match despite captured speech. Try the other microphone source, repeat, or test a lower threshold cautiously."
+                        : " · Recording complete."));
                     if(position==captureSlot&&position<PROMPTS.length-1){position++;render();}
                 });
             } catch(Exception problem) {

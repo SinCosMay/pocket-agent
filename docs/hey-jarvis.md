@@ -2,7 +2,9 @@
 
 Pocket Agent supports an optional, user-enabled Android microphone foreground service that
 runs openWakeWord entirely on-device. The detector uses 16 kHz mono PCM and evaluates one
-80 ms frame at a time with a default decision threshold of **0.75**. ONNX inference is
+80 ms frame at a time with a default decision threshold of **0.75**. Settings exposes an adjustable 1–99% confidence threshold,
+persisted separately from cloud credentials and applied to active listening without restarting.
+Thresholds below 30% are deliberately marked experimental because of false activations. ONNX inference is
 single-threaded. The Node/Pi runtime, Deepgram STT and TTS are not started until a wake-word
 detection. Android will show the microphone privacy indicator while enabled.
 
@@ -46,3 +48,20 @@ The openWakeWord pretrained model weights are under CC BY-NC-SA 4.0, not the Apa
 for the openWakeWord source. The APK bundles `assets/wakeword/NOTICE.txt`, the three model
 files and the ONNX Runtime MIT copyright notice. This is intended for permitted
 noncommercial evaluation and must not be shipped commercially without licensing review.
+
+## Low-confidence diagnostics
+
+Synthetic wake-phrase fixture tests exercise the model but cannot establish accuracy for
+an individual accent or Xiaomi microphone hardware. When enrollment shows a very low
+generic confidence (for example 1–3%), first check the capture signal. The enrollment
+recorder now warms up for 1.2 seconds before prompting "Speak now", captures 4.2 seconds
+of wake-phrase audio, and displays its measured microphone RMS level alongside the peak
+generic confidence. Users can switch between Android VOICE_RECOGNITION (original default)
+and standard MIC sources under Settings; stop and restart wake listening to apply the source
+to its foreground service. Both enrollment and wake listening use that same source.
+
+If the audio level is low, investigate microphone routing, physical position, OS permissions
+and noise suppression. If audio RMS is healthy but the generic confidence remains very low,
+this pretrained model may not match the user's pronunciation. A lower threshold is only
+for experimentation: it does **not** fix the model or provide speaker recognition. A
+better model/retraining based on representative speech would be the next step.

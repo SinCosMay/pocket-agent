@@ -40,7 +40,13 @@ public final class WakeWordService extends Service {
     private volatile Thread thread;
     private volatile boolean paused, transitioning;
     private volatile boolean enabled;
+    private volatile float threshold = JarvisDetector.DEFAULT_THRESHOLD;
     private JarvisDetector detector;
+
+    static void updateThreshold(float value) {
+        WakeWordService service = running;
+        if (service != null) service.threshold = value;
+    }
 
     static boolean isListening() {
         WakeWordService service = running;
@@ -114,6 +120,7 @@ public final class WakeWordService extends Service {
             getSharedPreferences("wakeword", MODE_PRIVATE).edit().putBoolean("enabled", true).apply();
         }
         enabled = enabled(this);
+        threshold = WakeWordSettings.threshold(this);
         if (!enabled) { stopSelf(); return START_NOT_STICKY; }
         try {
             startForeground(NOTIFICATION, notification("Ready for Hey Jarvis"),
@@ -182,7 +189,7 @@ public final class WakeWordService extends Service {
             if (buffer < 0) throw new IllegalStateException("16 kHz microphone unavailable");
             if (checkSelfPermission(Manifest.permission.RECORD_AUDIO) != PackageManager.PERMISSION_GRANTED)
                 throw new SecurityException("Microphone permission revoked");
-            record = new AudioRecord(MediaRecorder.AudioSource.VOICE_RECOGNITION, 16000,
+            record = new AudioRecord(WakeWordSettings.audioSource(this), 16000,
                 AudioFormat.CHANNEL_IN_MONO, AudioFormat.ENCODING_PCM_16BIT, Math.max(4096, buffer));
             if (record.getState() != AudioRecord.STATE_INITIALIZED)
                 throw new IllegalStateException("Microphone initialization failed");
@@ -208,9 +215,9 @@ public final class WakeWordService extends Service {
                 System.arraycopy(data, 0, history[historyPosition], 0, data.length);
                 historyPosition = (historyPosition + 1) % history.length;
                 float baseConfidence = detector.process(data);
-                float confidence = profile == null || baseConfidence < 0.12f ? baseConfidence
+                float confidence = profile == null ? baseConfidence
                     : profile.adjust(detector.featureSnapshot(), baseConfidence);
-                if (confidence >= JarvisDetector.DEFAULT_THRESHOLD) {
+                if (confidence >= threshold) {
                     triggered = true;
                     transitioning = true;
                     recording.set(false);

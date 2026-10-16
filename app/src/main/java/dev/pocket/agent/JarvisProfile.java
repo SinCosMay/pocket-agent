@@ -17,7 +17,6 @@ final class JarvisProfile {
             this.positive = positive; this.negative = negative; this.threshold = threshold;
         }
         float adjust(float[] features, float baseScore) {
-            if (baseScore < 0.12f) return baseScore;
             float margin = similarity(features, positive) - similarity(features, negative);
             return margin >= threshold ? baseScore : 0f;
         }

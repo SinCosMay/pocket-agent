@@ -50,3 +50,6 @@
 -keep interface dev.pocket.agent.DeepgramVoice$SocketConnector { *; }
 -keep class okio.ByteString { *; }
 -keep class okio.ByteString$Companion { *; }
+
+# Release instrumentation directly exercises persisted local wake tuning.
+-keep class dev.pocket.agent.WakeWordSettings { *; }
