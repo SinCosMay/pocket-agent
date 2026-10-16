@@ -26,5 +26,6 @@
 -keep class dev.pocket.agent.VoiceTextChunker { *; }
 -keep class dev.pocket.agent.VoiceCredentialStore { *; }
 -keep class dev.pocket.agent.VoiceAnnouncement { *; }
+-keep class dev.pocket.agent.VoiceListeningService { *; }
 
 -keep class dev.pocket.agent.MemoryStore { *; }
