@@ -48,6 +48,8 @@ public final class AgentService extends Service {
     @Override public int onStartCommand(Intent intent, int flags, int startId) {
         if (intent == null) return START_NOT_STICKY;
         if (ACTION_STOP.equals(intent.getAction())) {
+            WakeWordService.disableImmediately(this);
+            stopService(new Intent(this, WakeWordService.class));
             stopService(new Intent(this, VoiceListeningService.class));
             stopSelf(); return START_NOT_STICKY;
         }

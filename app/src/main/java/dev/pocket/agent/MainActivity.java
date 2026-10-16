@@ -25,6 +25,8 @@ import android.widget.EditText;
 import android.widget.LinearLayout;
 import android.widget.ScrollView;
 import android.widget.Spinner;
+import android.widget.SeekBar;
+import android.widget.CheckBox;
 import android.widget.TextView;
 import android.widget.Toast;
 import org.json.JSONArray;
@@ -194,6 +196,59 @@ public final class MainActivity extends Activity implements AgentService.Observe
         panel.addView(button("Choose phone permissions", this::permissions));
         panel.addView(text("Voice uses Deepgram streaming speech recognition and synthesis with the Pi main agent. Listening stops after six seconds of idle silence or when you tap Stop listening in the notification. Background workers continue."));
         panel.addView(button("Deepgram voice key", this::voiceKeySettings));
+        panel.addView(text("Hey Jarvis runs locally at 16 kHz. The wake-word sensitivity below is saved across restarts and applies immediately to an active listener."));
+        TextView wakeConfidenceLabel = text("");
+        wakeConfidenceLabel.setTextSize(16);
+        panel.addView(wakeConfidenceLabel);
+        SeekBar wakeConfidence = new SeekBar(this);
+        wakeConfidence.setMax(WakeWordSettings.MAX_PERCENT - WakeWordSettings.MIN_PERCENT);
+        wakeConfidence.setProgress(WakeWordSettings.thresholdPercent(this) - WakeWordSettings.MIN_PERCENT);
+        panel.addView(wakeConfidence);
+        TextView thresholdExplanation = text("");
+        panel.addView(thresholdExplanation);
+        java.util.function.IntConsumer updateWakeLabel = percent -> {
+            wakeConfidenceLabel.setText("Hey Jarvis confidence threshold: " + percent + "%");
+            thresholdExplanation.setText(percent < 30
+                ? "Very sensitive · experimental: unrelated speech may activate Pocket Agent"
+                : percent < 65 ? "More sensitive · more wake-ups, but greater false-trigger risk"
+                : percent > 85 ? "Strict · fewer false triggers, but may miss your voice"
+                : "Balanced · higher requires stronger wake-word confidence");
+        };
+        updateWakeLabel.accept(WakeWordSettings.thresholdPercent(this));
+        wakeConfidence.setOnSeekBarChangeListener(new SeekBar.OnSeekBarChangeListener() {
+            @Override public void onProgressChanged(SeekBar bar, int value, boolean fromUser) {
+                int percent = value + WakeWordSettings.MIN_PERCENT;
+                updateWakeLabel.accept(percent);
+                if (fromUser) WakeWordSettings.setThresholdPercent(MainActivity.this, percent);
+            }
+            @Override public void onStartTrackingTouch(SeekBar bar) { }
+            @Override public void onStopTrackingTouch(SeekBar bar) {
+                toast("Hey Jarvis threshold saved: " +
+                    (bar.getProgress() + WakeWordSettings.MIN_PERCENT) + "%");
+            }
+        });
+        panel.addView(button("Reset wake threshold to 75%", () -> {
+            WakeWordSettings.setThresholdPercent(this, WakeWordSettings.DEFAULT_PERCENT);
+            wakeConfidence.setProgress(WakeWordSettings.DEFAULT_PERCENT - WakeWordSettings.MIN_PERCENT);
+            toast("Hey Jarvis threshold reset to 75%");
+        }));
+        CheckBox standardMic = new CheckBox(this);
+        standardMic.setText("Use standard microphone for Hey Jarvis (troubleshooting)");
+        standardMic.setChecked(WakeWordSettings.standardMicrophone(this));
+        standardMic.setOnCheckedChangeListener((button, checked) -> {
+            WakeWordSettings.setStandardMicrophone(this, checked);
+            toast("Microphone source saved. Disable and re-enable Hey Jarvis to apply.");
+        });
+        panel.addView(standardMic);
+        panel.addView(text("If enrollment repeatedly shows 1–3% confidence, try the standard microphone and compare the signal level shown during enrollment. This helps distinguish poor input audio from a wake model that does not match your speech. Lowering the threshold does not retrain the model."));
+        panel.addView(text("Optional calibration tunes the phrase detector; it does NOT authenticate your identity. Deepgram and the agent start only after detection."));
+        panel.addView(button("Enable Hey Jarvis always-listening", this::enableWakeWord));
+        panel.addView(button("Disable Hey Jarvis", () -> {
+            startService(new Intent(this, WakeWordService.class).setAction(WakeWordService.ACTION_DISABLE));
+            toast("Hey Jarvis disabled");
+        }));
+        panel.addView(button("Calibrate my Hey Jarvis phrase", () ->
+            startActivity(new Intent(this, JarvisEnrollmentActivity.class))));
         panel.addView(button("Allow microphone", () -> requestPermissions(new String[]{Manifest.permission.RECORD_AUDIO}, 103)));
         panel.addView(button("Allow voice notification", () -> {
             if (Build.VERSION.SDK_INT >= 33 &&
@@ -335,6 +390,32 @@ public final class MainActivity extends Activity implements AgentService.Observe
             } else toast("Shizuku permission granted; up to three background displays are available on demand");
         }catch(Exception error){toast("Shizuku unavailable; start it and authorize Pocket Agent");}
     }
+    private void enableWakeWord() {
+        if (checkSelfPermission(Manifest.permission.RECORD_AUDIO) != PackageManager.PERMISSION_GRANTED) {
+            requestPermissions(new String[]{Manifest.permission.RECORD_AUDIO}, 108);
+            return;
+        }
+        boolean configured;
+        try { configured = new VoiceCredentialStore(this).configured(); }
+        catch (RuntimeException unreadable) {
+            toast("Stored Deepgram key is unavailable; re-enter your voice key"); return;
+        }
+        if (!configured) { toast("Configure Deepgram voice key first"); return; }
+        try {
+            startForegroundService(new Intent(this, WakeWordService.class)
+                .setAction(WakeWordService.ACTION_ENABLE));
+            toast("Hey Jarvis enabled");
+        } catch (RuntimeException denied) { toast("Android denied background listening"); }
+    }
+
+    @Override public void onRequestPermissionsResult(int requestCode, String[] permissions, int[] results) {
+        super.onRequestPermissionsResult(requestCode, permissions, results);
+        if (requestCode == 108) {
+            if (results.length != 0 && results[0] == PackageManager.PERMISSION_GRANTED) enableWakeWord();
+            else toast("Microphone permission is required for Hey Jarvis");
+        }
+    }
+
     private void permissions() {
         String[] labels = {"Contacts", "Phone calls and phone status", "Send SMS", "Read and edit calendar", "Runtime notifications"};
         boolean[] selected = new boolean[labels.length];

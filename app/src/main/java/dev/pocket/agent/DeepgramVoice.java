@@ -39,15 +39,22 @@ final class DeepgramVoice implements AutoCloseable {
         void onPlaybackFinished();
         void onFirstAudio();
         void onStatus(String message);
+        void onStreamReady();
     }
 
     private static final long FLUSH_TIMEOUT_MS = 30000L;
+    private static final long CONNECT_RETRY_MS = 1500L;
+    private static final int MAX_CAPTURE_BYTES = 2_560_000; // 80 seconds of mono PCM16.
+    private static final long MAX_SOCKET_QUEUE_BYTES = 256_000L;
     private static final String STT_URL = "wss://api.deepgram.com/v2/listen?model=flux-general-en&encoding=linear16&sample_rate=16000";
     private static final String TTS_URL = "wss://api.deepgram.com/v1/speak?model=aura-2-thalia-en&encoding=linear16&sample_rate=24000";
     private final Context context;
     private final Callback callback;
     private final OkHttpClient client;
     private final String key;
+    interface SocketConnector { WebSocket open(Request request, WebSocketListener listener); }
+    private final SocketConnector connector;
+    private final String sttUrl;
     private final ExecutorService playerQueue = Executors.newSingleThreadExecutor(r -> {
         Thread thread = new Thread(r, "PocketVoiceOutput");
         thread.setDaemon(true);
@@ -62,6 +69,8 @@ final class DeepgramVoice implements AutoCloseable {
     private volatile boolean responseOpen;
     private volatile long playbackEpoch;
     private WebSocket sttSocket, ttsSocket;
+    private final PcmCaptureQueue captured = new PcmCaptureQueue(MAX_CAPTURE_BYTES);
+    private boolean sttReady, streamReadyNotified;
     private boolean ttsReady, hasSpeech, ttsFailed, firstAudio;
     private volatile boolean waitingForFlush, waitingForClear;
     private AudioRecord microphone;
@@ -70,19 +79,43 @@ final class DeepgramVoice implements AutoCloseable {
     private AudioTrack speaker;
     private long totalFrames;
     private int pendingAudioBytes;
+    private final Runnable reconnectSpeech = () -> {
+        synchronized (DeepgramVoice.this) {
+            if (listening && !closed && sttSocket == null) connectSpeech();
+        }
+    };
 
     DeepgramVoice(Context context, String key, Callback callback) {
+        this(context, key, callback, null, STT_URL);
+    }
+
+    DeepgramVoice(Context context, String key, Callback callback, SocketConnector connector, String sttUrl) {
         this.context = context.getApplicationContext();
         this.key = key;
         this.callback = callback;
         this.client = new OkHttpClient.Builder().pingInterval(20, TimeUnit.SECONDS)
             .connectTimeout(12, TimeUnit.SECONDS).build();
+        this.connector = connector == null ? client::newWebSocket : connector;
+        this.sttUrl = sttUrl;
+    }
+
+    /** Queue the last locally captured wake-word frames before live microphone frames.
+     * One-time session preroll is memory-only and never sent before Deepgram connects. */
+    synchronized void primeWakePcm(byte[] preroll) {
+        if (closed || listening || preroll == null || preroll.length == 0) return;
+        if (preroll.length > 32000 || preroll.length % 2 != 0)
+            throw new IllegalArgumentException("Invalid wake PCM preroll");
+        for (int offset = 0; offset < preroll.length; offset += 2560) {
+            int length = Math.min(2560, preroll.length - offset);
+            byte[] frame = Arrays.copyOfRange(preroll, offset, offset + length);
+            if (!captured.offer(frame, length)) throw new IllegalStateException("Wake preroll queue full");
+        }
     }
 
     void start() {
         if (closed) return;
-        connectSpeaker();
         listen();
+        if (listening) connectSpeaker();
     }
 
     private Request request(String url) {
@@ -209,37 +242,93 @@ final class DeepgramVoice implements AutoCloseable {
             return;
         }
         listening = true;
-        sttSocket = client.newWebSocket(request(STT_URL), new WebSocketListener() {
-            @Override public void onOpen(WebSocket socket, Response response) {
-                if (!closed && listening) startMicrophone(socket);
-                else socket.close(1000, "not listening");
-            }
-            @Override public void onMessage(WebSocket socket, String text) {
-                if (!listening || closed) return;
-                try {
-                    JSONObject packet = new JSONObject(text);
-                    String finalText = VoiceTranscript.completedTurn(packet);
-                    if (finalText != null) {
-                        callback.onUtterance(finalText);
-                    } else if (VoiceTranscript.startedTurn(packet)) {
-                        callback.onSpeechStarted();
-                    } else if (VoiceTranscript.emptyCompletedTurn(packet)) {
-                        callback.onEmptyTurn();
-                    } else if ("TurnInfo".equals(packet.optString("type"))) {
-                        callback.onInterim(packet.optString("transcript", ""));
-                    } else if ("Error".equals(packet.optString("type"))) {
-                        stopListening(); callback.onStatus("Speech recognition stopped; check Deepgram or the network");
-                    }
-                } catch (Exception ignored) { }
-            }
-            @Override public void onFailure(WebSocket socket, Throwable error, Response response) {
-                if (!closed && listening) { stopListening(); callback.onStatus("Speech recognition unavailable; check network and Deepgram key"); }
-            }
-        });
-        callback.onStatus("Listening");
+        // Android microphone acquisition comes before DNS, TLS, or the WebSocket handshake.
+        if (!startMicrophone()) return;
+        callback.onStatus("Capturing audio · connecting to speech recognition");
+        connectSpeech();
     }
 
-    private void startMicrophone(WebSocket socket) {
+    private void connectSpeech() {
+        try {
+            sttSocket = connector.open(request(sttUrl), new WebSocketListener() {
+                @Override public void onOpen(WebSocket socket, Response response) {
+                    synchronized (DeepgramVoice.this) {
+                        if (closed || !listening || sttSocket != socket) {
+                            socket.close(1000, "not listening");
+                            return;
+                        }
+                        sttReady = true;
+                        DeepgramVoice.this.notifyAll();
+                    }
+                }
+
+                @Override public void onMessage(WebSocket socket, String text) {
+                    if (!listening || closed || sttSocket != socket) return;
+                    try {
+                        JSONObject packet = new JSONObject(text);
+                        String finalText = VoiceTranscript.completedTurn(packet);
+                        if (finalText != null) {
+                            callback.onUtterance(finalText);
+                        } else if (VoiceTranscript.startedTurn(packet)) {
+                            callback.onSpeechStarted();
+                        } else if (VoiceTranscript.emptyCompletedTurn(packet)) {
+                            callback.onEmptyTurn();
+                        } else if ("TurnInfo".equals(packet.optString("type"))) {
+                            callback.onInterim(packet.optString("transcript", ""));
+                        } else if ("Error".equals(packet.optString("type"))) {
+                            stopListening();
+                            callback.onStatus("Speech recognition stopped; check Deepgram or the network");
+                        }
+                    } catch (Exception ignored) { }
+                }
+
+                @Override public void onFailure(WebSocket socket, Throwable error, Response response) {
+                    int status = response == null ? 0 : response.code();
+                    if (status >= 400 && status < 500 && status != 408 && status != 429) {
+                        synchronized (DeepgramVoice.this) {
+                            if (sttSocket != socket || closed) return;
+                            stopListening();
+                        }
+                        callback.onStatus("Speech recognition rejected request (HTTP " + status + ")");
+                        return;
+                    }
+                    speechConnectionLost(socket);
+                }
+                @Override public void onClosing(WebSocket socket, int code, String reason) {
+                    socket.close(1000, null);
+                    speechConnectionLost(socket);
+                }
+                @Override public void onClosed(WebSocket socket, int code, String reason) {
+                    speechConnectionLost(socket);
+                }
+            });
+        } catch (RuntimeException error) {
+            scheduleSpeechReconnect();
+        }
+    }
+
+    private void scheduleSpeechReconnect() {
+        if (closed || !listening) return;
+        sttReady = false;
+        sttSocket = null;
+        timeoutHandler.removeCallbacks(reconnectSpeech);
+        timeoutHandler.postDelayed(reconnectSpeech, CONNECT_RETRY_MS);
+        callback.onStatus("Connecting to speech recognition · audio safely buffered");
+    }
+
+    private void speechConnectionLost(WebSocket socket) {
+        synchronized (this) {
+            if (closed || !listening || sttSocket != socket) return;
+            if (!sttReady) {
+                scheduleSpeechReconnect();
+                return;
+            }
+            stopListening();
+        }
+        callback.onStatus("Speech recognition disconnected; start a new voice session");
+    }
+
+    private boolean startMicrophone() {
         try {
             if (context.checkSelfPermission(Manifest.permission.RECORD_AUDIO) != PackageManager.PERMISSION_GRANTED)
                 throw new SecurityException("Microphone permission revoked");
@@ -249,51 +338,111 @@ final class DeepgramVoice implements AutoCloseable {
             AudioRecord record = new AudioRecord(MediaRecorder.AudioSource.VOICE_COMMUNICATION, 16000,
                 AudioFormat.CHANNEL_IN_MONO, AudioFormat.ENCODING_PCM_16BIT, Math.max(minimum, 4096));
             if (record.getState() != AudioRecord.STATE_INITIALIZED) {
-                record.release(); throw new IllegalStateException("Microphone unavailable");
+                record.release();
+                throw new IllegalStateException("Microphone unavailable");
             }
-            synchronized (this) {
-                if (closed || !listening) { record.release(); return; }
-                microphone = record;
-                try {
-                    if (AcousticEchoCanceler.isAvailable()) {
-                        echoCanceler = AcousticEchoCanceler.create(record.getAudioSessionId());
-                        if (echoCanceler != null) echoCanceler.setEnabled(true);
-                    }
-                    if (NoiseSuppressor.isAvailable()) {
-                        noiseSuppressor = NoiseSuppressor.create(record.getAudioSessionId());
-                        if (noiseSuppressor != null) noiseSuppressor.setEnabled(true);
-                    }
-                } catch (RuntimeException unavailable) {
-                    callback.onStatus("Device echo suppression unavailable");
+            microphone = record;
+            try {
+                if (AcousticEchoCanceler.isAvailable()) {
+                    echoCanceler = AcousticEchoCanceler.create(record.getAudioSessionId());
+                    if (echoCanceler != null) echoCanceler.setEnabled(true);
                 }
+                if (NoiseSuppressor.isAvailable()) {
+                    noiseSuppressor = NoiseSuppressor.create(record.getAudioSessionId());
+                    if (noiseSuppressor != null) noiseSuppressor.setEnabled(true);
+                }
+            } catch (RuntimeException unavailable) {
+                callback.onStatus("Device echo suppression unavailable");
             }
             record.startRecording();
+            if (record.getRecordingState() != AudioRecord.RECORDSTATE_RECORDING)
+                throw new IllegalStateException("Microphone failed to start");
+            Thread publisher = new Thread(this::publishMicrophone, "PocketVoiceUpload");
+            publisher.setDaemon(true);
+            publisher.start();
             Thread capture = new Thread(() -> {
                 Process.setThreadPriority(Process.THREAD_PRIORITY_AUDIO);
-                byte[] samples = new byte[2560]; // Flux recommends 80ms of 16 kHz mono PCM16.
+                byte[] samples = new byte[2560]; // 80ms of Flux PCM at 16 kHz.
                 while (listening && !closed) {
                     int size = record.read(samples, 0, samples.length);
-                    if (size <= 0) { if (listening) callback.onStatus("Microphone capture interrupted"); break; }
-                    if (socket.queueSize() > 256_000) {
-                        callback.onStatus("Speech connection is too slow");
+                    if (size <= 0) {
+                        if (listening) callback.onStatus("Microphone capture interrupted");
                         break;
                     }
-                    if (!socket.send(ByteString.of(Arrays.copyOf(samples, size)))) break;
+                    synchronized (DeepgramVoice.this) {
+                        if (!listening || closed) break;
+                        if (!captured.offer(samples, size)) {
+                            callback.onStatus("Speech recognition backlog exceeded 80 seconds; start again");
+                            break;
+                        }
+                        if (sttReady) DeepgramVoice.this.notifyAll();
+                    }
                 }
-                if (!closed && listening) callback.onStatus("Microphone stream disconnected");
                 stopListening();
             }, "PocketVoiceMicrophone");
             capture.setDaemon(true);
             capture.start();
+            return true;
         } catch (Exception error) {
             stopListening();
             if (!closed) callback.onStatus("Microphone is unavailable");
+            return false;
         }
     }
 
+    private void publishMicrophone() {
+        // Single producer-independent publisher: historical samples always precede live samples.
+        try {
+            while (true) {
+                boolean caughtUp = false;
+                synchronized (this) {
+                    while (listening && !closed && (!sttReady || captured.isEmpty()
+                        || sttSocket.queueSize() >= MAX_SOCKET_QUEUE_BYTES)) {
+                        if (sttReady && captured.isEmpty() && !streamReadyNotified
+                                && sttSocket.queueSize() <= 5120) {
+                            streamReadyNotified = true;
+                            caughtUp = true;
+                            break;
+                        }
+                        wait(!sttReady ? 0L : 40L);
+                    }
+                    if (!listening || closed) return;
+                    if (!caughtUp) {
+                        byte[] frame = captured.peek();
+                        if (frame == null) continue;
+                        if (!sttSocket.send(ByteString.of(frame))) {
+                            stopListening();
+                            callback.onStatus("Speech recognition upload interrupted");
+                            return;
+                        }
+                        captured.removeFirst();
+                    }
+                }
+                if (caughtUp) callback.onStreamReady();
+            }
+        } catch (InterruptedException interrupted) {
+            Thread.currentThread().interrupt();
+            stopListening();
+        } catch (RuntimeException failed) {
+            stopListening();
+            if (!closed) callback.onStatus("Speech recognition upload interrupted");
+        }
+    }
+
+    synchronized int bufferedInputBytes() { return captured.queuedBytes(); }
+
+    synchronized boolean isCapturing() {
+        return microphone != null && microphone.getRecordingState() == AudioRecord.RECORDSTATE_RECORDING;
+    }
+
     synchronized void stopListening() {
-        if (!listening && microphone == null && sttSocket == null) return;
+        if (!listening && microphone == null && sttSocket == null && captured.isEmpty()) return;
         listening = false;
+        sttReady = false;
+        streamReadyNotified = false;
+        timeoutHandler.removeCallbacks(reconnectSpeech);
+        captured.clear();
+        notifyAll();
         AudioRecord record = microphone;
         microphone = null;
         if (echoCanceler != null) { echoCanceler.release(); echoCanceler = null; }

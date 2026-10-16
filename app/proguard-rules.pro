@@ -26,3 +26,30 @@
 -keep class dev.pocket.agent.VoiceTextChunker { *; }
 
 -keep class dev.pocket.agent.MemoryStore { *; }
+
+# ONNX Runtime uses Java classes referenced through JNI in release builds.
+-keep class ai.onnxruntime.** { *; }
+-keep class dev.pocket.agent.JarvisDetector { *; }
+
+# Release instrumentation accesses these package APIs by their original names.
+-keep class dev.pocket.agent.JarvisProfile** { *; }
+-keep class dev.pocket.agent.DeepgramVoice** { *; }
+-keep class dev.pocket.agent.PcmCaptureQueue { *; }
+-keep class dev.pocket.agent.WakeWordService { *; }
+-keep class dev.pocket.agent.VoiceListeningService { *; }
+-keep class dev.pocket.agent.VoiceCredentialStore { *; }
+
+# Release instrumentation and native voice transport share OkHttp WebSocket API types.
+-keep class okhttp3.WebSocket { *; }
+-keep class okhttp3.WebSocketListener { *; }
+-keep class okhttp3.Request { *; }
+-keep class okhttp3.Response { *; }
+-keep class okhttp3.Request$Builder { *; }
+-keep class okhttp3.Response$Builder { *; }
+-keep interface okhttp3.WebSocket { *; }
+-keep interface dev.pocket.agent.DeepgramVoice$SocketConnector { *; }
+-keep class okio.ByteString { *; }
+-keep class okio.ByteString$Companion { *; }
+
+# Release instrumentation directly exercises persisted local wake tuning.
+-keep class dev.pocket.agent.WakeWordSettings { *; }
