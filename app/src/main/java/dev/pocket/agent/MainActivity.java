@@ -2,6 +2,7 @@ package dev.pocket.agent;
 
 import android.Manifest;
 import android.app.Activity;
+import android.app.role.RoleManager;
 import android.app.AlertDialog;
 import android.content.Intent;
 import android.net.Uri;
@@ -72,7 +73,10 @@ public final class MainActivity extends Activity implements AgentService.Observe
         controls.addView(button("Stop response", () -> command(json("action", "stop_main"))));
         controls.addView(button("Stop all", () -> {
             if (AgentService.isRunning()) startService(new Intent(this, AgentService.class).setAction(AgentService.ACTION_STOP));
-        })); root.addView(controls); setContentView(root);
+        })); root.addView(controls);
+        root.addView(button("Stop voice listening", () -> startService(new Intent(this,
+            VoiceListeningService.class).setAction(VoiceListeningService.ACTION_STOP))));
+        setContentView(root);
     }
     @Override protected void onStart() { super.onStart(); AgentService.observe(this); state = store.load(); render(); }
     @Override protected void onStop() { AgentService.unobserve(this); super.onStop(); }
@@ -187,6 +191,16 @@ public final class MainActivity extends Activity implements AgentService.Observe
         panel.addView(button("Accessibility settings", () -> startActivity(new Intent(Settings.ACTION_ACCESSIBILITY_SETTINGS))));
         panel.addView(button("Notification access settings", () -> startActivity(new Intent(Settings.ACTION_NOTIFICATION_LISTENER_SETTINGS))));
         panel.addView(button("Choose phone permissions", this::permissions));
+        panel.addView(text("Voice uses Deepgram streaming speech recognition and synthesis with the Pi main agent. Listening stops after six seconds of idle silence or when you tap Stop listening in the notification. Background workers continue."));
+        panel.addView(button("Deepgram voice key", this::voiceKeySettings));
+        panel.addView(button("Allow microphone", () -> requestPermissions(new String[]{Manifest.permission.RECORD_AUDIO}, 103)));
+        panel.addView(button("Allow voice notification", () -> {
+            if (Build.VERSION.SDK_INT >= 33 &&
+                checkSelfPermission(Manifest.permission.POST_NOTIFICATIONS) != PackageManager.PERMISSION_GRANTED)
+                requestPermissions(new String[]{Manifest.permission.POST_NOTIFICATIONS}, 105);
+            else toast("Notifications already permitted");
+        }));
+        panel.addView(button("Choose default assistant", this::chooseAssistant));
         ScrollView scroll = new ScrollView(this); scroll.addView(panel);
         AlertDialog dialog = new AlertDialog.Builder(this).setTitle("Connection & permissions").setView(scroll).setNegativeButton("Close", null).setPositiveButton("Save", null).create(); settingsDialog[0] = dialog;
         dialog.setOnShowListener(ignored -> {
@@ -205,6 +219,36 @@ public final class MainActivity extends Activity implements AgentService.Observe
                 } catch (Exception error) { toast(error instanceof IllegalArgumentException ? error.getMessage() : "Could not save connection"); }
             });
         }); dialog.show();
+    }
+    private void voiceKeySettings() {
+        EditText key = new EditText(this);
+        String hint;
+        try {
+            hint = new VoiceCredentialStore(this).configured()
+                ? "Configured · enter new key to replace" : "Deepgram API key";
+        } catch (RuntimeException unreadable) {
+            hint = "Saved voice key unavailable · enter a new key";
+        }
+        key.setHint(hint);
+        key.setInputType(InputType.TYPE_CLASS_TEXT | InputType.TYPE_TEXT_VARIATION_PASSWORD);
+        key.setImportantForAutofill(View.IMPORTANT_FOR_AUTOFILL_NO_EXCLUDE_DESCENDANTS);
+        key.setSaveEnabled(false);
+        new AlertDialog.Builder(this).setTitle("Deepgram voice connection").setView(key)
+            .setNegativeButton("Cancel", null).setPositiveButton("Save", (dialog, which) -> {
+                try { new VoiceCredentialStore(this).save(key.getText().toString()); toast("Voice key saved securely"); }
+                catch (Exception failure) { toast("Could not save Deepgram key"); }
+                key.setText("");
+            }).show();
+    }
+    private void chooseAssistant() {
+        try {
+            RoleManager roles = getSystemService(RoleManager.class);
+            if (roles != null && roles.isRoleAvailable(RoleManager.ROLE_ASSISTANT)) {
+                startActivityForResult(roles.createRequestRoleIntent(RoleManager.ROLE_ASSISTANT), 104);
+            } else {
+                startActivity(new Intent(Settings.ACTION_MANAGE_DEFAULT_APPS_SETTINGS));
+            }
+        } catch (Exception unavailable) { toast("Open Settings → Default apps → Digital assistant app"); }
     }
     private void saveAccount(JSONObject account) throws Exception {
         if (activeWork()) throw new IllegalStateException("Stop active work before changing accounts");

@@ -47,12 +47,25 @@ public final class AgentService extends Service {
     }
     @Override public int onStartCommand(Intent intent, int flags, int startId) {
         if (intent == null) return START_NOT_STICKY;
-        if (ACTION_STOP.equals(intent.getAction())) { stopSelf(); return START_NOT_STICKY; }
+        if (ACTION_STOP.equals(intent.getAction())) {
+            stopService(new Intent(this, VoiceListeningService.class));
+            stopSelf(); return START_NOT_STICKY;
+        }
         if (ACTION_COMMAND.equals(intent.getAction())) {
             String value = intent.getStringExtra("command");
-            try { JSONObject command = new JSONObject(value == null ? "{}" : value); startup.thenCompose(ignored -> host.dispatch(command)).thenAccept(response -> {
-                if(!response.optBoolean("ok")) try {publish(new JSONObject().put("type","error").put("error",response.optString("error","Command rejected")));}catch(Exception ignored){}
-            }); }
+            try {
+                JSONObject command = new JSONObject(value == null ? "{}" : value);
+                String voiceSessionId = command.optString("voiceSessionId", "");
+                startup.thenCompose(ignored -> host.dispatch(command)).whenComplete((response, failure) -> {
+                    if (failure == null && response != null && response.optBoolean("ok")) return;
+                    try {
+                        JSONObject event = new JSONObject().put("type", voiceSessionId.isEmpty() ? "error" : "voice_error")
+                            .put("error", failure == null && response != null ? response.optString("error", "Command rejected") : "Agent unavailable");
+                        if (!voiceSessionId.isEmpty()) event.put("sessionId", voiceSessionId);
+                        publish(event);
+                    } catch (Exception ignored) { }
+                });
+            }
             catch (Exception e) { try { publish(new JSONObject().put("type", "error").put("error", "Invalid agent command")); } catch (Exception ignored) { } }
         }
         return START_NOT_STICKY;

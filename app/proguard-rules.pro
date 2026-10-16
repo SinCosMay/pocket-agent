@@ -14,3 +14,11 @@
 -keep class dev.pocket.agent.AgentAccessibility { *; }
 
 -keep class dev.pocket.agent.CodexAccountAuth { *; }
+
+# AndroidX instrumentation uses Kotlin classes also packaged by OkHttp.
+# The test APK expects all runtime Kotlin types to remain linkable in the target.
+-keep class kotlin.** { *; }
+
+# Device instrumentation links these directly; R8 must retain them in the minified target APK.
+-keep class dev.pocket.agent.VoiceTranscript { *; }
+-keep class dev.pocket.agent.VoiceTextChunker { *; }

@@ -1,6 +1,6 @@
 # Pocket Agent
 
-An Android text assistant that delegates phone work to background agents while you keep talking to the main conversation. Pi and the adapted `@pi9/subagent` runtime run inside the app; workers call native Android tools directly.
+An Android assistant that delegates phone work to background agents while you keep talking to the main conversation. Pi and the adapted `@pi9/subagent` runtime run inside the app; workers call native Android tools directly. A selectable Android digital-assistant integration adds Deepgram speech input/output while preserving the same agent thread.
 
 **Preview:** [v0.1.1-preview.1](https://github.com/ru-aish/pocket-agent/releases/tag/v0.1.1-preview.1) adds direct Codex account sign-in and secure login-cache import. The signed x86_64 APK passed direct Luna delegation with the relay stopped. ARM64 execution remains unverified. See the [account validation record](docs/CODEX_AUTH_VALIDATION.md).
 
@@ -41,6 +41,7 @@ Android can restrict or terminate the user-started service. Interrupted work is 
 
 **Compile and sign APKs only in GitHub Actions.** The workflow builds release/test APKs, runs runtime tests and lint, and packages hashes and provenance. Emulator/device execution is a separate local step; use an explicit emulator serial, as described in the validation documentation.
 
+- [Voice assistant: Deepgram, Android role, lifecycle, and latency](docs/VOICE.md)
 - [Runtime architecture, upstream pins, and limits](docs/RUNTIME.md)
 - [Android host, lifecycle, permissions, and instrumentation](docs/ANDROID_HOST.md)
 - [Authentication and relay setup](docs/AUTH.md)
