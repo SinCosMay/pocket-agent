@@ -6,6 +6,12 @@ on:
       - 'app/src/main/java/dev/pocket/agent/DeepgramVoice.java'
       - 'app/src/main/java/dev/pocket/agent/PcmCaptureQueue.java'
       - 'app/src/main/java/dev/pocket/agent/VoiceListeningService.java'
+      - 'app/src/main/java/dev/pocket/agent/JarvisDetector.java'
+      - 'app/src/main/java/dev/pocket/agent/JarvisProfile.java'
+      - 'app/src/main/java/dev/pocket/agent/WakeWordService.java'
+      - 'app/src/androidTest/java/dev/pocket/agent/JarvisDetectorDeviceTest.java'
+      - 'app/src/main/assets/wakeword/**'
+      - 'app/build.gradle.kts'
       - 'app/src/androidTest/java/dev/pocket/agent/InstantVoiceCaptureDeviceTest.java'
       - 'app/proguard-rules.pro'
   workflow_dispatch:
@@ -26,14 +32,14 @@ jobs:
       - uses: gradle/actions/setup-gradle@v4
       - name: Allow hardware-assisted emulator execution
         run: sudo chmod 666 /dev/kvm
-      - name: Instrument real microphone capture and delayed socket replay
+      - name: Test local Jarvis inference and delayed Deepgram microphone capture
         uses: reactivecircus/android-emulator-runner@v2
         with:
           api-level: 35
           arch: x86_64
           target: google_apis
           emulator-options: -no-window -gpu swiftshader_indirect -no-snapshot -no-boot-anim -no-audio
-          script: ./gradlew --no-daemon :app:connectedDebugAndroidTest -PvoiceEmulatorTest=true -Pandroid.testInstrumentationRunnerArguments.class=dev.pocket.agent.InstantVoiceCaptureDeviceTest
+          script: ./gradlew --no-daemon :app:connectedDebugAndroidTest -PvoiceEmulatorTest=true -Pandroid.testInstrumentationRunnerArguments.class=dev.pocket.agent.InstantVoiceCaptureDeviceTest,dev.pocket.agent.JarvisDetectorDeviceTest
       - name: Publish emulator test reports
         if: always()
         uses: actions/upload-artifact@v4
