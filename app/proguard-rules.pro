@@ -30,3 +30,11 @@
 # ONNX Runtime uses Java classes referenced through JNI in release builds.
 -keep class ai.onnxruntime.** { *; }
 -keep class dev.pocket.agent.JarvisDetector { *; }
+
+# Release instrumentation accesses these package APIs by their original names.
+-keep class dev.pocket.agent.JarvisProfile** { *; }
+-keep class dev.pocket.agent.DeepgramVoice** { *; }
+-keep class dev.pocket.agent.PcmCaptureQueue { *; }
+-keep class dev.pocket.agent.WakeWordService { *; }
+-keep class dev.pocket.agent.VoiceListeningService { *; }
+-keep class dev.pocket.agent.VoiceCredentialStore { *; }
