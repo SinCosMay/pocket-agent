@@ -217,13 +217,14 @@ public final class MainActivity extends Activity implements AgentService.Observe
         updateWakeLabel.accept(WakeWordSettings.thresholdPercent(this));
         wakeConfidence.setOnSeekBarChangeListener(new SeekBar.OnSeekBarChangeListener() {
             @Override public void onProgressChanged(SeekBar bar, int value, boolean fromUser) {
-                updateWakeLabel.accept(value + WakeWordSettings.MIN_PERCENT);
+                int percent = value + WakeWordSettings.MIN_PERCENT;
+                updateWakeLabel.accept(percent);
+                if (fromUser) WakeWordSettings.setThresholdPercent(MainActivity.this, percent);
             }
             @Override public void onStartTrackingTouch(SeekBar bar) { }
             @Override public void onStopTrackingTouch(SeekBar bar) {
-                int percent = bar.getProgress() + WakeWordSettings.MIN_PERCENT;
-                WakeWordSettings.setThresholdPercent(MainActivity.this, percent);
-                toast("Hey Jarvis threshold saved: " + percent + "%");
+                toast("Hey Jarvis threshold saved: " +
+                    (bar.getProgress() + WakeWordSettings.MIN_PERCENT) + "%");
             }
         });
         panel.addView(button("Reset wake threshold to 75%", () -> {
