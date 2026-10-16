@@ -54,7 +54,11 @@ jobs:
             ./gradlew --no-daemon :app:connectedDebugAndroidTest -PvoiceEmulatorTest=true -Pandroid.testInstrumentationRunnerArguments.class=dev.pocket.agent.JarvisDetectorDeviceTest || result=$?
             ./gradlew --no-daemon :app:connectedDebugAndroidTest -PvoiceEmulatorTest=true -Pandroid.testInstrumentationRunnerArguments.class=dev.pocket.agent.JarvisWakeLifecycleDeviceTest || result=$?
             ./gradlew --no-daemon :app:connectedDebugAndroidTest -PvoiceEmulatorTest=true -Pandroid.testInstrumentationRunnerArguments.class=dev.pocket.agent.WakeWordSettingsDeviceTest || result=$?
-            adb shell pm revoke dev.pocket.agent android.permission.RECORD_AUDIO
+            # connectedDebugAndroidTest can uninstall the app at the end of a run.
+            # Revoke our CI-only grant if it remains installed; otherwise it was removed.
+            if adb shell pm path dev.pocket.agent | grep -q "^package:"; then
+              adb shell pm revoke dev.pocket.agent android.permission.RECORD_AUDIO || result=$?
+            fi
             exit "$result"
       - name: Publish emulator test reports
         if: always()
