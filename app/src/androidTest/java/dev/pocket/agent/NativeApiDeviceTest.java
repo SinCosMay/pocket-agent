@@ -71,7 +71,7 @@ public class NativeApiDeviceTest {
         Context c=context();
         if(c.checkSelfPermission(Manifest.permission.POST_NOTIFICATIONS)!=android.content.pm.PackageManager.PERMISSION_GRANTED) {
             android.app.UiAutomation automation=InstrumentationRegistry.getInstrumentation().getUiAutomation();
-            automation.adoptShellPermissionIdentity(Manifest.permission.GRANT_RUNTIME_PERMISSIONS);
+            automation.adoptShellPermissionIdentity("android.permission.GRANT_RUNTIME_PERMISSIONS");
             try {automation.grantRuntimePermission(c.getPackageName(),Manifest.permission.POST_NOTIFICATIONS);}
             finally {automation.dropShellPermissionIdentity();}
         }
