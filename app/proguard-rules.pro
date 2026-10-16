@@ -44,3 +44,5 @@
 -keep class okhttp3.WebSocketListener { *; }
 -keep class okhttp3.Request { *; }
 -keep class okhttp3.Response { *; }
+-keep class okhttp3.Request$Builder { *; }
+-keep class okhttp3.Response$Builder { *; }
