@@ -92,8 +92,7 @@ public final class InstantVoiceCaptureDeviceTest {
 
     @Test public void wakeTailIsSentAheadOfLiveMicFrames() throws Exception {
         Context context = InstrumentationRegistry.getInstrumentation().getTargetContext();
-        InstrumentationRegistry.getInstrumentation().getUiAutomation()
-            .grantRuntimePermission(context.getPackageName(), Manifest.permission.RECORD_AUDIO);
+        requireMicrophonePermission(context);
         FakeConnector network = new FakeConnector();
         DeepgramVoice voice = new DeepgramVoice(context, "test-only", new SilentCallback(),
             network, "wss://api.deepgram.com/v2/listen");
@@ -113,8 +112,7 @@ public final class InstantVoiceCaptureDeviceTest {
 
     @Test public void permanentDeepgramAuthorizationFailureDoesNotRetryCapture() throws Exception {
         Context context = InstrumentationRegistry.getInstrumentation().getTargetContext();
-        InstrumentationRegistry.getInstrumentation().getUiAutomation()
-            .grantRuntimePermission(context.getPackageName(), Manifest.permission.RECORD_AUDIO);
+        requireMicrophonePermission(context);
         FakeConnector network = new FakeConnector();
         DeepgramVoice voice = new DeepgramVoice(context, "invalid-test-key", new SilentCallback(),
             network, "wss://api.deepgram.com/v2/listen");
