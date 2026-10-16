@@ -21,6 +21,12 @@ export function scriptedStream(owner='main'): StreamFn {
             const result=JSON.parse(text); const ids=result.results.filter((x:any)=>x.ok).map((x:any)=>x.conversationId);
             call={name:'subagent',arguments:{action:'join',subagentIds:ids}};
           } else answer=`${owner==='main'?'Tool result':'Verified worker result'}: ${text.slice(0,3000)}`;
+        } else if(owner==='main'&&text.startsWith('memory fixture remember ')) {
+          const value=text.slice('memory fixture remember '.length),split=value.indexOf('|');
+          if(split<1||split>100)throw Error('Invalid synthetic memory fixture');
+          call={name:'memory_save',arguments:{key:value.slice(0,split),content:value.slice(split+1,split+801),category:'preference',scope:'global',confirmed:true}};
+        } else if(owner==='main'&&text.startsWith('memory fixture recall ')) {
+          call={name:'memory_search',arguments:{query:text.slice('memory fixture recall '.length)}};
         } else if(text.startsWith('[Worker completion]')) answer=`Worker finished: ${text.slice(20)}`;
         else if(owner==='main' && /\b(delegate|long|worker|fixture|nested)\b/i.test(text)) {
           call={name:'subagent',arguments:{action:'spawn',spawns:[{agent:'phone-operator',label:'Complete phone fixture',prompt:text}]}};
