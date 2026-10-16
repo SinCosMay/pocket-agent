@@ -62,11 +62,6 @@ final class DeepgramVoice implements AutoCloseable {
     private final VoiceTextChunker chunker = new VoiceTextChunker();
     private final Handler timeoutHandler = new Handler(Looper.getMainLooper());
     private Runnable flushTimeout;
-    private final Runnable reconnectSpeech = () -> {
-        synchronized (DeepgramVoice.this) {
-            if (listening && !closed && sttSocket == null) connectSpeech();
-        }
-    };
     private final ArrayDeque<String> speechQueue = new ArrayDeque<>();
     private volatile boolean closed;
     private volatile boolean listening;
@@ -83,6 +78,11 @@ final class DeepgramVoice implements AutoCloseable {
     private AudioTrack speaker;
     private long totalFrames;
     private int pendingAudioBytes;
+    private final Runnable reconnectSpeech = () -> {
+        synchronized (DeepgramVoice.this) {
+            if (listening && !closed && sttSocket == null) connectSpeech();
+        }
+    };
 
     DeepgramVoice(Context context, String key, Callback callback) {
         this(context, key, callback, null, STT_URL);
