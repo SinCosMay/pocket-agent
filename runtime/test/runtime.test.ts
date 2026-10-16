@@ -360,9 +360,39 @@ test('voice input streams only its own main reply; ordinary turns and worker com
  bridge.events.length=0;
  command(runtime,{action:'send',text:'delegate long task delay=100',voiceSessionId:id});
  await until(()=>runtime.state().tasks.length===1&&!runtime.state().active);
+ await until(()=>runtime.state().tasks[0]?.status==='completed'&&!runtime.state().active,8000);
  assert.equal(bridge.events.filter(e=>e.type==='voice_end').length,1,'worker completion cannot trigger another spoken turn');
+ assert.equal(bridge.events.filter(e=>e.type==='voice_announce').length,0,'worker completion without explicit speech tool stays silent');
  bridge.events.length=0;
  command(runtime,{action:'send',text:'hello bad id',voiceSessionId:'not-a-session-id'});
  await until(()=>!runtime.state().active);
  assert.ok(!bridge.events.some(e=>e.type.startsWith('voice_')),'reject unscoped voice output');
+});
+
+
+test('registered speak_to_user tool requests optional speech without asserting delivery or speaking after worker completion',async()=>{
+ const bridge=new Bridge(), runtime=new PocketRuntime(bridge);
+ const main=runtime.main.agent.state.tools.find((tool:any)=>tool.name==='speak_to_user');
+ assert.ok(main,'main has optional spoken output');
+ const worker=(runtime as any).createSession('worker-test',{definition:runtime.registry.agents.get('phone-operator'),requestedConfig:{tools:['speak_to_user']}});
+ const tool=worker.agent.state.tools.find((tool:any)=>tool.name==='speak_to_user');
+ assert.ok(tool,'registered worker can initiate speech');
+ assert.equal(runtime.registry.agents.get('phone-operator')!.tools!.includes('speak_to_user'),true);
+ assert.equal(runtime.registry.agents.get('researcher')!.tools!.includes('speak_to_user'),true);
+ assert.equal(validateToolArguments(tool,{type:'toolCall',id:'speak1',name:'speak_to_user',arguments:{message:'Hello',listen_after:false}}).listen_after,false);
+ const out=await tool.execute('speak1',{message:' Reminder at six. ',listen_after:false});
+ assert.equal(out.details.status,'requested');
+ assert.match(out.details.note,/does not mean accepted or heard/);
+ assert.equal(bridge.events.filter(e=>e.type==='voice_announce').at(-1).type,'voice_announce');
+ assert.equal(bridge.events.filter(e=>e.type==='voice_announce').at(-1).message,'Reminder at six.');
+ assert.equal(bridge.events.filter(e=>e.type==='voice_announce').at(-1).listenAfter,false);
+ assert.equal(bridge.events.filter(e=>e.type==='voice_announce').at(-1).owner,'worker-test');
+ assert.match(bridge.events.filter(e=>e.type==='voice_announce').at(-1).id,/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/);
+ await main.execute('speak2',{message:'Please reply'});
+ assert.equal(bridge.events.filter(e=>e.type==='voice_announce').at(-1).owner,'main');
+ assert.equal(bridge.events.filter(e=>e.type==='voice_announce').at(-1).listenAfter,true);
+ await assert.rejects(tool.execute('speak3',{message:'  '}),/1..800/);
+ const controller=new AbortController();controller.abort();
+ await assert.rejects(tool.execute('speak4',{message:'No',listen_after:true},controller.signal),/cancelled/);
+ assert.equal(bridge.events.filter(e=>e.type==='voice_announce').length,2);
 });

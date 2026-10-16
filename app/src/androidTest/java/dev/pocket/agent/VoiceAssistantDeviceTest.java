@@ -18,6 +18,7 @@ public class VoiceAssistantDeviceTest {
             new ComponentName(context, VoiceListeningService.class), 0);
         assertFalse(voice.exported);
         assertNotEquals(0, voice.getForegroundServiceType() & ServiceInfo.FOREGROUND_SERVICE_TYPE_MICROPHONE);
+        assertNotEquals(0, voice.getForegroundServiceType() & ServiceInfo.FOREGROUND_SERVICE_TYPE_MEDIA_PLAYBACK);
     }
 
     @Test public void assistantIsProtectedAndDiscoverable() throws Exception {

@@ -72,7 +72,7 @@ final class DeepgramVoice implements AutoCloseable {
     private final PcmCaptureQueue captured = new PcmCaptureQueue(MAX_CAPTURE_BYTES);
     private boolean sttReady, streamReadyNotified;
     private int initialCaptureBytesRemaining;
-    private boolean ttsReady, hasSpeech, ttsFailed, firstAudio;
+    private boolean ttsReady, hasSpeech, ttsFailed, firstAudio, speakerStarted;
     private volatile boolean waitingForFlush, waitingForClear;
     private AudioRecord microphone;
     private AcousticEchoCanceler echoCanceler;
@@ -113,10 +113,16 @@ final class DeepgramVoice implements AutoCloseable {
         }
     }
 
+    synchronized void startOutput() {
+        if (closed || speakerStarted) return;
+        speakerStarted = true;
+        connectSpeaker();
+    }
+
     void start() {
         if (closed) return;
         listen();
-        if (listening) connectSpeaker();
+        if (listening) startOutput();
     }
 
     private Request request(String url) {

@@ -24,6 +24,9 @@
 # Device instrumentation links these directly; R8 must retain them in the minified target APK.
 -keep class dev.pocket.agent.VoiceTranscript { *; }
 -keep class dev.pocket.agent.VoiceTextChunker { *; }
+-keep class dev.pocket.agent.VoiceCredentialStore { *; }
+-keep class dev.pocket.agent.VoiceAnnouncement { *; }
+-keep class dev.pocket.agent.VoiceListeningService { *; }
 
 -keep class dev.pocket.agent.MemoryStore { *; }
 
@@ -36,8 +39,6 @@
 -keep class dev.pocket.agent.DeepgramVoice** { *; }
 -keep class dev.pocket.agent.PcmCaptureQueue { *; }
 -keep class dev.pocket.agent.WakeWordService { *; }
--keep class dev.pocket.agent.VoiceListeningService { *; }
--keep class dev.pocket.agent.VoiceCredentialStore { *; }
 
 # Release instrumentation and native voice transport share OkHttp WebSocket API types.
 -keep class okhttp3.WebSocket { *; }
