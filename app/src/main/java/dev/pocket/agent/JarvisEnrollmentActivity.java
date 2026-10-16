@@ -99,6 +99,8 @@ public final class JarvisEnrollmentActivity extends Activity {
                 int size=AudioRecord.getMinBufferSize(16000,AudioFormat.CHANNEL_IN_MONO,
                     AudioFormat.ENCODING_PCM_16BIT);
                 if(size<0)throw new IllegalStateException("16 kHz recording unavailable");
+                if(checkSelfPermission(Manifest.permission.RECORD_AUDIO)!=PackageManager.PERMISSION_GRANTED)
+                    throw new SecurityException("Microphone permission revoked");
                 audio=new AudioRecord(MediaRecorder.AudioSource.VOICE_RECOGNITION,16000,
                     AudioFormat.CHANNEL_IN_MONO,AudioFormat.ENCODING_PCM_16BIT,Math.max(size,4096));
                 if(audio.getState()!=AudioRecord.STATE_INITIALIZED)

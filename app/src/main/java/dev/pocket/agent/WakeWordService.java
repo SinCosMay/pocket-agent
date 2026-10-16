@@ -147,6 +147,8 @@ public final class WakeWordService extends Service {
             int buffer = AudioRecord.getMinBufferSize(16000, AudioFormat.CHANNEL_IN_MONO,
                 AudioFormat.ENCODING_PCM_16BIT);
             if (buffer < 0) throw new IllegalStateException("16 kHz microphone unavailable");
+            if (checkSelfPermission(Manifest.permission.RECORD_AUDIO) != PackageManager.PERMISSION_GRANTED)
+                throw new SecurityException("Microphone permission revoked");
             record = new AudioRecord(MediaRecorder.AudioSource.VOICE_RECOGNITION, 16000,
                 AudioFormat.CHANNEL_IN_MONO, AudioFormat.ENCODING_PCM_16BIT, Math.max(4096, buffer));
             if (record.getState() != AudioRecord.STATE_INITIALIZED)
