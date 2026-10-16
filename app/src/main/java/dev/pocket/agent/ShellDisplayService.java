@@ -116,6 +116,25 @@ public final class ShellDisplayService extends IDisplayShell.Stub {
         if(component==null || component.getPackageName().isBlank()) throw new IllegalArgumentException("Expected component name");
         return exec("/system/bin/am","start","--display",String.valueOf(id),"-f","0x18000000","-n",component.flattenToString());
     }
+    @Override public synchronized boolean openUrl(int id,String url) {
+        owned(id);
+        android.net.Uri uri=android.net.Uri.parse(url);
+        String scheme=uri.getScheme();
+        if(uri.getHost()==null || uri.getHost().isBlank() || uri.getUserInfo()!=null ||
+            (!"https".equalsIgnoreCase(scheme) && !"http".equalsIgnoreCase(scheme)))
+            throw new IllegalArgumentException("Only ordinary HTTP(S) URLs without embedded credentials are supported");
+        return exec("/system/bin/am","start","--display",String.valueOf(id),"-f","0x18000000",
+            "-a",android.content.Intent.ACTION_VIEW,"-d",uri.toString());
+    }
+    @Override public synchronized boolean showClock(int id,String screen) {
+        owned(id);
+        String action=switch(screen) {
+            case "alarms" -> android.provider.AlarmClock.ACTION_SHOW_ALARMS;
+            case "timers" -> android.provider.AlarmClock.ACTION_SHOW_TIMERS;
+            default -> throw new IllegalArgumentException("Expected alarms or timers");
+        };
+        return exec("/system/bin/am","start","--display",String.valueOf(id),"-f","0x18000000","-a",action);
+    }
     @Override public synchronized boolean injectKey(int id,int keyCode) {
         owned(id);
         if(keyCode!=4 && keyCode!=3 && keyCode!=187) throw new SecurityException("Key not permitted");

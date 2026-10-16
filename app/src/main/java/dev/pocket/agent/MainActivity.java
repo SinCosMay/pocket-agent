@@ -41,6 +41,7 @@ public final class MainActivity extends Activity implements AgentService.Observe
     private Button send;
     private JSONObject state = new JSONObject();
     private String viewedWorker;
+    private String deferredUserMessage;
     private StateStore store;
     private static final int IMPORT_CODEX = 90;
     private final ExecutorService accountFiles = Executors.newSingleThreadExecutor();
@@ -70,7 +71,16 @@ public final class MainActivity extends Activity implements AgentService.Observe
         input = new EditText(this); input.setHint("Message main agent"); input.setMinLines(1); input.setMaxLines(4); input.setInputType(InputType.TYPE_CLASS_TEXT | InputType.TYPE_TEXT_FLAG_MULTI_LINE | InputType.TYPE_TEXT_FLAG_CAP_SENTENCES); root.addView(input);
         LinearLayout controls = row(); send = button("Send", () -> {
             String value = input.getText().toString().trim(); if (value.isEmpty()) return;
-            command(json("action", "send", "text", value)); input.setText("");
+            if (AgentService.isStopping()) {
+                deferredUserMessage = value;
+                status.setText("Agent stopping · message will send after shutdown");
+                return;
+            }
+            try {
+                command(json("action", "send", "text", value));
+                deferredUserMessage = null;
+                input.setText("");
+            } catch (RuntimeException error) { status.setText("Unable to submit message · try again"); }
         }); controls.addView(send, new LinearLayout.LayoutParams(0, -2, 1));
         controls.addView(button("Stop response", () -> command(json("action", "stop_main"))));
         controls.addView(button("Stop all", () -> {
@@ -80,7 +90,19 @@ public final class MainActivity extends Activity implements AgentService.Observe
             VoiceListeningService.class).setAction(VoiceListeningService.ACTION_STOP))));
         setContentView(root);
     }
-    @Override protected void onStart() { super.onStart(); AgentService.observe(this); state = store.load(); render(); }
+    @Override protected void onStart() {
+        super.onStart(); AgentService.observe(this); state = store.load(); render();
+        JSONArray events = store.recentEvents();
+        for (int i = 0; i < events.length(); i++) {
+            JSONObject event = events.optJSONObject(i);
+            if (event == null) continue;
+            long ageMs = System.currentTimeMillis() - event.optLong("atMs");
+            if ("voice_delivery_error".equals(event.optString("type"))
+                    && ageMs >= 0 && ageMs < 120000) {
+                status.setText("Voice error · " + event.optString("error")); break;
+            }
+        }
+    }
     @Override protected void onStop() { AgentService.unobserve(this); super.onStop(); }
     @Override protected void onDestroy() {
         invalidateAccountOperations();
@@ -90,7 +112,18 @@ public final class MainActivity extends Activity implements AgentService.Observe
         String type = event.optString("type");
         if (type.equals("state")) { state = event.optJSONObject("state"); if (state == null) state = new JSONObject(); render(); }
         else if (type.equals("error")) { status.setText("Error · " + event.optString("error", "Runtime unavailable")); }
-        else if (type.equals("ready") || type.equals("stopped")) render();
+        else if (type.equals("voice_delivery_error")) { status.setText("Voice error · " + event.optString("error", "Unable to start speech")); }
+        else if (type.equals("stopped")) {
+            if (deferredUserMessage != null && deferredUserMessage.equals(input.getText().toString().trim())) {
+                try {
+                    command(json("action", "send", "text", deferredUserMessage));
+                    input.setText("");
+                    deferredUserMessage = null;
+                } catch (RuntimeException error) { status.setText("Unable to resend after shutdown · press Send again"); }
+            } else deferredUserMessage = null;
+            render();
+        }
+        else if (type.equals("ready")) render();
     }
     private void render() {
         status.setText(!AgentService.isRunning() ? "Stopped · Send starts the runtime" : state.optBoolean("busy") ? "Main is responding" : state.optBoolean("active") ? "Workers active · Main is available" : "Ready");
@@ -196,7 +229,7 @@ public final class MainActivity extends Activity implements AgentService.Observe
         panel.addView(button("Enable Shizuku virtual displays", this::enableVirtualDisplays));
         panel.addView(button("Notification access settings", () -> startActivity(new Intent(Settings.ACTION_NOTIFICATION_LISTENER_SETTINGS))));
         panel.addView(button("Choose phone permissions", this::permissions));
-        panel.addView(text("Voice uses Deepgram streaming speech recognition and synthesis with the Pi main agent. Listening stops after six seconds of idle silence or when you tap Stop listening in the notification. Background workers continue."));
+        panel.addView(text("Voice uses Deepgram streaming speech recognition and synthesis with the Pi main agent. Listening stops after three seconds of idle silence or when you tap Stop listening in the notification. Background workers continue."));
         panel.addView(button("Deepgram voice key", this::voiceKeySettings));
         panel.addView(text("Hey Jarvis runs locally at 16 kHz. The wake-word sensitivity below is saved across restarts and applies immediately to an active listener."));
         TextView wakeConfidenceLabel = text("");

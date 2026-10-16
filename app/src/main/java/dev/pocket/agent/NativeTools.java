@@ -100,6 +100,20 @@ final class NativeTools implements AutoCloseable {
         catch(SecurityException e) {return Json.failure("PERMISSION_REQUIRED","Android denied access");}
         catch(Exception e) {return Json.failure("RESULT_UNKNOWN","Operation unavailable; inspect current state before repeating");}
     }
+    /** Preserve a usable record and advance pagination even for escape-heavy extras. */
+    static JSONObject boundedNotification(AndroidNotificationActions.Entry n,JSONArray messages) {
+        JSONObject full=Json.obj("notification_key",n.notificationKey(),"posted_at_ms",n.postedAt(),
+            "package_name",n.packageName(),"title",n.title(),"text",n.text(),"expanded_text",n.expandedText(),
+            "conversation_title",n.conversationTitle(),"group_conversation",n.groupConversation(),"messages",messages);
+        if(full.toString().length()<=16000)return full;
+        return Json.obj("notification_key",clip(n.notificationKey(),1000),"posted_at_ms",n.postedAt(),
+            "package_name",n.packageName(),"title",clip(n.title(),200),"text",clip(n.text(),200),
+            "content_truncated",true,"message_count",messages.length());
+    }
+    private static String clip(String value,int max) {
+        if(value==null)return "";
+        return value.length()>max?value.substring(0,max):value;
+    }
     private AndroidScreenBackend screen(String owner) throws ControlException {return displays.screen(owner);}
     private static Integer integer(JSONObject a,String name) throws Exception {return a.has(name)?a.getInt(name):null;}
     private static String string(JSONObject a,String name) throws Exception {return a.has(name)?a.getString(name):null;}
@@ -114,13 +128,18 @@ final class NativeTools implements AutoCloseable {
         return result;
     }
     private PhoneAccountHandle account(String id) throws ControlException {
-        if(context.checkSelfPermission(Manifest.permission.READ_PHONE_STATE)!=PackageManager.PERMISSION_GRANTED) throw new ControlException(PERMISSION_REQUIRED,"Grant phone-state access to select a SIM");
+        // Without an explicit account, Telecom can use the configured default.
+        if(context.checkSelfPermission(Manifest.permission.READ_PHONE_STATE)!=PackageManager.PERMISSION_GRANTED) {
+            if(id!=null) throw new ControlException(PERMISSION_REQUIRED,"Grant phone-state access to select a SIM");
+            return null;
+        }
         TelecomManager manager=context.getSystemService(TelecomManager.class);if(manager==null) throw new ControlException(NOT_READY,"Telecom unavailable");List<PhoneAccountHandle> accounts;
         try {accounts=manager.getCallCapablePhoneAccounts();}catch(SecurityException denied) {throw new ControlException(PERMISSION_REQUIRED,"Android denied phone-account access");}
         if(id!=null) for(PhoneAccountHandle handle:accounts) if(accountId(handle).equals(id)) return handle;
         if(id!=null) throw new ControlException(INVALID_ARGUMENT,"Unknown phone account ID");
         if(accounts.size()>1) throw new ControlException(AMBIGUOUS_TARGET,"Choose phone_account_id from phone_capabilities for dual-SIM calling");
-        if(accounts.isEmpty()) throw new ControlException(NOT_READY,"No callable SIM/account");return accounts.get(0);
+        if(accounts.isEmpty()) return null;
+        return accounts.get(0);
     }
     private static String accountId(PhoneAccountHandle account) {return account.getComponentName().flattenToString()+"#"+account.getId();}
     private PendingIntent receipt(String op,String stage,int part) {
@@ -178,6 +197,23 @@ final class NativeTools implements AutoCloseable {
                 displays.launch(owner,launch.getComponent().flattenToString());
                 return Json.tool(Json.obj("status","requested","package_name",pkg,"display_id",displays.display(owner),"message","Launch requested on the private virtual display; verify with phone_observe."));
             }
+            case "phone_open_url": {
+                String raw=a.getString("url");
+                Uri uri=Uri.parse(raw);
+                if(!("https".equalsIgnoreCase(uri.getScheme())||"http".equalsIgnoreCase(uri.getScheme())) ||
+                    uri.getHost()==null || uri.getHost().isBlank() || uri.getUserInfo()!=null ||
+                    raw.length()>2048 || raw.contains("\n") || raw.contains("\r"))
+                    throw new ControlException(INVALID_ARGUMENT,"Provide an HTTP(S) URL without embedded credentials or control characters");
+                displays.openUrl(owner,uri.toString());
+                return Json.tool(Json.obj("status","requested","display_id",displays.display(owner),
+                    "message","URL launch requested on the virtual display; verify in phone_observe."));
+            }
+            case "phone_clock_screen": {
+                String screen=a.getString("screen");
+                displays.showClock(owner,screen);
+                return Json.tool(Json.obj("status","requested","display_id",displays.display(owner),
+                    "message","Clock screen requested; read alarms/timers from the UI, not from an unsupported provider API."));
+            }
             case "phone_contacts": {
                 JSONArray contacts=new JSONArray();for(AndroidSystemActions.Contact c:system.findContacts(a.getString("query"),a.optInt("limit",20))) contacts.put(Json.obj("contact_id",c.contactId(),"name",c.name(),"number",c.number()));return Json.tool(Json.obj("contacts",contacts));
             }
@@ -188,7 +224,17 @@ final class NativeTools implements AutoCloseable {
                 return outcome(a.has("name")?system.callContact(a.getString("name"),handle,speaker):system.callNumber(a.getString("number"),handle,speaker));
             }
             case "phone_calendars": {
-                JSONArray calendars=new JSONArray();for(AndroidSystemActions.Calendar c:system.calendars()) calendars.put(Json.obj("id",c.id(),"name",c.name(),"writable",c.writable()));return Json.tool(Json.obj("calendars",calendars));
+                JSONArray calendars=new JSONArray();for(AndroidSystemActions.Calendar c:system.calendars()) calendars.put(Json.obj("id",c.id(),"name",c.name(),"writable",c.writable(),"account_name",c.accountName(),"account_type",c.accountType(),"owner_account",c.ownerAccount(),"visible",c.visible()));return Json.tool(Json.obj("calendars",calendars));
+            }
+            case "phone_calendar_events": {
+                AndroidSystemActions.CalendarEvents result=system.calendarEvents(a.getLong("start_ms"),a.getLong("end_ms"),
+                    a.has("calendar_id")?a.getLong("calendar_id"):null,a.optInt("limit",50));
+                JSONArray events=new JSONArray();
+                for(AndroidSystemActions.CalendarEvent event:result.events())events.put(Json.obj("event_id",event.eventId(),
+                    "calendar_id",event.calendarId(),"title",event.title(),"start_ms",event.startMillis(),
+                    "end_ms",event.endMillis(),"all_day",event.allDay(),"event_timezone",event.timezone()));
+                return Json.tool(Json.obj("events",events,"truncated",result.truncated(),"timezone_note",
+                    "Start/end are UTC epoch milliseconds; use the device timezone for display and check all-day boundaries."));
             }
             case "phone_calendar_create":return outcome(system.createEvent(a.getLong("calendar_id"),a.getString("title"),a.getLong("start_ms"),a.getLong("end_ms"),a.getString("timezone")));
             case "phone_alarm":return outcome(system.setAlarm(a.getInt("hour"),a.getInt("minute"),a.optString("label","")));
@@ -201,6 +247,29 @@ final class NativeTools implements AutoCloseable {
             }
             case "phone_notifications": {
                 JSONArray replies=new JSONArray();for(AndroidNotificationActions.Reply r:new AndroidNotificationActions(PhoneNotifications.connected).replies()) replies.put(Json.obj("notification_key",r.notificationKey(),"posted_at_ms",r.postedAt(),"package_name",r.packageName(),"action_index",r.actionIndex(),"label",r.label(),"title",r.title(),"conversation_title",r.conversationTitle(),"group_conversation",r.groupConversation(),"identity_note","Titles are recipient hints, not contact identity proof; distinguish group conversations before replying"));return Json.tool(Json.obj("reply_actions",replies));
+            }
+            case "phone_notification_read": {
+                JSONArray notifications=new JSONArray();
+                int offset=a.optInt("offset",0);
+                AndroidNotificationActions reader=new AndroidNotificationActions(PhoneNotifications.connected);
+                AndroidNotificationActions.Page page=reader.readPage(string(a,"package_name"),offset,a.optInt("limit",20));
+                boolean byteLimited=false;
+                int characters=0;
+                for(AndroidNotificationActions.Entry n:page.entries()) {
+                    JSONArray messages=new JSONArray();
+                    for(AndroidNotificationActions.Message m:n.messages()) messages.put(Json.obj("sender",m.sender(),"text",m.text(),"timestamp_ms",m.timestamp()));
+                    JSONObject entry=boundedNotification(n,messages);
+                    // The JS bridge rejects responses above 32K characters. Reserve ample
+                    // space for the envelope and escape expansion while keeping pagination usable.
+                    int entryCharacters=entry.toString().length()+1;
+                    if(characters+entryCharacters>20000) {byteLimited=true;break;}
+                    notifications.put(entry);
+                    characters+=entryCharacters;
+                }
+                boolean truncated=byteLimited||page.hasMore();
+                return Json.tool(Json.obj("notifications",notifications,"truncated",truncated,
+                    "next_offset",truncated?offset+notifications.length():null,
+                    "scope_note","Active notifications only, not historical conversations. Offset pagination is best-effort when active notifications change."));
             }
             case "phone_reply":return outcome(new AndroidNotificationActions(PhoneNotifications.connected).reply(a.getString("notification_key"),a.getLong("posted_at_ms"),a.getInt("action_index"),a.getString("text")));
             case "phone_media":return outcome(new AndroidMediaActions(context,new ComponentName(context,PhoneNotifications.class)).control(a.getString("package_name"),a.getString("action"),a.optLong("position_ms",0)));

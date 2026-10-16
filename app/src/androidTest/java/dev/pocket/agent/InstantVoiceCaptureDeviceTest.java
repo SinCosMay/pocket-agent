@@ -2,6 +2,7 @@ package dev.pocket.agent;
 
 import android.Manifest;
 import android.content.Context;
+import android.content.pm.PackageManager;
 import androidx.test.ext.junit.runners.AndroidJUnit4;
 import androidx.test.platform.app.InstrumentationRegistry;
 import java.util.ArrayList;
@@ -41,8 +42,7 @@ public final class InstantVoiceCaptureDeviceTest {
 
     @Test public void microphoneStartsBeforeBackendAndBacklogReplaysWhenBackendOpens() throws Exception {
         Context context = InstrumentationRegistry.getInstrumentation().getTargetContext();
-        InstrumentationRegistry.getInstrumentation().getUiAutomation()
-            .grantRuntimePermission(context.getPackageName(), Manifest.permission.RECORD_AUDIO);
+        requireMicrophonePermission(context);
         FakeConnector network = new FakeConnector();
         DeepgramVoice voice = new DeepgramVoice(context, "test-only", new SilentCallback(),
             network, "wss://api.deepgram.com/v2/listen");
@@ -55,12 +55,30 @@ public final class InstantVoiceCaptureDeviceTest {
             int bufferedBeforeOpen = voice.bufferedInputBytes();
             assertTrue("Audio is retained while backend is disconnected", bufferedBeforeOpen >= 5120);
             assertEquals(0, network.socket.audio.size());
-            network.accept();
-            waitUntil(() -> network.socket.sentBytes.get() >= bufferedBeforeOpen, 5000);
-            assertTrue("First captured samples must be sent, not discarded", network.socket.audio.size() > 0);
-            synchronized (network.socket.audio) {
-                for (byte[] frame : network.socket.audio) assertTrue(frame.length > 0 && frame.length <= 2560);
+            // Inject a unique frame into the offline capture backlog. Counting sent bytes
+            // alone would incorrectly pass if everything before onOpen were discarded.
+            byte[] offlineMarker = new byte[2560];
+            for (int i = 0; i < offlineMarker.length; i++) {
+                offlineMarker[i] = (byte) (i * 31 + 17);
             }
+            java.lang.reflect.Field queueField = DeepgramVoice.class.getDeclaredField("captured");
+            queueField.setAccessible(true);
+            synchronized (voice) {
+                PcmCaptureQueue queued = (PcmCaptureQueue) queueField.get(voice);
+                assertTrue("Marker must be buffered before connecting",
+                    queued.offer(offlineMarker, offlineMarker.length));
+            }
+            network.accept();
+            waitUntil(() -> containsAudioFrame(network.socket, offlineMarker), 5000);
+            boolean replayedOfflineMarker = false;
+            synchronized (network.socket.audio) {
+                for (byte[] frame : network.socket.audio) {
+                    assertTrue(frame.length > 0 && frame.length <= 2560);
+                    if (java.util.Arrays.equals(frame, offlineMarker)) replayedOfflineMarker = true;
+                }
+            }
+            assertTrue("The unique pre-connection PCM frame must be replayed",
+                replayedOfflineMarker);
             voice.stopListening();
             assertEquals("Stop discards stale audio", 0, voice.bufferedInputBytes());
             int sent = network.socket.audio.size();
@@ -74,8 +92,7 @@ public final class InstantVoiceCaptureDeviceTest {
 
     @Test public void wakeTailIsSentAheadOfLiveMicFrames() throws Exception {
         Context context = InstrumentationRegistry.getInstrumentation().getTargetContext();
-        InstrumentationRegistry.getInstrumentation().getUiAutomation()
-            .grantRuntimePermission(context.getPackageName(), Manifest.permission.RECORD_AUDIO);
+        requireMicrophonePermission(context);
         FakeConnector network = new FakeConnector();
         DeepgramVoice voice = new DeepgramVoice(context, "test-only", new SilentCallback(),
             network, "wss://api.deepgram.com/v2/listen");
@@ -95,8 +112,7 @@ public final class InstantVoiceCaptureDeviceTest {
 
     @Test public void permanentDeepgramAuthorizationFailureDoesNotRetryCapture() throws Exception {
         Context context = InstrumentationRegistry.getInstrumentation().getTargetContext();
-        InstrumentationRegistry.getInstrumentation().getUiAutomation()
-            .grantRuntimePermission(context.getPackageName(), Manifest.permission.RECORD_AUDIO);
+        requireMicrophonePermission(context);
         FakeConnector network = new FakeConnector();
         DeepgramVoice voice = new DeepgramVoice(context, "invalid-test-key", new SilentCallback(),
             network, "wss://api.deepgram.com/v2/listen");
@@ -114,8 +130,7 @@ public final class InstantVoiceCaptureDeviceTest {
 
     @Test public void failedHandshakeRetriesWithoutLosingRecordedAudio() throws Exception {
         Context context = InstrumentationRegistry.getInstrumentation().getTargetContext();
-        InstrumentationRegistry.getInstrumentation().getUiAutomation()
-            .grantRuntimePermission(context.getPackageName(), Manifest.permission.RECORD_AUDIO);
+        requireMicrophonePermission(context);
         FakeConnector network = new FakeConnector();
         DeepgramVoice voice = new DeepgramVoice(context, "test-only", new SilentCallback(),
             network, "wss://api.deepgram.com/v2/listen");
@@ -136,10 +151,33 @@ public final class InstantVoiceCaptureDeviceTest {
         }
     }
 
+    @Test public void streamReadinessWaitsForOutgoingSocketToDrain() throws Exception {
+        Context context = InstrumentationRegistry.getInstrumentation().getTargetContext();
+        requireMicrophonePermission(context);
+        FakeConnector network = new FakeConnector();
+        SilentCallback callback = new SilentCallback();
+        DeepgramVoice voice = new DeepgramVoice(context, "test-only", callback,
+            network, "wss://api.deepgram.com/v2/listen");
+        network.voice = voice;
+        try {
+            voice.listen();
+            waitUntil(() -> voice.bufferedInputBytes() >= 5120, 5000);
+            network.socket.forcedQueueSize = 64_000;
+            network.accept();
+            waitUntil(() -> network.socket.sentBytes.get() >= 5120, 5000);
+            Thread.sleep(160);
+            assertEquals("Socket still holds undelivered PCM: idle timer must not start",
+                0, callback.readyCount.get());
+            network.socket.forcedQueueSize = 0;
+            waitUntil(() -> callback.readyCount.get() > 0, 5000);
+        } finally {
+            voice.close();
+        }
+    }
+
     @Test public void cancelBeforeConnectionDiscardsAudioAndRejectsLateOpen() throws Exception {
         Context context = InstrumentationRegistry.getInstrumentation().getTargetContext();
-        InstrumentationRegistry.getInstrumentation().getUiAutomation()
-            .grantRuntimePermission(context.getPackageName(), Manifest.permission.RECORD_AUDIO);
+        requireMicrophonePermission(context);
         FakeConnector network = new FakeConnector();
         DeepgramVoice voice = new DeepgramVoice(context, "test-only", new SilentCallback(),
             network, "wss://api.deepgram.com/v2/listen");
@@ -155,6 +193,22 @@ public final class InstantVoiceCaptureDeviceTest {
         } finally {
             voice.close();
         }
+    }
+
+    private static boolean containsAudioFrame(FakeSocket socket, byte[] expected) {
+        synchronized (socket.audio) {
+            for (byte[] frame : socket.audio) {
+                if (java.util.Arrays.equals(frame, expected)) return true;
+            }
+        }
+        return false;
+    }
+
+    private static void requireMicrophonePermission(Context context) {
+        assertEquals("Grant microphone permission in emulator setup before running these tests; " +
+            "instrumentation must never change the app's persistent permission state",
+            PackageManager.PERMISSION_GRANTED,
+            context.checkSelfPermission(Manifest.permission.RECORD_AUDIO));
     }
 
     private static void waitUntil(Check check, long timeoutMs) throws Exception {
@@ -201,9 +255,10 @@ public final class InstantVoiceCaptureDeviceTest {
         final List<byte[]> audio = java.util.Collections.synchronizedList(new ArrayList<>());
         final AtomicLong sentBytes = new AtomicLong();
         volatile boolean closed;
+        volatile long forcedQueueSize;
         @Override public Request request() { return new Request.Builder()
             .url("https://api.deepgram.com").build(); }
-        @Override public long queueSize() { return 0; }
+        @Override public long queueSize() { return forcedQueueSize; }
         @Override public boolean send(String text) { return !closed; }
         @Override public boolean send(ByteString bytes) {
             if (closed) return false;
@@ -216,6 +271,7 @@ public final class InstantVoiceCaptureDeviceTest {
     }
 
     private static final class SilentCallback implements DeepgramVoice.Callback {
+        final AtomicInteger readyCount = new AtomicInteger();
         @Override public void onUtterance(String text) { }
         @Override public void onSpeechStarted() { }
         @Override public void onEmptyTurn() { }
@@ -223,6 +279,6 @@ public final class InstantVoiceCaptureDeviceTest {
         @Override public void onPlaybackFinished() { }
         @Override public void onFirstAudio() { }
         @Override public void onStatus(String message) { }
-        @Override public void onStreamReady() { }
+        @Override public void onStreamReady() { readyCount.incrementAndGet(); }
     }
 }

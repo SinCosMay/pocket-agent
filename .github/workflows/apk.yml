@@ -1,7 +1,7 @@
 name: Signed Android APK
 on:
   push:
-    branches: [main, 'feat/**']
+    branches: [main, 'feat/**', 'fix/**']
   workflow_dispatch:
 permissions:
   contents: read
@@ -52,6 +52,30 @@ jobs:
         run: |
           ./gradlew --no-daemon :app:assembleRelease :app:assembleDevelopment :app:assembleReleaseAndroidTest :app:lintRelease :fixture:assembleDebug
           ./gradlew --no-daemon -PdevEmulatorTest :app:assembleDevelopmentAndroidTest
+      - name: Enable KVM hardware acceleration for emulator
+        run: |
+          test -c /dev/kvm
+          sudo chmod 666 /dev/kvm
+          test -r /dev/kvm && test -w /dev/kvm
+      - name: Exercise voice and development MCP contracts on Android emulator
+        uses: reactivecircus/android-emulator-runner@v2
+        with:
+          api-level: 35
+          arch: x86_64
+          target: google_apis
+          disable-animations: true
+          emulator-options: -no-window -gpu swiftshader_indirect -no-snapshot -noaudio -no-boot-anim
+          script: |
+            ./gradlew --no-daemon :app:connectedReleaseAndroidTest -Pandroid.testInstrumentationRunnerArguments.class=dev.pocket.agent.VoicePipelineDeviceTest
+            ./gradlew --no-daemon :app:connectedReleaseAndroidTest -Pandroid.testInstrumentationRunnerArguments.class=dev.pocket.agent.VoiceAssistantDeviceTest
+            ./gradlew --no-daemon -PdevEmulatorTest :app:connectedDevelopmentAndroidTest -Pandroid.testInstrumentationRunnerArguments.class=dev.pocket.agent.DevBridgeDeviceTest
+      - name: Upload emulator test report
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: emulator-test-report
+          path: app/build/outputs/androidTest-results/connected/
+          if-no-files-found: ignore
       - name: Collect provenance and signed APKs
         run: |
           mkdir -p artifacts
