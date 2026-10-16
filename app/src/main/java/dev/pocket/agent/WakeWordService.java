@@ -80,8 +80,7 @@ public final class WakeWordService extends Service {
     }
 
     static void resumeAfterEnrollment() {
-        if (enrollmentSessions.decrementAndGet() > 0) return;
-        enrollmentSessions.set(0);
+        if (enrollmentSessions.updateAndGet(n -> Math.max(0, n - 1)) > 0) return;
         WakeWordService service = running;
         if (service != null) { service.transitioning = false; service.resume(); }
     }

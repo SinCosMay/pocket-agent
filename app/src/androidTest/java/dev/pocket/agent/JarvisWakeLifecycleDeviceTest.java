@@ -37,6 +37,7 @@ public final class JarvisWakeLifecycleDeviceTest {
             context.stopService(new Intent(context,WakeWordService.class));
             context.getSharedPreferences("wakeword",Context.MODE_PRIVATE).edit()
                 .putBoolean("enabled",previous).commit();
+            if (previous) context.startForegroundService(new Intent(context, WakeWordService.class));
             activity.finish();
         }
     }
