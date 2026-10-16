@@ -53,3 +53,14 @@
 
 # Release instrumentation directly exercises persisted local wake tuning.
 -keep class dev.pocket.agent.WakeWordSettings { *; }
+# Instrumentation verifies the real Shizuku user service, including cold displays.
+-keep class dev.pocket.agent.ShizukuDisplayClient {
+    <init>(android.content.Context,java.lang.Runnable);
+    int createDisplay();
+    void removeDisplay(int);
+    void close();
+}
+
+# Instrumentation directly calls these methods across the minified target boundary.
+-keep class dev.pocket.android.AndroidScreenBackend { *; }
+-keep class dev.pocket.control.ControlBackend** { *; }
