@@ -8,7 +8,7 @@ notification, without leaving an overlay on screen. A live microphone stream goe
 a finalized utterance is submitted as **one normal main-agent user message**. Only
 text deltas produced in that particular main response are sent to Deepgram streaming
 TTS. Subsequent Pi9 worker completion messages and ordinary text messages remain
-visible in chat without speech unless the model explicitly calls `speak_to_user`. The listening service ends after six seconds of idle silence, or immediately via
+visible in chat without speech unless the model explicitly calls `speak_to_user`. The listening service ends after three seconds of idle silence, or immediately via
 the notification **Stop listening** action. Neither ending the voice session nor switching
 to another app cancels Pi workers. Stop response, Cancel worker and Stop all remain
 distinct actions.
@@ -61,7 +61,7 @@ Pocket Agent instead uses directly documented Deepgram APIs:
    Navigate the phone normally while the microphone notification remains visible.
    Say something; begin speaking while the response is audible to barge in.
 8. Stop via **Stop listening** in the notification, **Stop voice** in the main app,
-   or allow six seconds of idle silence after the last response. Workers remain
+   or allow three seconds of idle silence after the last response. Workers remain
    active in the existing runtime notification and chat.
 
 The Android manifest registers a protected `VoiceInteractionService` and
@@ -86,7 +86,7 @@ is needed. Default-assistant support and key mapping depend on OEM firmware.
   Late response deltas are ignored using a new identifier for each voice turn.
   Android's available acoustic echo canceler and noise suppression are enabled;
   noisy speakers/headsets and OEM audio routing still require device validation.
-- Six seconds of idle silence stops the voice service when no user utterance or
+- Three seconds of idle silence stops the voice service when no user utterance or
   main spoken response is active. A long-running response does not unexpectedly
   lose interruption capability midway through playback.
 - Notification stop and idle expiry release both WebSockets, microphone, AudioTrack,
@@ -149,7 +149,7 @@ Validation checklist:
    while the microphone notification remains visible and a voice response plays.
    Interrupt playback with a second utterance, and confirm only the new reply is
    spoken while unrelated Pi workers continue.
-5. Test Stop listening, six-second idle shutdown, Android microphone revocation,
+5. Test Stop listening, three-second idle shutdown, Android microphone revocation,
    repeated assistant activation, and a worker completion after microphone shutdown.
    The worker completion should appear only in chat.
 6. Inspect `logcat -s PocketVoiceLatency:I` for actual voice latency,
