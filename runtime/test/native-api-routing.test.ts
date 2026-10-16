@@ -17,6 +17,8 @@ test('notification reads and calendar queries never request a virtual display',a
   assert.deepEqual(validateToolArguments(tool,{type:'toolCall',id:name,name,arguments:args}),args);
   assert.equal((await tool.execute(name,args)).isError,false);
  }
+ const notification=all.find((t:any)=>t.name==='phone_notification_read')!;
+ assert.deepEqual(validateToolArguments(notification,{type:'toolCall',id:'page',name:'phone_notification_read',arguments:{offset:2147483647,limit:1}}),{offset:2147483647,limit:1});
  assert.equal(acquisitions,0);
  assert.deepEqual(calls,['phone_calendar_events','phone_calendars','phone_notification_read','phone_notifications','phone_contacts']);
 });

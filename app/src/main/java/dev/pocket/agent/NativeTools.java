@@ -100,6 +100,20 @@ final class NativeTools implements AutoCloseable {
         catch(SecurityException e) {return Json.failure("PERMISSION_REQUIRED","Android denied access");}
         catch(Exception e) {return Json.failure("RESULT_UNKNOWN","Operation unavailable; inspect current state before repeating");}
     }
+    /** Preserve a usable record and advance pagination even for escape-heavy extras. */
+    static JSONObject boundedNotification(AndroidNotificationActions.Entry n,JSONArray messages) {
+        JSONObject full=Json.obj("notification_key",n.notificationKey(),"posted_at_ms",n.postedAt(),
+            "package_name",n.packageName(),"title",n.title(),"text",n.text(),"expanded_text",n.expandedText(),
+            "conversation_title",n.conversationTitle(),"group_conversation",n.groupConversation(),"messages",messages);
+        if(full.toString().length()<=16000)return full;
+        return Json.obj("notification_key",clip(n.notificationKey(),500),"posted_at_ms",n.postedAt(),
+            "package_name",n.packageName(),"title",clip(n.title(),200),"text",clip(n.text(),200),
+            "content_truncated",true,"message_count",messages.length());
+    }
+    private static String clip(String value,int max) {
+        if(value==null)return "";
+        return value.length()>max?value.substring(0,max):value;
+    }
     private AndroidScreenBackend screen(String owner) throws ControlException {return displays.screen(owner);}
     private static Integer integer(JSONObject a,String name) throws Exception {return a.has(name)?a.getInt(name):null;}
     private static String string(JSONObject a,String name) throws Exception {return a.has(name)?a.getString(name):null;}
@@ -244,9 +258,7 @@ final class NativeTools implements AutoCloseable {
                 for(AndroidNotificationActions.Entry n:page.entries()) {
                     JSONArray messages=new JSONArray();
                     for(AndroidNotificationActions.Message m:n.messages()) messages.put(Json.obj("sender",m.sender(),"text",m.text(),"timestamp_ms",m.timestamp()));
-                    JSONObject entry=Json.obj("notification_key",n.notificationKey(),"posted_at_ms",n.postedAt(),
-                        "package_name",n.packageName(),"title",n.title(),"text",n.text(),"expanded_text",n.expandedText(),
-                        "conversation_title",n.conversationTitle(),"group_conversation",n.groupConversation(),"messages",messages);
+                    JSONObject entry=boundedNotification(n,messages);
                     // The JS bridge rejects responses above 32K characters. Reserve ample
                     // space for the envelope and escape expansion while keeping pagination usable.
                     int entryCharacters=entry.toString().length()+1;

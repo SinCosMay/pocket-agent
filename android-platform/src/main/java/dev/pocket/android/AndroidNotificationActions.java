@@ -30,9 +30,9 @@ public final class AndroidNotificationActions {
     }
 
     public Page readPage(String packageName,int offset,int limit) throws ControlException {
-        if(limit<1 || limit>50 || offset<0 || offset>1000 ||
+        if(limit<1 || limit>50 || offset<0 ||
             (packageName!=null && (!packageName.matches("[A-Za-z0-9_]+(\\.[A-Za-z0-9_]+)+") || packageName.length()>200)))
-            throw new ControlException(INVALID_ARGUMENT,"Optional package name, offset 0..1000 and limit 1..50 required");
+            throw new ControlException(INVALID_ARGUMENT,"Optional package name, nonnegative offset and limit 1..50 required");
         List<Entry> result=new ArrayList<>();
         StatusBarNotification[] items=active();
         java.util.Arrays.sort(items,(a,b)->Long.compare(b.getPostTime(),a.getPostTime()));

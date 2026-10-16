@@ -49,6 +49,22 @@ public class NativeApiDeviceTest {
             }
         } finally {tools.close();}
     }
+    @Test public void escapeHeavyNotificationProducesProgressablePage() throws Exception {
+        java.util.List<dev.pocket.android.AndroidNotificationActions.Message> messages=new java.util.ArrayList<>();
+        JSONArray serialized=new JSONArray();
+        for(int i=0;i<10;i++) {
+            String control="\u0001".repeat(500);
+            messages.add(new dev.pocket.android.AndroidNotificationActions.Message("Sender",control,1000+i));
+            serialized.put(Json.obj("sender","Sender","text",control,"timestamp_ms",1000+i));
+        }
+        dev.pocket.android.AndroidNotificationActions.Entry entry=new dev.pocket.android.AndroidNotificationActions.Entry(
+            "synthetic-key",100L,"dev.pocket.agent","Synthetic","Notification content",
+            "Expanded",null,false,messages);
+        JSONObject bounded=NativeTools.boundedNotification(entry,serialized);
+        assertTrue("Fallback must fit within page budget",bounded.toString().length()<16000);
+        assertTrue("Should disclose compacted notification fields",bounded.getBoolean("content_truncated"));
+        assertEquals(10,bounded.getInt("message_count"));
+    }
     @Test public void readSyntheticActiveNotification() throws Exception {
         assertNotNull("Enable the authorized notification listener on emulator before this test",PhoneNotifications.connected);
         Context c=context();
