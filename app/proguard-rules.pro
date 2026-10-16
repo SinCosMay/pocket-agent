@@ -48,3 +48,5 @@
 -keep class okhttp3.Response$Builder { *; }
 -keep interface okhttp3.WebSocket { *; }
 -keep interface dev.pocket.agent.DeepgramVoice$SocketConnector { *; }
+-keep class okio.ByteString { *; }
+-keep class okio.ByteString$Companion { *; }
