@@ -21,7 +21,6 @@ on:
       - 'app/src/main/assets/wakeword/**'
       - 'app/build.gradle.kts'
       - 'app/src/androidTest/java/dev/pocket/agent/InstantVoiceCaptureDeviceTest.java'
-      - 'app/proguard-rules.pro'
   workflow_dispatch:
 permissions:
   contents: read
@@ -48,10 +47,15 @@ jobs:
           target: google_apis
           emulator-options: -no-window -gpu swiftshader_indirect -no-snapshot -no-boot-anim
           script: |
-            ./gradlew --no-daemon :app:connectedDebugAndroidTest -PvoiceEmulatorTest=true -Pandroid.testInstrumentationRunnerArguments.class=dev.pocket.agent.InstantVoiceCaptureDeviceTest
-            ./gradlew --no-daemon :app:connectedDebugAndroidTest -PvoiceEmulatorTest=true -Pandroid.testInstrumentationRunnerArguments.class=dev.pocket.agent.JarvisDetectorDeviceTest
-            ./gradlew --no-daemon :app:connectedDebugAndroidTest -PvoiceEmulatorTest=true -Pandroid.testInstrumentationRunnerArguments.class=dev.pocket.agent.JarvisWakeLifecycleDeviceTest
-            ./gradlew --no-daemon :app:connectedDebugAndroidTest -PvoiceEmulatorTest=true -Pandroid.testInstrumentationRunnerArguments.class=dev.pocket.agent.WakeWordSettingsDeviceTest
+            ./gradlew --no-daemon :app:installDebug -PvoiceEmulatorTest=true
+            adb shell pm grant dev.pocket.agent android.permission.RECORD_AUDIO
+            result=0
+            ./gradlew --no-daemon :app:connectedDebugAndroidTest -PvoiceEmulatorTest=true -Pandroid.testInstrumentationRunnerArguments.class=dev.pocket.agent.InstantVoiceCaptureDeviceTest || result=$?
+            ./gradlew --no-daemon :app:connectedDebugAndroidTest -PvoiceEmulatorTest=true -Pandroid.testInstrumentationRunnerArguments.class=dev.pocket.agent.JarvisDetectorDeviceTest || result=$?
+            ./gradlew --no-daemon :app:connectedDebugAndroidTest -PvoiceEmulatorTest=true -Pandroid.testInstrumentationRunnerArguments.class=dev.pocket.agent.JarvisWakeLifecycleDeviceTest || result=$?
+            ./gradlew --no-daemon :app:connectedDebugAndroidTest -PvoiceEmulatorTest=true -Pandroid.testInstrumentationRunnerArguments.class=dev.pocket.agent.WakeWordSettingsDeviceTest || result=$?
+            adb shell pm revoke dev.pocket.agent android.permission.RECORD_AUDIO
+            exit "$result"
       - name: Publish emulator test reports
         if: always()
         uses: actions/upload-artifact@v4

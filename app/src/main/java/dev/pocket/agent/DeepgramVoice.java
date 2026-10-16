@@ -398,13 +398,17 @@ final class DeepgramVoice implements AutoCloseable {
                 synchronized (this) {
                     while (listening && !closed && (!sttReady || captured.isEmpty()
                         || sttSocket.queueSize() >= MAX_SOCKET_QUEUE_BYTES)) {
+                        // Local queue empty does not mean the bytes reached the transport:
+                        // OkHttp may still be holding seconds of pre-connect audio.
                         if (sttReady && captured.isEmpty() && !streamReadyNotified
-                                && sttSocket.queueSize() <= 5120) {
+                            && sttSocket.queueSize() == 0L) {
                             streamReadyNotified = true;
                             caughtUp = true;
                             break;
                         }
-                        wait(!sttReady ? 0L : 40L);
+                        // Poll while waiting for OkHttp's queued PCM to flush. Once
+                        // notified, sleep until the producer adds more audio.
+                        wait(!sttReady || (captured.isEmpty() && streamReadyNotified) ? 0L : 40L);
                     }
                     if (!listening || closed) return;
                     if (!caughtUp) {
