@@ -171,13 +171,13 @@ public final class JarvisEnrollmentActivity extends Activity {
                     if(isFinishing()||isDestroyed())return;
                     samples[captureSlot]=retained;
                     busy=false;
+                    if(position==captureSlot&&position<PROMPTS.length-1)position++;
                     render();
                     info.setText("Generic confidence: "+Math.round(confidence*100)+"% · mic RMS level: "+
                         String.format(java.util.Locale.ROOT,"%.1f%%",rms*100)+
                         (captureSlot<5 && confidence<0.15f
                         ? " · Low model match despite captured speech. Try the other microphone source, repeat, or test a lower threshold cautiously."
                         : " · Recording complete."));
-                    if(position==captureSlot&&position<PROMPTS.length-1){position++;render();}
                 });
             } catch(Exception problem) {
                 String message=problem.getMessage();
