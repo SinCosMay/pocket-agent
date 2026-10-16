@@ -10,8 +10,12 @@ Requires **Android 12 or later**. This is a separate app, `dev.pocket.agent`, an
 
 1. Download a signed APK from a published release or the `pocket-agent-release` artifact of a successful Actions run. `Pocket-Agent-x86_64.apk` targets the emulator; `Pocket-Agent-arm64.apk` targets ARM64 phones. ARM64 execution is still unverified. A universal APK is also built.
 2. Open **Settings** and choose a provider. Choose **Codex account** to sign in with your existing ChatGPT account or import your Codex `auth.json`. No API key or endpoint setup is needed. Choose a model available to your account; `gpt-6-luna` is used for emulator testing. **API key (HTTPS)** is also available for a separate API account.
-3. For screen observation and interaction, open **Accessibility settings** and enable **Pocket Agent phone tools**. **Choose phone permissions** lets you request contacts, calls/phone status, SMS, calendar, and runtime notifications individually. **Notification access settings** is separate and needed only for notification-reading tools. Unavailable permissions are reported through tool errors.
+3. For UI observation and interaction, enable **Pocket Agent phone tools** under Accessibility settings, start Shizuku (via its own app), then select **Enable Shizuku virtual displays** under Pocket Agent Settings and authorize access. UI workers run on shell-backed virtual displays instead of the physical screen, including when that screen is off (subject to Android/OEM restrictions). **Choose phone permissions** lets you grant contacts, calls/phone status, SMS, calendar, and runtime notifications separately. Notification access is needed for notification-reading tools. Direct APIs for SMS, calls and similar actions do **not** require Shizuku or a display.
 4. Send a message. **Send** starts the user-visible foreground service, with an ongoing notification. For example: “Delegate checking the current screen to a phone-operator worker, and report what it sees.”
+
+**Long-task test build:** The `0.1.5-long-tasks-preview.1` branch build raises per-generation limits to 200 turns / 800 tool calls and retained context to 2,048 messages / 8 million serialized characters. Existing provider context limits and billing still apply.
+
+**Virtual-display test build:** The `0.1.4-display-preview.1` branch build is synchronized with Pocket MCP's Shizuku startup/timeout handling through `a7c667c`. Android version code 4 installs over older previews. This integrated branch now includes the voice-assistant functionality merged into `main`, alongside Shizuku-backed virtual displays.
 
 **Stop response** stops main's current response. Open a task to inspect, message, steer, or cancel that worker. Closing its view leaves its work running. **Stop all**, also available in the notification, stops the service and all work.
 
@@ -33,7 +37,7 @@ device sign-in, secure import and the optional legacy development relay.
 
 ## How it runs
 
-One app-owned Javet Node engine hosts main and every logical worker. Pi9 supplies the in-process scheduler and retained worker conversations. Direct native tools share screen leases, bounded batching, and a mutation ledger. Worker completion reaches main through a persisted event inbox rather than repeated model polling. App-private SQLite stores transcripts and task checkpoints separately from protected credentials.
+One app-owned Javet Node engine hosts main and every logical worker. Pi9 supplies the in-process scheduler and retained worker conversations. Direct native tools share a FIFO pool of three on-demand Shizuku virtual displays (fourth UI worker waits without failing), bounded batching, and a mutation ledger. Worker completion reaches main through a persisted event inbox rather than repeated model polling. App-private SQLite stores transcripts and task checkpoints separately from protected credentials.
 
 Android can restrict or terminate the user-started service. Interrupted work is preserved as interrupted; side effects are not automatically replayed. Interactive device-code approval, ARM64 execution, physical-phone battery/OEM behavior, and comparative resource measurements remain outstanding. Build success is not full runtime validation.
 

@@ -43,8 +43,25 @@ export function nativeTools(host:any,owner:string,grant?:readonly string[]):any[
       if(signal?.aborted) throw new Error('Cancelled before native dispatch');
       // Batch entries must also stay inside this conversation's grant.
       if(s.name==='phone_batch' && args.calls?.some((x:any)=>!schemas.some(t=>t.name===x.name) || (grant && !grant.includes(x.name)))) throw new Error('Batch tool exceeds tool grant');
+      if(s.name==='phone_screen'){
+        if(args.action==='release'){
+          host.releaseScreen?.(owner);
+          return toolResult({status:'released'});
+        }
+        if(args.action==='acquire'&&host.ensureDisplay)return toolResult(await host.ensureDisplay(owner,signal));
+      }
+      const needsUi=s.name==='phone_observe'||s.name==='phone_act'||s.name==='phone_open_app'||
+        (s.name==='phone_batch'&&args.calls?.some((c:any)=>['phone_observe','phone_act','phone_open_app'].includes(c.name)));
+      if(needsUi&&host.ensureDisplay){
+        const result=await host.ensureDisplay(owner,signal);
+        if(result?.isError)return toolResult(result);
+      }
+      if(signal?.aborted)throw new Error('Cancelled before native dispatch');
       if(s.name==='phone_observe'||(s.name==='phone_batch'&&args.calls?.some((x:any)=>x.name==='phone_observe')))host.dropPriorImages(owner);
       const result=host.call('tool',{name:s.name,args,owner});
+      if(needsUi&&result?.isError&&result.code==='NOT_READY'&&
+        /virtual display|no virtual display|shizuku backend|display service/i.test(String(result.message??'')))
+        host.releaseScreen?.(owner);
       return toolResult(result);
     },
   }));
@@ -91,7 +108,8 @@ export function subagentTool(app:any,parent?:any):any {
           let abort:()=>void=()=>{};
           const cancelled=new Promise<never>((_,reject)=>{abort=()=>reject(new Error('Join cancelled'));if(signal?.aborted)abort();else signal?.addEventListener('abort',abort,{once:true});});
           try {
-            const wait=()=>Promise.race([binding.completion,cancelled]);
+            app.releaseScreen?.(parent?.conversationId??'main');
+          const wait=()=>Promise.race([binding.completion,cancelled]);
             await (parent?r.scheduler.suspendConversationSlotDuring(parent,wait):wait());
             results=binding.finalizeCollection('model').map((x:any)=>({ok:true,...x}));
           } catch(e){binding.interrupt?.(String(e));throw e;}

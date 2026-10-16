@@ -21,6 +21,7 @@ import org.json.JSONObject;
 public final class RuntimeHost implements AutoCloseable {
     private final Context context;
     private final StateStore store;
+    private final MemoryStore memory;
     private final CredentialStore credentials;
     private final Consumer<JSONObject> listener;
     private final HandlerThread thread = new HandlerThread("PocketNode");
@@ -39,7 +40,7 @@ public final class RuntimeHost implements AutoCloseable {
     }
     public RuntimeHost(Context context, Consumer<JSONObject> listener) {
         this.context = context.getApplicationContext(); this.listener = listener;
-        store = new StateStore(this.context); credentials = new CredentialStore(this.context);
+        store = new StateStore(this.context); memory = new MemoryStore(this.context); credentials = new CredentialStore(this.context);
         thread.start(); handler = new Handler(thread.getLooper());
     }
     public CompletableFuture<Void> start() {
@@ -115,6 +116,7 @@ public final class RuntimeHost implements AutoCloseable {
                 JSONObject args = new JSONObject(argsJson); Object result;
                 switch (method) {
                     case "tool": result = tools.execute(args.getString("name"), args.optJSONObject("args") == null ? new JSONObject() : args.getJSONObject("args"), args.optString("owner", "main")); break;
+                    case "memory": result = memory.run(args.getJSONObject("request"), args.getString("owner")); break;
                     case "store.load": result = store.loadDurable(); break;
                     case "store.save": store.saveDurable(args.getJSONObject("state")); result = true; break;
                     case "credentials.get": result = credentials.get(); break;
@@ -160,9 +162,10 @@ public final class RuntimeHost implements AutoCloseable {
                     try { runtime.getExecutor("PocketAgent.dispatch('{\"action\":\"stop_all\"}')").executeVoid(); runtime.await(V8AwaitMode.RunNoWait); } catch (Throwable ignored) { }
                     runtime.setStopping(true); runtime.close(); runtime = null;
                 }
+                if(tools!=null){tools.close();tools=null;}
                 store.markInterrupted();
             } catch (Throwable error) { fail("Runtime shutdown failed", error); }
-            finally { if (gate != null) gate.completeExceptionally(new IllegalStateException("Service stopped")); store.close(); thread.quitSafely(); }
+            finally { if (gate != null) gate.completeExceptionally(new IllegalStateException("Service stopped")); memory.close(); store.close(); thread.quitSafely(); }
         });
     }
 }

@@ -628,7 +628,7 @@
   },
   {
     "name": "phone_screen",
-    "description": "Acquire or release a screen lease for this conversation. Lease expires after 15 seconds without a screen action. Reobserve after handoff. Release after work or cancellation.",
+    "description": "Release this conversation's virtual display when its UI work is finished. Displays are acquired automatically on the first screen interaction; SMS, calling and other direct Android APIs never allocate one. Up to three displays run concurrently; further UI work waits until a display is freed.",
     "inputSchema": {
       "type": "object",
       "additionalProperties": false,
@@ -636,7 +636,6 @@
         "action": {
           "type": "string",
           "enum": [
-            "acquire",
             "release"
           ]
         }
