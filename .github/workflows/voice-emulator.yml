@@ -4,6 +4,11 @@ on:
     paths:
       - '.github/workflows/voice-emulator.yml'
       - '.github/scripts/run-voice-emulator-tests.sh'
+      - 'gradlew'
+      - 'gradle/**'
+      - 'gradle.properties'
+      - 'build.gradle.kts'
+      - 'settings.gradle.kts'
       - 'app/src/main/java/dev/pocket/agent/DeepgramVoice.java'
       - 'app/src/main/java/dev/pocket/agent/PcmCaptureQueue.java'
       - 'app/src/main/java/dev/pocket/agent/VoiceListeningService.java'

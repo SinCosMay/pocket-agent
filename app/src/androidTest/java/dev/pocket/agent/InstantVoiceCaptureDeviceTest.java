@@ -69,7 +69,7 @@ public final class InstantVoiceCaptureDeviceTest {
                     queued.offer(offlineMarker, offlineMarker.length));
             }
             network.accept();
-            waitUntil(() -> network.socket.sentBytes.get() >= bufferedBeforeOpen + offlineMarker.length, 5000);
+            waitUntil(() -> containsAudioFrame(network.socket, offlineMarker), 5000);
             boolean replayedOfflineMarker = false;
             synchronized (network.socket.audio) {
                 for (byte[] frame : network.socket.audio) {
@@ -193,6 +193,15 @@ public final class InstantVoiceCaptureDeviceTest {
         } finally {
             voice.close();
         }
+    }
+
+    private static boolean containsAudioFrame(FakeSocket socket, byte[] expected) {
+        synchronized (socket.audio) {
+            for (byte[] frame : socket.audio) {
+                if (java.util.Arrays.equals(frame, expected)) return true;
+            }
+        }
+        return false;
     }
 
     private static void requireMicrophonePermission(Context context) {
