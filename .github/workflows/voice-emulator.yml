@@ -39,7 +39,10 @@ jobs:
           arch: x86_64
           target: google_apis
           emulator-options: -no-window -gpu swiftshader_indirect -no-snapshot -no-boot-anim -no-audio
-          script: ./gradlew --no-daemon :app:connectedDebugAndroidTest -PvoiceEmulatorTest=true -Pandroid.testInstrumentationRunnerArguments.class=dev.pocket.agent.InstantVoiceCaptureDeviceTest,dev.pocket.agent.JarvisDetectorDeviceTest
+          script: |
+            ./gradlew --no-daemon :app:connectedDebugAndroidTest -PvoiceEmulatorTest=true -Pandroid.testInstrumentationRunnerArguments.class=dev.pocket.agent.InstantVoiceCaptureDeviceTest
+            adb shell am instrument -w -r -e class dev.pocket.agent.JarvisDetectorDeviceTest dev.pocket.agent.test/androidx.test.runner.AndroidJUnitRunner | tee jarvis-instrumentation.txt
+            grep -q 'OK (2 tests)' jarvis-instrumentation.txt
       - name: Publish emulator test reports
         if: always()
         uses: actions/upload-artifact@v4
