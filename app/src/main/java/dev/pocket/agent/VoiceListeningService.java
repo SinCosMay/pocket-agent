@@ -32,7 +32,7 @@ public final class VoiceListeningService extends Service implements AgentService
     private final Handler main = new Handler(Looper.getMainLooper());
     private DeepgramVoice voice;
     private String activeTurn;
-    private boolean responding, userSpeaking, started;
+    private boolean responding, userSpeaking, started, streamingReady;
     private long utteranceAt, firstTokenAt;
     private final Runnable idleStop = () -> {
         if (started && !responding && !userSpeaking) {
@@ -52,7 +52,7 @@ public final class VoiceListeningService extends Service implements AgentService
         if (ACTION_STOP.equals(intent.getAction())) { stopSelf(); return START_NOT_STICKY; }
         if (!ACTION_START.equals(intent.getAction())) return START_NOT_STICKY;
         if (started) {
-            if (!responding && !userSpeaking) resetIdle();
+            if (streamingReady && !responding && !userSpeaking) resetIdle();
             return START_NOT_STICKY;
         }
         if (checkSelfPermission(Manifest.permission.RECORD_AUDIO) != PackageManager.PERMISSION_GRANTED) {
@@ -75,7 +75,6 @@ public final class VoiceListeningService extends Service implements AgentService
         }
         started = true;
         AgentService.observe(this);
-        startForegroundService(new Intent(this, AgentService.class).setAction(AgentService.ACTION_START));
         voice = new DeepgramVoice(this, key, new DeepgramVoice.Callback() {
             @Override public void onUtterance(String text) {
                 main.post(() -> sendUtterance(text));
@@ -120,6 +119,14 @@ public final class VoiceListeningService extends Service implements AgentService
                     if (!userSpeaking) resetIdle();
                 });
             }
+            @Override public void onStreamReady() {
+                main.post(() -> {
+                    if (!started) return;
+                    streamingReady = true;
+                    showStatus("Listening");
+                    if (!responding && !userSpeaking) resetIdle();
+                });
+            }
             @Override public void onStatus(String status) {
                 main.post(() -> {
                     if (!started) return;
@@ -129,7 +136,7 @@ public final class VoiceListeningService extends Service implements AgentService
             }
         });
         voice.start();
-        resetIdle();
+        startForegroundService(new Intent(this, AgentService.class).setAction(AgentService.ACTION_START));
         return START_NOT_STICKY;
     }
 
@@ -225,6 +232,7 @@ public final class VoiceListeningService extends Service implements AgentService
 
     @Override public void onDestroy() {
         started = false;
+        streamingReady = false;
         main.removeCallbacks(idleStop);
         AgentService.unobserve(this);
         if (voice != null) { voice.close(); voice = null; }
