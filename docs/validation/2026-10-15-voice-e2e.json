@@ -1,0 +1,43 @@
+{
+  "date": "2026-10-15",
+  "branch": "feat/deepgram-voice-assistant",
+  "tested_revision": "e6e6b57911d28cb148880b068101accb10c11bd3",
+  "environment": "Arch Linux external live protocol test; distinct from Android UI/emulator",
+  "input": {
+    "text": "Hello Pocket Agent. What is two plus two? Answer in one short sentence.",
+    "generation": "Deepgram Aura-2 Thalia, streaming WebSocket 24 kHz PCM16",
+    "tts_first_byte_ms": 1755,
+    "tts_total_ms": 3494,
+    "audio_duration_seconds": 4.96
+  },
+  "speech_recognition": {
+    "provider": "Deepgram Flux v2 flux-general-en, streamed 80 ms chunks at real-time speed",
+    "returned": "Hello, pocket agent. What is two plus two? Answer in one short sentence.",
+    "end_of_turn_confirmed": true,
+    "wall_clock_ms": 8497
+  },
+  "inference": {
+    "runtime": "Pocket Agent Pi main thread via PocketRuntime and voiceSessionId",
+    "model": "gpt-6-luna via user's existing Codex account",
+    "output": "Two plus two is four.",
+    "first_model_text_ms_since_STT_end": 3202
+  },
+  "synthesis": {
+    "provider": "Deepgram Aura-2 Thalia streaming 24 kHz PCM16",
+    "first_audio_ms_since_STT_end": 3847,
+    "total_reply_ms_since_STT_end": 4795,
+    "output_audio_duration_seconds": 1.52,
+    "output_chunks": 38,
+    "response_audio": "voice-e2e-response-2026-10-15.ogg",
+    "response_sha256": "55f9f069bd50a78817ab5f4b1e693aa02f90882a817650517a36821858054eec"
+  },
+  "verification": {
+    "technique": "Resample produced audio 24 kHz to 16 kHz and stream via a second real Deepgram Flux connection",
+    "result": "Two plus two is four.",
+    "word_normalized_similarity": 1,
+    "pcm_audio_rms": 2345,
+    "success": true,
+    "caveat": "This proves real network/model/text-audio agreement and does not verify actual Android microphone/speaker hardware."
+  },
+  "credentials": "Temporary Deepgram credential retrieved via connected project's token endpoint; not stored in evidence."
+}

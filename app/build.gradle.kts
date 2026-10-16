@@ -7,8 +7,8 @@ android {
         applicationId = "dev.pocket.agent"
         minSdk = 31
         targetSdk = 36
-        versionCode = 5
-        versionName = "0.1.5-long-tasks-preview.1"
+        versionCode = 6
+        versionName = "0.1.6-integrated-preview.1"
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
     }
     buildFeatures { buildConfig = true; aidl = true }
@@ -32,10 +32,11 @@ android {
 dependencies {
     implementation(project(":android-platform"))
     implementation("com.caoccao.javet:javet-node-android-i18n:6.0.2")
+    implementation("com.squareup.okhttp3:okhttp:4.12.0")
     implementation("dev.rikka.shizuku:api:13.1.5")
     implementation("dev.rikka.shizuku:provider:13.1.5")
     androidTestImplementation("androidx.test:runner:1.6.2")
-    androidTestImplementation("org.jetbrains.kotlin:kotlin-stdlib:2.2.0")
+    androidTestImplementation("org.jetbrains.kotlin:kotlin-stdlib:1.9.10")
     androidTestImplementation("androidx.test:rules:1.6.1")
     androidTestImplementation("androidx.test.ext:junit:1.2.1")
     androidTestImplementation("com.google.errorprone:error_prone_annotations:2.36.0")

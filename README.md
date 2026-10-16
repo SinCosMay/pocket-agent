@@ -1,6 +1,6 @@
 # Pocket Agent
 
-An Android text assistant that delegates phone work to background agents while you keep talking to the main conversation. Pi and the adapted `@pi9/subagent` runtime run inside the app; workers call native Android tools directly.
+An Android assistant that delegates phone work to background agents while you keep talking to the main conversation. Pi and the adapted `@pi9/subagent` runtime run inside the app; workers call native Android tools directly. A selectable Android digital-assistant integration adds Deepgram speech input/output while preserving the same agent thread.
 
 **Preview:** [v0.1.1-preview.1](https://github.com/ru-aish/pocket-agent/releases/tag/v0.1.1-preview.1) adds direct Codex account sign-in and secure login-cache import. The signed x86_64 APK passed direct Luna delegation with the relay stopped. ARM64 execution remains unverified. See the [account validation record](docs/CODEX_AUTH_VALIDATION.md).
 
@@ -15,7 +15,7 @@ Requires **Android 12 or later**. This is a separate app, `dev.pocket.agent`, an
 
 **Long-task test build:** The `0.1.5-long-tasks-preview.1` branch build raises per-generation limits to 200 turns / 800 tool calls and retained context to 2,048 messages / 8 million serialized characters. Existing provider context limits and billing still apply.
 
-**Virtual-display test build:** The `0.1.4-display-preview.1` branch build is synchronized with Pocket MCP's Shizuku startup/timeout handling through `a7c667c`. Android version code 4 installs over older previews. This branch does **not** include the separate background-voice PR; installing it over `0.1.3` replaces the voice-preview build.
+**Virtual-display test build:** The `0.1.4-display-preview.1` branch build is synchronized with Pocket MCP's Shizuku startup/timeout handling through `a7c667c`. Android version code 4 installs over older previews. This integrated branch now includes the voice-assistant functionality merged into `main`, alongside Shizuku-backed virtual displays.
 
 **Stop response** stops main's current response. Open a task to inspect, message, steer, or cancel that worker. Closing its view leaves its work running. **Stop all**, also available in the notification, stops the service and all work.
 
@@ -45,6 +45,7 @@ Android can restrict or terminate the user-started service. Interrupted work is 
 
 **Compile and sign APKs only in GitHub Actions.** The workflow builds release/test APKs, runs runtime tests and lint, and packages hashes and provenance. Emulator/device execution is a separate local step; use an explicit emulator serial, as described in the validation documentation.
 
+- [Voice assistant: Deepgram, Android role, lifecycle, and latency](docs/VOICE.md)
 - [Runtime architecture, upstream pins, and limits](docs/RUNTIME.md)
 - [Android host, lifecycle, permissions, and instrumentation](docs/ANDROID_HOST.md)
 - [Authentication and relay setup](docs/AUTH.md)
