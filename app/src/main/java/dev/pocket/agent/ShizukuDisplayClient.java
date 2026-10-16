@@ -83,17 +83,20 @@ final class ShizukuDisplayClient implements AutoCloseable {
         }
     }
     private IDisplayShell require() throws ControlException {
-        if(!"ready".equals(status())) {
-            tryBind();
-            long end=SystemClock.elapsedRealtime()+4000;
+        long end=SystemClock.elapsedRealtime()+8_000;
+        while(!closed && SystemClock.elapsedRealtime()<end) {
+            String state=status();
+            if("ready".equals(state))break;
+            if(!"disconnected".equals(state) && !"binding".equals(state))break;
+            if("disconnected".equals(state))tryBind();
             synchronized(readyLock) {
-                while(!"ready".equals(status()) && !closed && SystemClock.elapsedRealtime()<end) {
-                    if(!"binding".equals(status())) break;
-                    try {readyLock.wait(Math.max(1,end-SystemClock.elapsedRealtime()));}
-                    catch(InterruptedException e) {
-                        Thread.currentThread().interrupt();
-                        throw new ControlException(ControlException.Code.RESULT_UNKNOWN,"Interrupted binding Shizuku service");
-                    }
+                if("ready".equals(status()))break;
+                long remaining=end-SystemClock.elapsedRealtime();
+                if(remaining<=0)break;
+                try {readyLock.wait(Math.min(remaining,250));}
+                catch(InterruptedException e) {
+                    Thread.currentThread().interrupt();
+                    throw new ControlException(ControlException.Code.RESULT_UNKNOWN,"Interrupted binding Shizuku service");
                 }
             }
         }

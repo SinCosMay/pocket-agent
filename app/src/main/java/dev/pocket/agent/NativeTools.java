@@ -177,12 +177,15 @@ final class NativeTools implements AutoCloseable {
             case "phone_observe": return observation(a,owner);
             case "phone_act": {
                 JSONObject s=a.optJSONObject("selector");ControlBackend.Selector selector=s==null?null:new ControlBackend.Selector(string(s,"resource_id"),string(s,"text"),string(s,"description"));
-                ControlBackend.Action action=new ControlBackend.Action(ControlBackend.Kind.valueOf(a.getString("kind").toUpperCase(java.util.Locale.ROOT)),a.getString("snapshot_id"),integer(a,"x"),integer(a,"y"),integer(a,"end_x"),integer(a,"end_y"),a.optInt("duration_ms",600),string(a,"text"),a.optBoolean("replace",true),string(a,"key"),string(a,"direction"),selector);
+                ControlBackend.Action action=new ControlBackend.Action(ControlBackend.Kind.valueOf(a.getString("kind").toUpperCase(java.util.Locale.ROOT)),string(a,"snapshot_id"),integer(a,"x"),integer(a,"y"),integer(a,"end_x"),integer(a,"end_y"),a.optInt("duration_ms",600),string(a,"text"),a.optBoolean("replace",true),string(a,"key"),string(a,"direction"),selector);
+                if(!(action.kind()==ControlBackend.Kind.KEY && "home".equals(action.key()))
+                    && (action.snapshotId()==null || action.snapshotId().isBlank()))
+                    throw new ControlException(INVALID_ARGUMENT,"snapshot_id required except for Home recovery");
                 ControlBackend.Result result;
                 if(action.kind()==ControlBackend.Kind.KEY && !"enter".equals(action.key())) {
-                    screen(owner).validateAction(action);
+                    if(!"home".equals(action.key()))screen(owner).validateAction(action);
                     int key=switch(action.key()==null?"":action.key()) {case "back"->4;case "home"->3;case "recents"->187;default->throw new ControlException(UNSUPPORTED,"Key must be home, back, recents or enter");};
-                    displays.key(owner,key);
+                    if(key==3)displays.launchWorkspace(owner);else displays.key(owner,key);
                     result=new ControlBackend.Result("dispatched","Display-targeted key accepted; task outcome not yet verified");
                 }else result=screen(owner).execute(action);
                 return Json.tool(Json.obj("status",result.status(),"message",result.message()));

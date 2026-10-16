@@ -103,10 +103,18 @@ public final class AndroidScreenBackend implements ControlBackend {
         else {
             SparseArray<List<AccessibilityWindowInfo>> all=service.getWindowsOnAllDisplays();
             List<AccessibilityWindowInfo> windows=all==null?null:all.get(displayId);
-            if(windows!=null)for(AccessibilityWindowInfo window:windows){
-                if(window.getType()!=AccessibilityWindowInfo.TYPE_APPLICATION)continue;
-                AccessibilityNodeInfo candidate=window.getRoot();
-                if(candidate!=null){root=candidate;break;}
+            if(windows!=null) {
+                AccessibilityWindowInfo selected=null;
+                for(AccessibilityWindowInfo window:windows) {
+                    if(window.getType()!=AccessibilityWindowInfo.TYPE_APPLICATION)continue;
+                    if(selected==null || (window.isActive()&&!selected.isActive())
+                        || (window.isFocused()&&!selected.isFocused()))selected=window;
+                }
+                if(selected!=null)root=selected.getRoot();
+                if(root==null)for(AccessibilityWindowInfo window:windows) {
+                    if(window.getType()!=AccessibilityWindowInfo.TYPE_APPLICATION)continue;
+                    root=window.getRoot();if(root!=null)break;
+                }
             }
         }
         if(root!=null && android.os.Build.VERSION.SDK_INT<33 && !root.refresh()) {root.recycle();return null;}
@@ -122,7 +130,7 @@ public final class AndroidScreenBackend implements ControlBackend {
             capturedUptime[0]=android.os.SystemClock.uptimeMillis();
             Rect bounds = dimensions();
             AccessibilityNodeInfo root = freshRoot();
-            if(root==null) throw new ControlException(NOT_READY,"No active accessibility window yet; wait for the screen transition and observe again");
+            if(root==null && (bounds.width()==0||bounds.height()==0))throw new ControlException(NOT_READY,"Display is not ready");
             List<Node> nodes = new ArrayList<>();
             String pkg = ""; int window = -1; boolean[] truncated = {false};
             if (root != null) {
@@ -134,14 +142,20 @@ public final class AndroidScreenBackend implements ControlBackend {
             return new Observation(UUID.randomUUID().toString(), System.currentTimeMillis(), pkg, window,
                 bounds.width(), bounds.height(), interactive(), locked(), nodes, truncated[0], null, null, 0, 0);
         });
-        if (image) {
-            if (!base.interactive()) throw new ControlException(SCREEN_OFF, "The display is asleep; no usable screenshot");
-            Capture captured = screenshot(maxDimension);
-            base = new Observation(base.snapshotId(), base.capturedAtMs(), base.packageName(), base.windowId(),
-                base.coordinateWidth(), base.coordinateHeight(), base.interactive(), base.locked(), base.nodes(),
-                base.nodesTruncated(), captured.bytes, "image/jpeg", captured.width, captured.height);
-            Observation expected = base;
-            onMain(() -> { validateContext(expected); return null; });
+        boolean semantic=base.nodes().stream().anyMatch(node->!node.text().isBlank()
+            || !node.description().isBlank() || node.clickable() || node.editable());
+        if(image || !semantic) {
+            try {
+                if (!base.interactive()) throw new ControlException(SCREEN_OFF, "The display is asleep; no usable screenshot");
+                Capture captured = screenshot(maxDimension);
+                base = new Observation(base.snapshotId(), base.capturedAtMs(), base.packageName(), base.windowId(),
+                    base.coordinateWidth(), base.coordinateHeight(), base.interactive(), base.locked(), base.nodes(),
+                    base.nodesTruncated(), captured.bytes, "image/jpeg", captured.width, captured.height);
+                Observation expected = base;
+                onMain(() -> {if(expected.windowId()!=-1)validateContext(expected);else if(dimensions().width()!=expected.coordinateWidth() || dimensions().height()!=expected.coordinateHeight())throw new ControlException(STALE_OBSERVATION,"Display changed during screenshot");return null;});
+            } catch(ControlException error) {
+                if(image)throw error;
+            }
         }
         // Retain only target metadata, never screenshots or captured app text.
         if (capturedUptime[0] < interactionTime.get()) throw new ControlException(STALE_OBSERVATION,"Screen changed during observation; observe again");
@@ -175,7 +189,28 @@ public final class AndroidScreenBackend implements ControlBackend {
     }
 
     private record Capture(byte[] bytes, int width, int height) {}
+    private static final Object captureLock=new Object();
+    private static long nextCaptureAt;
     private Capture screenshot(int maxDimension) throws ControlException {
+        synchronized(captureLock) {
+            for(int attempt=0;attempt<2;attempt++) {
+                long delay=nextCaptureAt-android.os.SystemClock.uptimeMillis();
+                if(delay>0)try {Thread.sleep(delay);}
+                catch(InterruptedException e) {
+                    Thread.currentThread().interrupt();
+                    throw new ControlException(RESULT_UNKNOWN,"Interrupted before screenshot capture");
+                }
+                nextCaptureAt=android.os.SystemClock.uptimeMillis()+500;
+                try {return captureOnce(maxDimension);}
+                catch(ControlException e) {
+                    if(attempt!=0 || e.code!=ACTION_REJECTED ||
+                        !("Screenshot rejected by Android: "+AccessibilityService.ERROR_TAKE_SCREENSHOT_INTERVAL_TIME_SHORT).equals(e.getMessage()))throw e;
+                }
+            }
+            throw new ControlException(ACTION_REJECTED,"Screenshot rate limit did not recover");
+        }
+    }
+    private Capture captureOnce(int maxDimension) throws ControlException {
         CompletableFuture<Capture> future = new CompletableFuture<>();
         onMain(() -> {
             service.takeScreenshot(displayId, service.getMainExecutor(), new AccessibilityService.TakeScreenshotCallback() {
