@@ -108,7 +108,7 @@ export function subagentTool(app:any,parent?:any):any {
           let abort:()=>void=()=>{};
           const cancelled=new Promise<never>((_,reject)=>{abort=()=>reject(new Error('Join cancelled'));if(signal?.aborted)abort();else signal?.addEventListener('abort',abort,{once:true});});
           try {
-            app.releaseScreen?.(parent.conversationId);
+            app.releaseScreen?.(parent?.conversationId??'main');
           const wait=()=>Promise.race([binding.completion,cancelled]);
             await (parent?r.scheduler.suspendConversationSlotDuring(parent,wait):wait());
             results=binding.finalizeCollection('model').map((x:any)=>({ok:true,...x}));

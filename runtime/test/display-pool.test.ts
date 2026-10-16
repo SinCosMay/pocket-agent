@@ -2,7 +2,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import {DisplayPool} from '../src/display-pool.js';
 import {PocketRuntime,NativeBridge} from '../src/runtime.js';
-import {nativeTools} from '../src/tools.js';
+import {nativeTools,subagentTool} from '../src/tools.js';
 
 const pause=(ms=15)=>new Promise(resolve=>setTimeout(resolve,ms));
 const unwrap=(result:any)=>result.details;
@@ -119,4 +119,16 @@ test('FIFO queue rejects duplicate requests and never leaves display zero availa
   pool.release('second');
   assert.equal(pool.active,0);
   assert.equal(pool.waiting,0);
+});
+
+test('join without a parent releases the main display and collects worker output',async()=>{
+  const releases:string[]=[];
+  let released=false;
+  const binding={completion:Promise.resolve(),finalizeCollection:()=>[{subagentId:'amber-cedar',status:'completed'}],release:()=>{released=true;}};
+  const app:any={runtime:{bindSubagentJoin:()=>binding},releaseScreen:(owner:string)=>releases.push(owner),save:()=>{},publish:()=>{}};
+  const result=await subagentTool(app).execute('join-1',{action:'join',subagentIds:['amber-cedar']});
+  assert.deepEqual(releases,['main']);
+  assert.equal(released,true);
+  assert.equal(result.isError,false);
+  assert.equal(result.details.results[0].subagentId,'amber-cedar');
 });
