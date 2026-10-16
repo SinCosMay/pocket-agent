@@ -46,3 +46,5 @@
 -keep class okhttp3.Response { *; }
 -keep class okhttp3.Request$Builder { *; }
 -keep class okhttp3.Response$Builder { *; }
+-keep interface okhttp3.WebSocket { *; }
+-keep interface dev.pocket.agent.DeepgramVoice$SocketConnector { *; }
