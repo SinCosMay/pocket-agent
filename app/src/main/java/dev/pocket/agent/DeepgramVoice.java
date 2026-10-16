@@ -71,6 +71,7 @@ final class DeepgramVoice implements AutoCloseable {
     private WebSocket sttSocket, ttsSocket;
     private final PcmCaptureQueue captured = new PcmCaptureQueue(MAX_CAPTURE_BYTES);
     private boolean sttReady, streamReadyNotified;
+    private int initialCaptureBytesRemaining;
     private boolean ttsReady, hasSpeech, ttsFailed, firstAudio;
     private volatile boolean waitingForFlush, waitingForClear;
     private AudioRecord microphone;
@@ -257,6 +258,7 @@ final class DeepgramVoice implements AutoCloseable {
                             socket.close(1000, "not listening");
                             return;
                         }
+                        initialCaptureBytesRemaining = captured.queuedBytes();
                         sttReady = true;
                         DeepgramVoice.this.notifyAll();
                     }
@@ -391,23 +393,34 @@ final class DeepgramVoice implements AutoCloseable {
     }
 
     private void publishMicrophone() {
-        // Single producer-independent publisher: historical samples always precede live samples.
+        // Hold newly captured frames while the socket flushes the fixed backlog
+        // present at onOpen. Live samples cannot keep the readiness barrier open.
         try {
             while (true) {
                 boolean caughtUp = false;
                 synchronized (this) {
-                    while (listening && !closed && (!sttReady || captured.isEmpty()
-                        || sttSocket.queueSize() >= MAX_SOCKET_QUEUE_BYTES)) {
-                        if (sttReady && captured.isEmpty() && !streamReadyNotified
-                                && sttSocket.queueSize() <= 5120) {
-                            streamReadyNotified = true;
-                            caughtUp = true;
-                            break;
+                    while (listening && !closed) {
+                        if (!sttReady) {
+                            wait();
+                            continue;
                         }
-                        wait(!sttReady ? 0L : 40L);
-                    }
-                    if (!listening || closed) return;
-                    if (!caughtUp) {
+                        if (!streamReadyNotified && initialCaptureBytesRemaining == 0) {
+                            if (sttSocket.queueSize() == 0L) {
+                                streamReadyNotified = true;
+                                caughtUp = true;
+                                break;
+                            }
+                            wait(40L);
+                            continue;
+                        }
+                        if (captured.isEmpty()) {
+                            wait();
+                            continue;
+                        }
+                        if (sttSocket.queueSize() >= MAX_SOCKET_QUEUE_BYTES) {
+                            wait(40L);
+                            continue;
+                        }
                         byte[] frame = captured.peek();
                         if (frame == null) continue;
                         if (!sttSocket.send(ByteString.of(frame))) {
@@ -416,7 +429,10 @@ final class DeepgramVoice implements AutoCloseable {
                             return;
                         }
                         captured.removeFirst();
+                        if (!streamReadyNotified) initialCaptureBytesRemaining -= frame.length;
+                        break;
                     }
+                    if (!listening || closed) return;
                 }
                 if (caughtUp) callback.onStreamReady();
             }
@@ -440,6 +456,7 @@ final class DeepgramVoice implements AutoCloseable {
         listening = false;
         sttReady = false;
         streamReadyNotified = false;
+        initialCaptureBytesRemaining = 0;
         timeoutHandler.removeCallbacks(reconnectSpeech);
         captured.clear();
         notifyAll();

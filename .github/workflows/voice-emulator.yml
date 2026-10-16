@@ -3,6 +3,12 @@ on:
   pull_request:
     paths:
       - '.github/workflows/voice-emulator.yml'
+      - '.github/scripts/run-voice-emulator-tests.sh'
+      - 'gradlew'
+      - 'gradle/**'
+      - 'gradle.properties'
+      - 'build.gradle.kts'
+      - 'settings.gradle.kts'
       - 'app/src/main/java/dev/pocket/agent/DeepgramVoice.java'
       - 'app/src/main/java/dev/pocket/agent/PcmCaptureQueue.java'
       - 'app/src/main/java/dev/pocket/agent/VoiceListeningService.java'
@@ -21,7 +27,6 @@ on:
       - 'app/src/main/assets/wakeword/**'
       - 'app/build.gradle.kts'
       - 'app/src/androidTest/java/dev/pocket/agent/InstantVoiceCaptureDeviceTest.java'
-      - 'app/proguard-rules.pro'
   workflow_dispatch:
 permissions:
   contents: read
@@ -47,11 +52,7 @@ jobs:
           arch: x86_64
           target: google_apis
           emulator-options: -no-window -gpu swiftshader_indirect -no-snapshot -no-boot-anim
-          script: |
-            ./gradlew --no-daemon :app:connectedDebugAndroidTest -PvoiceEmulatorTest=true -Pandroid.testInstrumentationRunnerArguments.class=dev.pocket.agent.InstantVoiceCaptureDeviceTest
-            ./gradlew --no-daemon :app:connectedDebugAndroidTest -PvoiceEmulatorTest=true -Pandroid.testInstrumentationRunnerArguments.class=dev.pocket.agent.JarvisDetectorDeviceTest
-            ./gradlew --no-daemon :app:connectedDebugAndroidTest -PvoiceEmulatorTest=true -Pandroid.testInstrumentationRunnerArguments.class=dev.pocket.agent.JarvisWakeLifecycleDeviceTest
-            ./gradlew --no-daemon :app:connectedDebugAndroidTest -PvoiceEmulatorTest=true -Pandroid.testInstrumentationRunnerArguments.class=dev.pocket.agent.WakeWordSettingsDeviceTest
+          script: bash .github/scripts/run-voice-emulator-tests.sh
       - name: Publish emulator test reports
         if: always()
         uses: actions/upload-artifact@v4
