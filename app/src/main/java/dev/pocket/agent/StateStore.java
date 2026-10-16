@@ -40,7 +40,7 @@ public final class StateStore extends SQLiteOpenHelper {
     public synchronized void record(JSONObject event) {
         ContentValues values = new ContentValues(); values.put("at", System.currentTimeMillis()); values.put("json", event.toString());
         SQLiteDatabase db = getWritableDatabase(); db.insertOrThrow("events", null, values);
-        db.execSQL("DELETE FROM events WHERE id <= (SELECT COALESCE(MAX(id),0)-100 FROM events)");
+        db.execSQL("DELETE FROM events WHERE id <= (SELECT COALESCE(MAX(id),0)-" + (BuildConfig.DEVELOPMENT_TOOLS ? 2000 : 100) + " FROM events)");
     }
     public synchronized JSONArray recentEvents() {
         JSONArray events = new JSONArray();
@@ -48,6 +48,16 @@ public final class StateStore extends SQLiteOpenHelper {
             while (cursor.moveToNext()) events.put(new JSONObject(cursor.getString(0)));
         } catch (org.json.JSONException e) { throw new IllegalStateException(e); }
         return events;
+    }
+    public synchronized JSONArray queryEvents(String filter, int offset, int limit) {
+        if (!BuildConfig.DEVELOPMENT_TOOLS) throw new SecurityException("Development only");
+        JSONArray result = new JSONArray();
+        try (Cursor cursor = getReadableDatabase().rawQuery(
+                "SELECT json FROM events WHERE json LIKE ? ESCAPE '!' ORDER BY id DESC LIMIT ? OFFSET ?",
+                new String[]{"%" + filter.replace("!", "!!").replace("%", "!%").replace("_", "!_") + "%", String.valueOf(limit), String.valueOf(offset)})) {
+            while (cursor.moveToNext()) result.put(new JSONObject(cursor.getString(0)));
+        } catch (org.json.JSONException e) { throw new IllegalStateException(e); }
+        return result;
     }
     /** In-memory Pi sessions cannot survive process death. Never replay unresolved side effects. */
     public synchronized JSONObject markInterrupted() {

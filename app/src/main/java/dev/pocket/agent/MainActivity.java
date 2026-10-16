@@ -190,6 +190,8 @@ public final class MainActivity extends Activity implements AgentService.Observe
             }
             @Override public void onNothingSelected(AdapterView<?> parent) { }
         });
+        if (BuildConfig.DEVELOPMENT_TOOLS) panel.addView(button("Development MCP and ngrok", () ->
+            startActivity(new Intent().setClassName(this, "dev.pocket.agent.DevToolsActivity"))));
         panel.addView(button("Accessibility settings", () -> startActivity(new Intent(Settings.ACTION_ACCESSIBILITY_SETTINGS))));
         panel.addView(button("Enable Shizuku virtual displays", this::enableVirtualDisplays));
         panel.addView(button("Notification access settings", () -> startActivity(new Intent(Settings.ACTION_NOTIFICATION_LISTENER_SETTINGS))));

@@ -48,6 +48,7 @@ Android can restrict or terminate the user-started service. Interrupted work is 
 - [Voice assistant: Deepgram, Android role, lifecycle, and latency](docs/VOICE.md)
 - [Runtime architecture, upstream pins, and limits](docs/RUNTIME.md)
 - [Android host, lifecycle, permissions, and instrumentation](docs/ANDROID_HOST.md)
+- [Development APK: USB/localhost MCP, local transcripts and optional ARM64 ngrok tunnel](docs/DEVELOPMENT_APK.md)
 - [Authentication and relay setup](docs/AUTH.md)
 - [Validation evidence and remaining limits](docs/VALIDATION.md)
 - [Original implementation requirements](docs/IMPLEMENTATION_HANDOFF.md)

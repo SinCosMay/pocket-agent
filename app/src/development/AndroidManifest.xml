@@ -1,0 +1,8 @@
+<manifest xmlns:android="http://schemas.android.com/apk/res/android">
+    <application>
+        <activity android:name=".DevToolsActivity" android:exported="false" />
+        <service android:name=".DevBridgeService" android:exported="false" android:foregroundServiceType="specialUse">
+            <property android:name="android.app.PROPERTY_SPECIAL_USE_FGS_SUBTYPE" android:value="Explicitly enabled development diagnostics and authenticated remote phone tools" />
+        </service>
+    </application>
+</manifest>
