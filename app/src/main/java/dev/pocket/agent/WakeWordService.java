@@ -28,7 +28,8 @@ import java.util.concurrent.atomic.AtomicBoolean;
 public final class WakeWordService extends Service {
     static final String ACTION_ENABLE = "dev.pocket.agent.WAKE_ENABLE";
     static final String ACTION_DISABLE = "dev.pocket.agent.WAKE_DISABLE";
-    private static final String ACTION_RESUME = "dev.pocket.agent.WAKE_RESUME";
+    static final String EXTRA_WAKE_PREROLL = "dev.pocket.agent.WAKE_PREROLL";
+    private static volatile boolean enrollmentInProgress;
     private static final int NOTIFICATION = 41;
     private static final String CHANNEL = "wakeword";
     private static volatile WakeWordService running;
@@ -53,7 +54,17 @@ public final class WakeWordService extends Service {
     static void resumeAfterConversation(Context context) {
         WakeWordService service = running;
         if (service != null) { service.transitioning = false; service.resume(); }
-        // Never silently create a new microphone service from a background Activity.
+    }
+
+    static void pauseForEnrollment() {
+        enrollmentInProgress = true;
+        pauseForConversation();
+    }
+
+    static void resumeAfterEnrollment() {
+        enrollmentInProgress = false;
+        WakeWordService service = running;
+        if (service != null) { service.transitioning = false; service.resume(); }
     }
 
     @Override public void onCreate() {
@@ -74,10 +85,15 @@ public final class WakeWordService extends Service {
             return START_NOT_STICKY;
         }
         if (ACTION_ENABLE.equals(action)) {
+            boolean keyConfigured;
+            try { keyConfigured = new VoiceCredentialStore(this).configured(); }
+            catch (RuntimeException unavailable) {
+                Log.w("JarvisWake", "Deepgram key cannot be read; wake word not enabled");
+                stopSelf(); return START_NOT_STICKY;
+            }
             if (checkSelfPermission(Manifest.permission.RECORD_AUDIO) != PackageManager.PERMISSION_GRANTED ||
-                !new VoiceCredentialStore(this).configured()) {
-                stopSelf();
-                return START_NOT_STICKY;
+                !keyConfigured) {
+                stopSelf(); return START_NOT_STICKY;
             }
             getSharedPreferences("wakeword", MODE_PRIVATE).edit().putBoolean("enabled", true).apply();
         }
@@ -91,8 +107,7 @@ public final class WakeWordService extends Service {
             stopSelf();
             return START_NOT_STICKY;
         }
-        if (ACTION_RESUME.equals(action)) resume();
-        else if (!paused && !transitioning) resume();
+        if (!paused && !transitioning) resume();
         return START_STICKY;
     }
 
@@ -110,7 +125,7 @@ public final class WakeWordService extends Service {
     }
 
     private synchronized void resume() {
-        if (!enabled || transitioning || recording.get() || paused && VoiceListeningService.isActive()) return;
+        if (!enabled || transitioning || recording.get() || enrollmentInProgress) return;
         if (VoiceListeningService.isActive()) { paused = true; return; }
         paused = false;
         if (checkSelfPermission(Manifest.permission.RECORD_AUDIO) != PackageManager.PERMISSION_GRANTED) return;
@@ -141,6 +156,8 @@ public final class WakeWordService extends Service {
         Process.setThreadPriority(Process.THREAD_PRIORITY_AUDIO);
         AudioRecord record = null;
         boolean triggered = false;
+        boolean failed = false;
+        byte[] wakeTail = null;
         try {
             if (detector == null) detector = new JarvisDetector(this);
             else detector.reset();
@@ -153,19 +170,27 @@ public final class WakeWordService extends Service {
                 AudioFormat.CHANNEL_IN_MONO, AudioFormat.ENCODING_PCM_16BIT, Math.max(4096, buffer));
             if (record.getState() != AudioRecord.STATE_INITIALIZED)
                 throw new IllegalStateException("Microphone initialization failed");
-            microphone = record;
-            record.startRecording();
-            if (record.getRecordingState() != AudioRecord.RECORDSTATE_RECORDING)
-                throw new IllegalStateException("Microphone record permission unavailable");
+            // Pausing while ONNX loads must not allow a late microphone acquisition.
+            synchronized (this) {
+                if (!recording.get() || paused || enrollmentInProgress) return;
+                microphone = record;
+                record.startRecording();
+                if (record.getRecordingState() != AudioRecord.RECORDSTATE_RECORDING)
+                    throw new IllegalStateException("Microphone record permission unavailable");
+            }
             final JarvisProfile.Profile profile = JarvisProfile.read(this);
             short[] data = new short[1280];
             int pending = 0;
+            short[][] history = new short[10][1280];
+            int historyPosition = 0;
             while (recording.get()) {
                 int n = record.read(data, pending, data.length - pending);
-                if (n <= 0) break;
+                if (n <= 0) { failed = recording.get(); break; }
                 pending += n;
                 if (pending != data.length) continue;
                 pending = 0;
+                System.arraycopy(data, 0, history[historyPosition], 0, data.length);
+                historyPosition = (historyPosition + 1) % history.length;
                 float baseConfidence = detector.process(data);
                 float confidence = profile == null || baseConfidence < 0.12f ? baseConfidence
                     : profile.adjust(detector.featureSnapshot(), baseConfidence);
@@ -173,10 +198,20 @@ public final class WakeWordService extends Service {
                     triggered = true;
                     transitioning = true;
                     recording.set(false);
+                    wakeTail = new byte[history.length * data.length * 2];
+                    for (int block = 0; block < history.length; block++) {
+                        short[] pcm = history[(historyPosition + block) % history.length];
+                        for (int i = 0; i < pcm.length; i++) {
+                            int offset = (block * pcm.length + i) * 2;
+                            wakeTail[offset] = (byte) pcm[i];
+                            wakeTail[offset + 1] = (byte) (pcm[i] >>> 8);
+                        }
+                    }
                     Log.i("JarvisWake", "Hey Jarvis detected (confidence=" + confidence + ")");
                 }
             }
         } catch (Exception error) {
+            failed = true;
             Log.e("JarvisWake", "Wake-word listening stopped", error);
         } finally {
             microphone = null;
@@ -184,8 +219,11 @@ public final class WakeWordService extends Service {
                 try { record.stop(); } catch (RuntimeException ignored) { }
                 record.release();
             }
+            recording.set(false);
             thread = null;
             final boolean handoff = triggered;
+            final boolean needsBackoff = failed;
+            final byte[] finalWakeTail = wakeTail;
             main.post(() -> {
                 if (handoff && enabled && !paused) {
                     paused = true;
@@ -193,16 +231,21 @@ public final class WakeWordService extends Service {
                         NOTIFICATION, notification("Active voice conversation"));
                     try {
                         startForegroundService(new Intent(this, VoiceListeningService.class)
-                            .setAction(VoiceListeningService.ACTION_START));
+                            .setAction(VoiceListeningService.ACTION_START)
+                            .putExtra(EXTRA_WAKE_PREROLL, finalWakeTail));
                     } catch (RuntimeException denied) {
                         Log.e("JarvisWake", "Voice handoff unavailable", denied);
                         paused = false;
                         transitioning = false;
                         resume();
                     }
-                } else if (enabled && !paused && !VoiceListeningService.isActive()) {
+                } else if (enabled && !paused && !VoiceListeningService.isActive() && !enrollmentInProgress) {
                     transitioning = false;
-                    resume();
+                    if (needsBackoff) {
+                        getSystemService(NotificationManager.class).notify(NOTIFICATION,
+                            notification("Microphone unavailable · retrying in three seconds"));
+                        main.postDelayed(this::resume, 3000);
+                    } else resume();
                 }
             });
         }
@@ -210,12 +253,13 @@ public final class WakeWordService extends Service {
 
     @Override public void onDestroy() {
         enabled = false;
+        main.removeCallbacksAndMessages(null);
         pause();
         Thread previous = thread;
         if (previous != null && previous != Thread.currentThread()) {
             try { previous.join(1500); } catch (InterruptedException e) { Thread.currentThread().interrupt(); }
         }
-        if (detector != null) {
+        if (detector != null && (previous == null || !previous.isAlive())) {
             try { detector.close(); } catch (Exception problem) { Log.w("JarvisWake", "Failed releasing model", problem); }
             detector = null;
         }

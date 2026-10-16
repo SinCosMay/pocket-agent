@@ -5,6 +5,7 @@ import android.os.SystemClock;
 import androidx.test.ext.junit.runners.AndroidJUnit4;
 import androidx.test.platform.app.InstrumentationRegistry;
 import java.io.InputStream;
+import java.io.ByteArrayOutputStream;
 import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicReference;
@@ -22,12 +23,20 @@ import org.junit.runner.RunWith;
 import static org.junit.Assert.*;
 
 /**
- * Opt-in physical-phone live-network test (not part of default CI).
- * The stored Deepgram key is used in-process and is never printed or exported.
+ * Optional emulator-only detector-plus-Deepgram-transport smoke test (not a full
+ * service handoff test). Requires a configured key in that emulator's app storage.
+ * The key is used in-process and is never printed or exported.
  */
 @RunWith(AndroidJUnit4.class)
-public final class JarvisDeepgramLiveDeviceTest {
-    @Test public void heyJarvisThenFluxStreamingProducesConfirmedTranscript() throws Exception {
+public final class JarvisDeepgramTransportSmokeDeviceTest {
+    private static byte[] readFixture(InputStream input) throws java.io.IOException {
+        ByteArrayOutputStream output = new ByteArrayOutputStream();
+        byte[] buffer = new byte[8192];
+        for (int n; (n=input.read(buffer)) != -1;) output.write(buffer,0,n);
+        return output.toByteArray();
+    }
+
+    @Test public void wakeDetectorAndLiveFluxTransportProduceConfirmedTranscript() throws Exception {
         Context target = InstrumentationRegistry.getInstrumentation().getTargetContext();
         String credential = new VoiceCredentialStore(target).read();
         Assume.assumeTrue("Requires a configured Deepgram voice key", !credential.isEmpty());
@@ -36,10 +45,10 @@ public final class JarvisDeepgramLiveDeviceTest {
         byte[] queryAudio;
         Context fixture = InstrumentationRegistry.getInstrumentation().getContext();
         try (InputStream input = fixture.getAssets().open("hey_jarvis.pcm")) {
-            wakeAudio = input.readAllBytes();
+            wakeAudio = readFixture(input);
         }
         try (InputStream input = fixture.getAssets().open("followup_query.pcm")) {
-            queryAudio = input.readAllBytes();
+            queryAudio = readFixture(input);
         }
 
         float peak = 0;
@@ -109,7 +118,7 @@ public final class JarvisDeepgramLiveDeviceTest {
             assertNull("Deepgram stream error",failure.get());
             String transcript=finalTranscript.get();
             assertNotNull("No Flux-confirmed text",transcript);
-            assertFalse(transcript.isBlank());
+            assertFalse(transcript.trim().isEmpty());
             System.out.println("JARVIS_E2E: localWake="+peak+" DeepgramFinalTranscript="+transcript);
         } finally {
             if(socketHolder[0]!=null)socketHolder[0].close(1000,"test complete");

@@ -14,6 +14,7 @@ import android.os.Process;
 import android.os.Handler;
 import android.os.Looper;
 import java.util.ArrayDeque;
+import java.util.Arrays;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
 import java.util.concurrent.TimeUnit;
@@ -96,6 +97,19 @@ final class DeepgramVoice implements AutoCloseable {
             .connectTimeout(12, TimeUnit.SECONDS).build();
         this.connector = connector == null ? client::newWebSocket : connector;
         this.sttUrl = sttUrl;
+    }
+
+    /** Queue the last locally captured wake-word frames before live microphone frames.
+     * One-time session preroll is memory-only and never sent before Deepgram connects. */
+    synchronized void primeWakePcm(byte[] preroll) {
+        if (closed || listening || preroll == null || preroll.length == 0) return;
+        if (preroll.length > 32000 || preroll.length % 2 != 0)
+            throw new IllegalArgumentException("Invalid wake PCM preroll");
+        for (int offset = 0; offset < preroll.length; offset += 2560) {
+            int length = Math.min(2560, preroll.length - offset);
+            byte[] frame = Arrays.copyOfRange(preroll, offset, offset + length);
+            if (!captured.offer(frame, length)) throw new IllegalStateException("Wake preroll queue full");
+        }
     }
 
     void start() {
@@ -269,6 +283,15 @@ final class DeepgramVoice implements AutoCloseable {
                 }
 
                 @Override public void onFailure(WebSocket socket, Throwable error, Response response) {
+                    int status = response == null ? 0 : response.code();
+                    if (status >= 400 && status < 500 && status != 408 && status != 429) {
+                        synchronized (DeepgramVoice.this) {
+                            if (sttSocket != socket || closed) return;
+                            stopListening();
+                        }
+                        callback.onStatus("Speech recognition rejected request (HTTP " + status + ")");
+                        return;
+                    }
                     speechConnectionLost(socket);
                 }
                 @Override public void onClosing(WebSocket socket, int code, String reason) {
@@ -375,12 +398,13 @@ final class DeepgramVoice implements AutoCloseable {
                 synchronized (this) {
                     while (listening && !closed && (!sttReady || captured.isEmpty()
                         || sttSocket.queueSize() >= MAX_SOCKET_QUEUE_BYTES)) {
-                        if (sttReady && captured.isEmpty() && !streamReadyNotified) {
+                        if (sttReady && captured.isEmpty() && !streamReadyNotified
+                                && sttSocket.queueSize() <= 5120) {
                             streamReadyNotified = true;
                             caughtUp = true;
                             break;
                         }
-                        wait(!sttReady || captured.isEmpty() ? 0L : 40L);
+                        wait(!sttReady ? 0L : 40L);
                     }
                     if (!listening || closed) return;
                     if (!caughtUp) {

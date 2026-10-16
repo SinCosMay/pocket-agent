@@ -10,6 +10,7 @@ on:
       - 'app/src/main/java/dev/pocket/agent/JarvisProfile.java'
       - 'app/src/main/java/dev/pocket/agent/WakeWordService.java'
       - 'app/src/androidTest/java/dev/pocket/agent/JarvisDetectorDeviceTest.java'
+      - 'app/src/androidTest/assets/**'
       - 'app/src/main/assets/wakeword/**'
       - 'app/build.gradle.kts'
       - 'app/src/androidTest/java/dev/pocket/agent/InstantVoiceCaptureDeviceTest.java'

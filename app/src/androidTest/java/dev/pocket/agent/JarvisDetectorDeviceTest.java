@@ -6,6 +6,7 @@ import java.io.File;
 import androidx.test.ext.junit.runners.AndroidJUnit4;
 import androidx.test.platform.app.InstrumentationRegistry;
 import java.io.InputStream;
+import java.io.ByteArrayOutputStream;
 import java.util.ArrayList;
 import java.util.List;
 import org.junit.Test;
@@ -19,7 +20,10 @@ public final class JarvisDetectorDeviceTest {
         Context instrumentation = InstrumentationRegistry.getInstrumentation().getContext();
         byte[] wav;
         try (InputStream stream = instrumentation.getAssets().open(sample)) {
-            wav = stream.readAllBytes();
+            ByteArrayOutputStream output = new ByteArrayOutputStream();
+            byte[] chunk = new byte[8192];
+            for (int n; (n = stream.read(chunk)) != -1;) output.write(chunk, 0, n);
+            wav = output.toByteArray();
         }
         float max = 0;
         short[] quiet = new short[1280];

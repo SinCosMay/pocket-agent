@@ -21,3 +21,4 @@ ONNX Runtime Android (Microsoft): MIT License
 https://github.com/microsoft/onnxruntime/blob/main/LICENSE
 
 This notice accompanies the model binaries within the APK.
+The full bundled ONNX Runtime MIT copyright and permission notice appears in ONNXRUNTIME-LICENSE.txt.

@@ -59,7 +59,7 @@ final class JarvisDetector implements AutoCloseable {
         for (int i = 0; i < 16; i++) features.addLast(new float[96]);
     }
 
-    private static File assetFile(Context context, String name) throws Exception {
+    private static synchronized File assetFile(Context context, String name) throws Exception {
         File dest = new File(new File(context.getFilesDir(), "wake-models"), name);
         if (dest.exists() && dest.length() > 10000) return dest;
         File directory = dest.getParentFile();

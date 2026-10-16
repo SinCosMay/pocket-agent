@@ -36,7 +36,9 @@ public final class JarvisEnrollmentActivity extends Activity {
 
     @Override public void onCreate(Bundle saved) {
         super.onCreate(saved);
-        WakeWordService.pauseForConversation();
+        WakeWordService.pauseForEnrollment();
+        if (VoiceListeningService.isActive())
+            stopService(new android.content.Intent(this, VoiceListeningService.class));
         ScrollView scroll = new ScrollView(this);
         LinearLayout layout = new LinearLayout(this);
         layout.setOrientation(LinearLayout.VERTICAL);
@@ -48,7 +50,7 @@ public final class JarvisEnrollmentActivity extends Activity {
         title.setTextSize(25);
         layout.addView(title);
         TextView subtitle = new TextView(this);
-        subtitle.setText("Train a lightweight voice verifier locally. Say each prompted phrase, then try waking Pocket Agent. No recordings are retained.");
+        subtitle.setText("Calibrate the wake phrase locally to reduce accidental triggers. This is not speaker identity verification. Say each prompted phrase, then try waking Pocket Agent. Raw audio is not retained.");
         layout.addView(subtitle);
         prompt = new TextView(this);
         prompt.setTextSize(23);
@@ -59,14 +61,14 @@ public final class JarvisEnrollmentActivity extends Activity {
         record = new Button(this); record.setText("Record phrase"); layout.addView(record);
         back = new Button(this); back.setText("Previous"); layout.addView(back);
         next = new Button(this); next.setText("Next"); layout.addView(next);
-        train = new Button(this); train.setText("Train personal verifier"); layout.addView(train);
-        Button reset = new Button(this); reset.setText("Remove voice profile"); layout.addView(reset);
+        train = new Button(this); train.setText("Train wake-phrase filter"); layout.addView(train);
+        Button reset = new Button(this); reset.setText("Remove wake-phrase calibration"); layout.addView(reset);
         record.setOnClickListener(v -> startRecording());
         back.setOnClickListener(v -> { if (!busy) { position=Math.max(0,position-1);render(); }});
         next.setOnClickListener(v -> { if (!busy) { position=Math.min(PROMPTS.length-1,position+1);render(); }});
         train.setOnClickListener(v -> train());
         reset.setOnClickListener(v -> {
-            if (!busy) { JarvisProfile.delete(this); info.setText("Personal verifier removed. Generic detection remains available."); }
+            if (!busy) { JarvisProfile.delete(this); info.setText("Phrase calibration removed. Generic detection remains available."); }
         });
         setContentView(scroll);
         render();
@@ -75,7 +77,13 @@ public final class JarvisEnrollmentActivity extends Activity {
     }
 
     private void render() {
-        int count=0;for(float[] sample:samples)if(sample!=null)count++;
+        int count = 0, positives = 0, negatives = 0;
+        for (int i=0; i<samples.length; i++) {
+            if (samples[i] != null) {
+                count++;
+                if (i<5) positives++; else negatives++;
+            }
+        }
         prompt.setText("Sample "+(position+1)+"/"+PROMPTS.length+
             (position<5?" · Hey Jarvis":" · Normal speech (NOT wake word)")+"\n\n"+PROMPTS[position]);
         info.setText(count+" of 8 recorded locally"+(samples[position]!=null?" · this sample complete":""));
@@ -83,11 +91,15 @@ public final class JarvisEnrollmentActivity extends Activity {
         back.setEnabled(!busy&&position>0);
         next.setEnabled(!busy&&position<PROMPTS.length-1);
         record.setEnabled(!busy);
-        train.setEnabled(!busy&&count>=6);
+        train.setEnabled(!busy&&positives>=4&&negatives>=2);
     }
 
     private void startRecording() {
         if (busy) return;
+        if (VoiceListeningService.isActive()) {
+            info.setText("Please wait for the active voice session to finish before recording.");
+            return;
+        }
         if (checkSelfPermission(Manifest.permission.RECORD_AUDIO) != PackageManager.PERMISSION_GRANTED) {
             info.setText("Allow microphone permission first");return;
         }
@@ -112,6 +124,7 @@ public final class JarvisEnrollmentActivity extends Activity {
                 short[] frame=new short[1280];int pending=0;
                 long deadline=SystemClock.elapsedRealtime()+(captureSlot<5?3400:4800);
                 float peak=0;float[] best=null;int frames=0;double energy=0;
+                double loudestSpeechFrame = 0;
                 while(SystemClock.elapsedRealtime()<deadline&&!Thread.currentThread().isInterrupted()) {
                     int count=audio.read(frame,pending,frame.length-pending);
                     if(count<=0)throw new IllegalStateException("Microphone stopped");
@@ -120,8 +133,15 @@ public final class JarvisEnrollmentActivity extends Activity {
                     if(pending<frame.length)continue;
                     pending=0;frames++;
                     float score=detector.process(frame);
-                    if(score>peak){peak=score;if(captureSlot<5)best=detector.featureSnapshot();}
-                    if(captureSlot>=5&&frames>=15){best=detector.featureSnapshot();}
+                    if (score>peak) { peak=score; if(captureSlot<5) best=detector.featureSnapshot(); }
+                    if (captureSlot>=5 && frames>=15) {
+                        double frameEnergy=0;
+                        for (short value:frame) frameEnergy += ((double)value/32768)*((double)value/32768);
+                        if (frameEnergy>loudestSpeechFrame) {
+                            loudestSpeechFrame=frameEnergy;
+                            best=detector.featureSnapshot();
+                        }
+                    }
                 }
                 if(frames<15||energy<1)throw new IllegalStateException("Not enough audible speech; retake the phrase");
                 if(captureSlot<5&&peak<0.15f)
@@ -160,7 +180,7 @@ public final class JarvisEnrollmentActivity extends Activity {
         worker.execute(()->{
             try {
                 JarvisProfile.train(this,positives,negatives);
-                runOnUiThread(()->{busy=false;render();info.setText("Personal verifier trained and saved locally. Exit to activate your wake word.");});
+                runOnUiThread(()->{busy=false;render();info.setText("Wake-phrase calibration saved locally. It is not secure speaker identification. Exit to test activation.");});
             }catch(Exception issue){
                 runOnUiThread(()->{busy=false;render();info.setText("Training failed: "+issue.getMessage());});
             }
@@ -169,7 +189,7 @@ public final class JarvisEnrollmentActivity extends Activity {
 
     @Override protected void onDestroy() {
         worker.shutdownNow();
-        WakeWordService.resumeAfterConversation(this);
+        WakeWordService.resumeAfterEnrollment();
         super.onDestroy();
     }
 }

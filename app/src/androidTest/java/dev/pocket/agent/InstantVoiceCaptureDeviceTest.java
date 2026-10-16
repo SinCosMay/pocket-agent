@@ -72,6 +72,46 @@ public final class InstantVoiceCaptureDeviceTest {
         }
     }
 
+    @Test public void wakeTailIsSentAheadOfLiveMicFrames() throws Exception {
+        Context context = InstrumentationRegistry.getInstrumentation().getTargetContext();
+        InstrumentationRegistry.getInstrumentation().getUiAutomation()
+            .grantRuntimePermission(context.getPackageName(), Manifest.permission.RECORD_AUDIO);
+        FakeConnector network = new FakeConnector();
+        DeepgramVoice voice = new DeepgramVoice(context, "test-only", new SilentCallback(),
+            network, "wss://api.deepgram.com/v2/listen");
+        network.voice = voice;
+        byte[] wake = new byte[5120];
+        java.util.Arrays.fill(wake, (byte) 42);
+        try {
+            voice.primeWakePcm(wake);
+            assertEquals(5120, voice.bufferedInputBytes());
+            voice.listen();
+            network.accept();
+            waitUntil(() -> network.socket.audio.size() >= 2, 5000);
+            assertArrayEquals(java.util.Arrays.copyOfRange(wake, 0, 2560), network.socket.audio.get(0));
+            assertArrayEquals(java.util.Arrays.copyOfRange(wake, 2560, 5120), network.socket.audio.get(1));
+        } finally { voice.close(); }
+    }
+
+    @Test public void permanentDeepgramAuthorizationFailureDoesNotRetryCapture() throws Exception {
+        Context context = InstrumentationRegistry.getInstrumentation().getTargetContext();
+        InstrumentationRegistry.getInstrumentation().getUiAutomation()
+            .grantRuntimePermission(context.getPackageName(), Manifest.permission.RECORD_AUDIO);
+        FakeConnector network = new FakeConnector();
+        DeepgramVoice voice = new DeepgramVoice(context, "invalid-test-key", new SilentCallback(),
+            network, "wss://api.deepgram.com/v2/listen");
+        network.voice = voice;
+        try {
+            voice.listen();
+            assertEquals(1, network.connections.get());
+            network.failWithStatus(401);
+            assertFalse("Authentication rejection must release microphone", voice.isCapturing());
+            assertEquals(0, voice.bufferedInputBytes());
+            Thread.sleep(1700);
+            assertEquals("Permanent authentication errors must not reconnect", 1, network.connections.get());
+        } finally { voice.close(); }
+    }
+
     @Test public void failedHandshakeRetriesWithoutLosingRecordedAudio() throws Exception {
         Context context = InstrumentationRegistry.getInstrumentation().getTargetContext();
         InstrumentationRegistry.getInstrumentation().getUiAutomation()
@@ -149,6 +189,11 @@ public final class InstantVoiceCaptureDeviceTest {
 
         void fail() {
             listener.onFailure(socket, new IOException("Simulated offline backend"), null);
+        }
+        void failWithStatus(int status) {
+            listener.onFailure(socket, new IOException("HTTP " + status), new Response.Builder()
+                .request(request).protocol(Protocol.HTTP_1_1).code(status)
+                .message("Handshake rejected").build());
         }
     }
 

@@ -16,6 +16,7 @@ import android.os.Looper;
 import android.os.SystemClock;
 import android.util.Log;
 import java.util.UUID;
+import java.util.Arrays;
 import org.json.JSONObject;
 
 /**
@@ -34,7 +35,7 @@ public final class VoiceListeningService extends Service implements AgentService
     static boolean isActive() { return active; }
     private DeepgramVoice voice;
     private String activeTurn;
-    private boolean responding, userSpeaking, started, streamingReady;
+    private boolean responding, userSpeaking, started, streamingReady, wakeStarted;
     private long utteranceAt, firstTokenAt;
     private final Runnable idleStop = () -> {
         if (started && !responding && !userSpeaking) {
@@ -76,6 +77,7 @@ public final class VoiceListeningService extends Service implements AgentService
             return START_NOT_STICKY;
         }
         WakeWordService.pauseForConversation();
+        wakeStarted = intent.hasExtra(WakeWordService.EXTRA_WAKE_PREROLL);
         started = true;
         active = true;
         AgentService.observe(this);
@@ -127,8 +129,10 @@ public final class VoiceListeningService extends Service implements AgentService
                 main.post(() -> {
                     if (!started) return;
                     streamingReady = true;
-                    showStatus("Listening");
-                    if (!responding && !userSpeaking) resetIdle();
+                    if (!responding && !userSpeaking) {
+                        showStatus("Listening");
+                        resetIdle();
+                    }
                 });
             }
             @Override public void onStatus(String status) {
@@ -139,6 +143,12 @@ public final class VoiceListeningService extends Service implements AgentService
                 });
             }
         });
+        byte[] wakePreroll = intent.getByteArrayExtra(WakeWordService.EXTRA_WAKE_PREROLL);
+        if (wakePreroll != null && wakePreroll.length > 0) {
+            try { voice.primeWakePcm(wakePreroll); }
+            catch (RuntimeException invalid) { Log.w("PocketVoice", "Invalid wake audio preroll", invalid); }
+            Arrays.fill(wakePreroll, (byte) 0);
+        }
         voice.start();
         startForegroundService(new Intent(this, AgentService.class).setAction(AgentService.ACTION_START));
         return START_NOT_STICKY;
@@ -190,6 +200,14 @@ public final class VoiceListeningService extends Service implements AgentService
 
     private void sendUtterance(String text) {
         if (!started || voice == null || text == null || text.isBlank()) return;
+        if (wakeStarted) {
+            text = text.replaceFirst("(?i)^\\s*hey[,]?\\s+jarvis[,!?.\\s]*", "").trim();
+            if (text.isEmpty()) {
+                userSpeaking = false;
+                if (!responding) resetIdle();
+                return;
+            }
+        }
         if (responding) speechStarted(); // Handle missing StartOfTurn before EndOfTurn.
         userSpeaking = false;
         main.removeCallbacks(idleStop);
@@ -236,6 +254,7 @@ public final class VoiceListeningService extends Service implements AgentService
 
     @Override public void onDestroy() {
         started = false;
+        wakeStarted = false;
         active = false;
         streamingReady = false;
         main.removeCallbacks(idleStop);
