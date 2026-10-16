@@ -6,7 +6,7 @@ run_test() {
   ./gradlew --no-daemon :app:installDebug -PvoiceEmulatorTest=true || return 1
   adb shell pm grant dev.pocket.agent android.permission.RECORD_AUDIO || return 1
   ./gradlew --no-daemon :app:connectedDebugAndroidTest -PvoiceEmulatorTest=true \
-    "-Pandroid.testInstrumentationRunnerArguments.class="
+    "-Pandroid.testInstrumentationRunnerArguments.class=${test_class}"
 }
 
 result=0
