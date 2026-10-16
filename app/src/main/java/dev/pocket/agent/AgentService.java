@@ -80,15 +80,18 @@ public final class AgentService extends Service {
             JSONObject event = new JSONObject().put("type", "voice_delivery_error")
                 .put("id", id).put("error", reason).put("atMs", System.currentTimeMillis());
             try (StateStore store = new StateStore(context)) { store.record(event); }
-            NotificationManager notifications = context.getSystemService(NotificationManager.class);
-            notifications.createNotificationChannel(new NotificationChannel("agent", "Agent runtime", NotificationManager.IMPORTANCE_LOW));
-            notifications.notify(33, new Notification.Builder(context, "agent")
-                .setSmallIcon(android.R.drawable.ic_dialog_alert)
-                .setContentTitle("Pocket Agent couldn't speak")
-                .setContentText(reason)
-                .setContentIntent(PendingIntent.getActivity(context, 33, new Intent(context, MainActivity.class),
-                    PendingIntent.FLAG_UPDATE_CURRENT | PendingIntent.FLAG_IMMUTABLE))
-                .setAutoCancel(true).build());
+            catch (Exception persistenceError) { Log.w("PocketVoice", "Could not save speech failure", persistenceError); }
+            try {
+                NotificationManager notifications = context.getSystemService(NotificationManager.class);
+                notifications.createNotificationChannel(new NotificationChannel("agent", "Agent runtime", NotificationManager.IMPORTANCE_LOW));
+                notifications.notify(33, new Notification.Builder(context, "agent")
+                    .setSmallIcon(android.R.drawable.ic_dialog_alert)
+                    .setContentTitle("Pocket Agent couldn't speak")
+                    .setContentText(reason)
+                    .setContentIntent(PendingIntent.getActivity(context, 33, new Intent(context, MainActivity.class),
+                        PendingIntent.FLAG_UPDATE_CURRENT | PendingIntent.FLAG_IMMUTABLE))
+                    .setAutoCancel(true).build());
+            } catch (RuntimeException notificationError) { Log.w("PocketVoice", "Could not display speech failure notification", notificationError); }
             AgentService running = instance;
             if (running != null && !running.stopping) running.publish(event);
         } catch (Exception error) { Log.w("PocketVoice", "Could not report speech failure", error); }

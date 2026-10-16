@@ -359,7 +359,9 @@ test('voice input streams only its own main reply; ordinary turns and worker com
  bridge.events.length=0;
  command(runtime,{action:'send',text:'delegate long task delay=100',voiceSessionId:id});
  await until(()=>runtime.state().tasks.length===1&&!runtime.state().active);
+ await until(()=>runtime.state().tasks[0]?.status==='completed'&&!runtime.state().active,8000);
  assert.equal(bridge.events.filter(e=>e.type==='voice_end').length,1,'worker completion cannot trigger another spoken turn');
+ assert.equal(bridge.events.filter(e=>e.type==='voice_announce').length,0,'worker completion without explicit speech tool stays silent');
  bridge.events.length=0;
  command(runtime,{action:'send',text:'hello bad id',voiceSessionId:'not-a-session-id'});
  await until(()=>!runtime.state().active);

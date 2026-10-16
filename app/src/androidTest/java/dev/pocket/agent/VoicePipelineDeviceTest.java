@@ -8,6 +8,7 @@ import android.content.Context;
 import org.json.JSONObject;
 import java.util.List;
 import org.junit.Test;
+import org.junit.Assume;
 import org.junit.runner.RunWith;
 import static org.junit.Assert.*;
 
@@ -43,6 +44,7 @@ public class VoicePipelineDeviceTest {
         var credentials = context.getSharedPreferences("voice-credentials", Context.MODE_PRIVATE);
         String previous = credentials.getString("secret", null);
         boolean runtimeAlreadyRunning = AgentService.isRunning();
+        Assume.assumeFalse("Do not interrupt an existing voice session", VoiceListeningService.isRunning());
         try {
             new VoiceCredentialStore(context).save("invalid-emulator-test-key");
             var request = VoiceAnnouncement.fromEvent(new JSONObject()

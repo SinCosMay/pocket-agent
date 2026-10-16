@@ -29,6 +29,8 @@ public final class VoiceListeningService extends Service implements AgentService
     private static final String CHANNEL = "voice";
     private static final long IDLE_TIMEOUT_MS = 3000;
     private static final int MAX_PENDING_ANNOUNCEMENTS = 8;
+    private static volatile VoiceListeningService runningService;
+    static boolean isRunning() { return runningService != null; }
     private final Handler main = new Handler(Looper.getMainLooper());
     private final ArrayDeque<VoiceAnnouncement> pendingAnnouncements = new ArrayDeque<>();
     private final LinkedHashSet<String> acceptedIds = new LinkedHashSet<>();
@@ -46,6 +48,7 @@ public final class VoiceListeningService extends Service implements AgentService
 
     @Override public void onCreate() {
         super.onCreate();
+        runningService = this;
         getSystemService(NotificationManager.class).createNotificationChannel(
             new NotificationChannel(CHANNEL, "Voice listening", NotificationManager.IMPORTANCE_LOW));
     }
@@ -290,6 +293,7 @@ public final class VoiceListeningService extends Service implements AgentService
     }
 
     @Override public void onDestroy() {
+        if (runningService == this) runningService = null;
         started = false;
         main.removeCallbacks(idleStop);
         AgentService.unobserve(this);
