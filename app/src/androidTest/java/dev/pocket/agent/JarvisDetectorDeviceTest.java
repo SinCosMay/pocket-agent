@@ -1,6 +1,8 @@
 package dev.pocket.agent;
 
 import android.content.Context;
+import android.content.ContextWrapper;
+import java.io.File;
 import androidx.test.ext.junit.runners.AndroidJUnit4;
 import androidx.test.platform.app.InstrumentationRegistry;
 import java.io.InputStream;
@@ -47,7 +49,10 @@ public final class JarvisDetectorDeviceTest {
 
     @Test public void personalizedVoiceProfileSeparatesSamples() throws Exception {
         Context modelContext=InstrumentationRegistry.getInstrumentation().getTargetContext();
-        Context storage=InstrumentationRegistry.getInstrumentation().getContext();
+        File testDirectory = new File(modelContext.getCacheDir(), "jarvis-test-enrollment");
+        Context storage = new ContextWrapper(modelContext) {
+            @Override public File getFilesDir() { return testDirectory; }
+        };
         List<float[]> positive=new ArrayList<>(),negative=new ArrayList<>();
         for(int i=0;i<4;i++) {
             try(JarvisDetector engine=new JarvisDetector(modelContext)) {
