@@ -55,6 +55,10 @@ jobs:
           test -c /dev/kvm
           sudo chmod 666 /dev/kvm
           test -r /dev/kvm && test -w /dev/kvm
+      - name: Enable hosted emulator acceleration
+        run: |
+          test -e /dev/kvm
+          sudo chmod a+rw /dev/kvm
       - name: Exercise voice contract on Android emulator
         uses: reactivecircus/android-emulator-runner@v2
         with:
