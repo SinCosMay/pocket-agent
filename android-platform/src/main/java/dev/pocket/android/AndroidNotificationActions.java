@@ -34,16 +34,16 @@ public final class AndroidNotificationActions {
             Notification n=item.getNotification();
             Bundle extras=n.extras;
             List<Message> messages=new ArrayList<>();
-            Parcelable[] bundled=extras.getParcelableArray(Notification.EXTRA_MESSAGES);
-            if(bundled!=null) {
-                try {
+            try {
+                Parcelable[] bundled=extras.getParcelableArray(Notification.EXTRA_MESSAGES);
+                if(bundled!=null) {
                     List<Notification.MessagingStyle.Message> parsed=Notification.MessagingStyle.Message.getMessagesFromBundleArray(bundled);
                     for(int i=Math.max(0,parsed.size()-10);i<parsed.size();i++) {
                         Notification.MessagingStyle.Message message=parsed.get(i);
                         messages.add(new Message(clipped(message.getSender()),clipped(message.getText()),message.getTimestamp()));
                     }
-                }catch(RuntimeException ignored) { /* Untrusted app extras may be malformed. */ }
-            }
+                }
+            }catch(RuntimeException ignored) { /* One malformed notification must not abort the whole read. */ }
             result.add(new Entry(item.getKey(),item.getPostTime(),item.getPackageName(),
                 clipped(extras.getCharSequence(Notification.EXTRA_TITLE)),
                 clipped(extras.getCharSequence(Notification.EXTRA_TEXT)),
