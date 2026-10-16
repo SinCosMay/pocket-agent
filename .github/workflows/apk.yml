@@ -1,7 +1,7 @@
 name: Signed Android APK
 on:
   push:
-    branches: [main, 'feat/**']
+    branches: [main, 'feat/**', 'fix/**']
   workflow_dispatch:
 permissions:
   contents: read

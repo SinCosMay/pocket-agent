@@ -1,0 +1,24 @@
+Third-party wake-word models
+
+The following three ONNX model files are from the openWakeWord project by David Scripka:
+ - melspectrogram.onnx
+ - embedding_model.onnx
+ - hey_jarvis_v0.1.onnx
+
+Source: https://github.com/dscripka/openWakeWord/releases/tag/v0.5.1
+
+The source code for openWakeWord is Apache-2.0. The pre-trained model weights included here
+are licensed separately under Creative Commons Attribution-NonCommercial-ShareAlike 4.0
+International (CC BY-NC-SA 4.0):
+https://creativecommons.org/licenses/by-nc-sa/4.0/
+
+The model weights have not been modified. These assets are intended for personal/non-commercial
+evaluation; do not use them in a commercial build without obtaining appropriate permission.
+The pretrained models' NonCommercial and ShareAlike conditions are independent of the app
+source code's license.
+
+ONNX Runtime Android (Microsoft): MIT License
+https://github.com/microsoft/onnxruntime/blob/main/LICENSE
+
+This notice accompanies the model binaries within the APK.
+The full bundled ONNX Runtime MIT copyright and permission notice appears in ONNXRUNTIME-LICENSE.txt.

@@ -46,6 +46,7 @@ test('mobile spawn schema omits unsupported overrides while upstream actions and
  assert.match(tool.description,/Tools are inherited by children/);
  assert.ok(runtime.registry.agents.get('phone-operator')!.tools!.includes('phone_act'));
  assert.ok(!runtime.registry.agents.get('researcher')!.tools!.includes('phone_act'));
+ assert.ok(runtime.registry.agents.get('researcher')!.tools!.includes('phone_calendar_events'));
 });
 
 test('batch vision keeps only latest bounded image and preserves image-free operation receipts',()=>{

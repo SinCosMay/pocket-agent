@@ -18,6 +18,7 @@ import android.util.Log;
 import java.util.ArrayDeque;
 import java.util.LinkedHashSet;
 import java.util.UUID;
+import java.util.Arrays;
 import org.json.JSONObject;
 
 /** User-started assistant capture plus on-demand announcements from the running agent. */
@@ -31,16 +32,18 @@ public final class VoiceListeningService extends Service implements AgentService
     private static final int MAX_PENDING_ANNOUNCEMENTS = 8;
     private static volatile VoiceListeningService runningService;
     static boolean isRunning() { return runningService != null; }
+    private static volatile boolean active;
+    static boolean isActive() { return active; }
     private final Handler main = new Handler(Looper.getMainLooper());
     private final ArrayDeque<VoiceAnnouncement> pendingAnnouncements = new ArrayDeque<>();
     private final LinkedHashSet<String> acceptedIds = new LinkedHashSet<>();
     private DeepgramVoice voice;
     private VoiceAnnouncement currentAnnouncement;
     private String activeTurn;
-    private boolean responding, userSpeaking, started, keepListening, microphoneEnabled;
+    private boolean responding, userSpeaking, started, keepListening, microphoneEnabled, streamingReady, wakeStarted;
     private long utteranceAt, firstTokenAt;
     private final Runnable idleStop = () -> {
-        if (started && !responding && !userSpeaking && pendingAnnouncements.isEmpty()) {
+        if (started && microphoneEnabled && streamingReady && !responding && !userSpeaking && pendingAnnouncements.isEmpty()) {
             Log.i("PocketVoice", "No speech for " + IDLE_TIMEOUT_MS + " ms; stopping microphone");
             stopSelf();
         }
@@ -58,6 +61,11 @@ public final class VoiceListeningService extends Service implements AgentService
         String action = intent.getAction();
         if (ACTION_STOP.equals(action)) { stopSelf(); return START_NOT_STICKY; }
         if (!ACTION_START.equals(action) && !ACTION_ANNOUNCE.equals(action)) return START_NOT_STICKY;
+        if (ACTION_START.equals(action) && intent.hasExtra(WakeWordService.EXTRA_WAKE_PREROLL)
+                && !WakeWordService.enabled(this)) {
+            if (!started) stopSelf();
+            return START_NOT_STICKY;
+        }
         VoiceAnnouncement request = null;
         if (ACTION_ANNOUNCE.equals(action)) {
             try { request = VoiceAnnouncement.fromIntent(intent); }
@@ -73,11 +81,19 @@ public final class VoiceListeningService extends Service implements AgentService
         }
         if (!started && !startOutput(request == null ? "" : request.id)) return START_NOT_STICKY;
         if (ACTION_START.equals(action)) {
+            byte[] wakePreroll = intent.getByteArrayExtra(WakeWordService.EXTRA_WAKE_PREROLL);
+            if (wakePreroll != null && wakePreroll.length > 0 && !microphoneEnabled) {
+                wakeStarted = true;
+                try { voice.primeWakePcm(wakePreroll); }
+                catch (RuntimeException invalid) { Log.w("PocketVoice", "Invalid wake audio preroll", invalid); }
+                finally { Arrays.fill(wakePreroll, (byte) 0); }
+            }
             if (!enableMicrophone()) { stopSelf(); return START_NOT_STICKY; }
             keepListening = true;
-            if (!responding && !userSpeaking) resetIdle();
+            if (streamingReady && !responding && !userSpeaking) resetIdle();
         } else {
             if (request.listenAfter && enableMicrophone()) keepListening = true;
+            voice.startOutput();
             pendingAnnouncements.addLast(request);
             main.removeCallbacks(idleStop);
             playNextAnnouncement();
@@ -146,12 +162,24 @@ public final class VoiceListeningService extends Service implements AgentService
                     afterPlayback();
                 });
             }
+            @Override public void onStreamReady() {
+                main.post(() -> {
+                    if (!started || !microphoneEnabled) return;
+                    streamingReady = true;
+                    if (!responding && !userSpeaking) {
+                        showStatus("Listening");
+                        resetIdle();
+                    }
+                });
+            }
             @Override public void onStatus(String status) {
                 main.post(() -> {
                     if (!started) return;
                     showStatus(status);
                     if (status.startsWith("Microphone") || status.startsWith("Speech recognition")) {
                         microphoneEnabled = false;
+                        active = false;
+                        streamingReady = false;
                         userSpeaking = false;
                         keepListening = false;
                         if (!responding) afterPlayback();
@@ -159,7 +187,6 @@ public final class VoiceListeningService extends Service implements AgentService
                 });
             }
         });
-        voice.startOutput();
         return true;
     }
 
@@ -172,8 +199,12 @@ public final class VoiceListeningService extends Service implements AgentService
         try {
             if (Build.VERSION.SDK_INT >= 34) startForeground(NOTIFICATION_ID, notification("Listening for your voice"),
                 ServiceInfo.FOREGROUND_SERVICE_TYPE_MICROPHONE | ServiceInfo.FOREGROUND_SERVICE_TYPE_MEDIA_PLAYBACK);
+            WakeWordService.pauseForConversation();
             microphoneEnabled = true;
+            active = true;
+            streamingReady = false;
             voice.listen();
+            voice.startOutput();
             return true;
         } catch (RuntimeException denied) {
             Log.w("PocketVoice", "Android denied microphone reactivation", denied);
@@ -199,7 +230,7 @@ public final class VoiceListeningService extends Service implements AgentService
         if (!pendingAnnouncements.isEmpty() && !userSpeaking) { playNextAnnouncement(); return; }
         if (keepListening && microphoneEnabled) {
             showStatus("Listening for follow-up");
-            if (!userSpeaking) resetIdle();
+            if (!userSpeaking && streamingReady) resetIdle();
         } else if (!userSpeaking) stopSelf();
     }
 
@@ -248,6 +279,14 @@ public final class VoiceListeningService extends Service implements AgentService
 
     private void sendUtterance(String text) {
         if (!started || voice == null || text == null || text.trim().isEmpty()) return;
+        if (wakeStarted) {
+            text = text.replaceFirst("(?i)^\\s*hey[,]?\\s+jarvis[,!?.\\s]*", "").trim();
+            if (text.isEmpty()) {
+                userSpeaking = false;
+                if (!responding) afterPlayback();
+                return;
+            }
+        }
         if (responding) speechStarted();
         userSpeaking = false;
         main.removeCallbacks(idleStop);
@@ -295,11 +334,15 @@ public final class VoiceListeningService extends Service implements AgentService
     @Override public void onDestroy() {
         if (runningService == this) runningService = null;
         started = false;
+        active = false;
+        streamingReady = false;
+        wakeStarted = false;
         main.removeCallbacks(idleStop);
         AgentService.unobserve(this);
         pendingAnnouncements.clear();
         acceptedIds.clear();
         if (voice != null) { voice.close(); voice = null; }
+        WakeWordService.resumeAfterConversation(this);
         stopForeground(STOP_FOREGROUND_REMOVE);
         super.onDestroy();
     }

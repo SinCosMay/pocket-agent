@@ -57,6 +57,8 @@ final class AgentDisplayCoordinator implements AutoCloseable {
     }
 
     synchronized void launch(String owner,String component) throws ControlException {client().launch(display(owner),component);}
+    synchronized void openUrl(String owner,String url) throws ControlException {int id=display(owner);client().openUrl(id,url);}
+    synchronized void showClock(String owner,String screen) throws ControlException {int id=display(owner);client().showClock(id,screen);}
     synchronized void key(String owner,int code) throws ControlException {client().key(display(owner),code);}
 
     synchronized void release(String owner) {

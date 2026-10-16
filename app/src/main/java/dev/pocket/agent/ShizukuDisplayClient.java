@@ -121,6 +121,16 @@ final class ShizukuDisplayClient implements AutoCloseable {
             throw new ControlException(ControlException.Code.ACTION_REJECTED,"Android rejected the launch on the virtual display");}
         catch(RemoteException e) {loseService();throw new ControlException(ControlException.Code.NOT_READY,"Virtual display backend disconnected");}
     }
+    void openUrl(int displayId,String url) throws ControlException {
+        try {if(!require().openUrl(displayId,url))
+            throw new ControlException(ControlException.Code.ACTION_REJECTED,"Android did not resolve the URL on the virtual display");}
+        catch(RemoteException e) {loseService();throw new ControlException(ControlException.Code.NOT_READY,"Virtual display backend disconnected");}
+    }
+    void showClock(int displayId,String screen) throws ControlException {
+        try {if(!require().showClock(displayId,screen))
+            throw new ControlException(ControlException.Code.UNSUPPORTED,"No clock app accepted this screen intent");}
+        catch(RemoteException e) {loseService();throw new ControlException(ControlException.Code.NOT_READY,"Virtual display backend disconnected");}
+    }
     void key(int displayId,int code) throws ControlException {
         try {if(!require().injectKey(displayId,code))
             throw new ControlException(ControlException.Code.ACTION_REJECTED,"Android rejected the virtual display key event");}
