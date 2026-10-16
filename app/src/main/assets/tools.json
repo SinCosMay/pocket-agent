@@ -308,6 +308,43 @@
     }
   },
   {
+    "name": "phone_calendar_events",
+    "description": "Read up to 50 expanded calendar instances between two epoch milliseconds, including recurring events, without screen access.",
+    "inputSchema": {
+      "type": "object",
+      "properties": {
+        "start_ms": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "end_ms": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "calendar_id": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "limit": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 50
+        }
+      },
+      "required": [
+        "start_ms",
+        "end_ms"
+      ],
+      "additionalProperties": false
+    },
+    "annotations": {
+      "readOnlyHint": true,
+      "destructiveHint": false,
+      "idempotentHint": true,
+      "openWorldHint": true
+    }
+  },
+  {
     "name": "phone_calendar_create",
     "description": "Create calendar event directly and read back its persisted URI. Use a writable calendar_id, epoch milliseconds and a recognized time zone. operation_id must be phone_capabilities.operation_prefix + underscore + a unique 8..48 character nonce; reuse identical IDs and arguments after uncertain results.",
     "inputSchema": {

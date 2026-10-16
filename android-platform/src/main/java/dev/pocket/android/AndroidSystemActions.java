@@ -28,6 +28,8 @@ public final class AndroidSystemActions {
     public AndroidSystemActions(Context context) { this.context=context.getApplicationContext(); }
     public record Contact(long contactId,String name,String number) {}
     public record Calendar(long id,String name,boolean writable) {}
+    public record CalendarEvent(long eventId,long calendarId,String title,long startMillis,long endMillis,boolean allDay,String timezone) {}
+    public record CalendarEvents(List<CalendarEvent> events,boolean truncated) {}
     public record Outcome(String status,String reference,String message) {}
 
     public void requirePermission(String permission) throws ControlException {
@@ -129,6 +131,32 @@ public final class AndroidSystemActions {
                 c.getInt(2)>=CalendarContract.Calendars.CAL_ACCESS_CONTRIBUTOR));
         }
         return result;
+    }
+
+    public CalendarEvents calendarEvents(long startMillis,long endMillis,Long calendarId,int limit) throws ControlException {
+        if(startMillis<0 || endMillis<=startMillis || endMillis-startMillis>31L*24*60*60*1000 ||
+            (calendarId!=null && calendarId<0) || limit<1 || limit>50)
+            throw new ControlException(INVALID_ARGUMENT,"Use an increasing window of at most 31 days, optional nonnegative calendar ID, and limit 1..50");
+        requirePermission(Manifest.permission.READ_CALENDAR);
+        Uri.Builder uri=CalendarContract.Instances.CONTENT_URI.buildUpon();
+        ContentUris.appendId(uri,startMillis);
+        ContentUris.appendId(uri,endMillis);
+        String[] projection={CalendarContract.Instances.EVENT_ID,CalendarContract.Instances.CALENDAR_ID,
+            CalendarContract.Instances.TITLE,CalendarContract.Instances.BEGIN,CalendarContract.Instances.END,
+            CalendarContract.Instances.ALL_DAY,CalendarContract.Instances.EVENT_TIMEZONE};
+        String selection=calendarId==null?null:CalendarContract.Instances.CALENDAR_ID+"=?";
+        String[] args=calendarId==null?null:new String[]{String.valueOf(calendarId)};
+        List<CalendarEvent> events=new ArrayList<>();
+        boolean truncated=false;
+        try(Cursor c=context.getContentResolver().query(uri.build(),projection,selection,args,CalendarContract.Instances.BEGIN+" ASC")) {
+            if(c==null) throw new ControlException(NOT_READY,"Calendar Provider did not return an event cursor");
+            while(c.moveToNext()) {
+                if(events.size()==limit){truncated=true;break;}
+                events.add(new CalendarEvent(c.getLong(0),c.getLong(1),c.getString(2),c.getLong(3),c.getLong(4),
+                    c.getInt(5)!=0,c.isNull(6)?null:c.getString(6)));
+            }
+        }
+        return new CalendarEvents(events,truncated);
     }
 
     public Outcome createEvent(long calendarId,String title,long startMillis,long endMillis,String timezone) throws ControlException {

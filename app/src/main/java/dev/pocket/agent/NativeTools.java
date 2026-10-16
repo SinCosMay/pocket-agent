@@ -190,6 +190,16 @@ final class NativeTools implements AutoCloseable {
             case "phone_calendars": {
                 JSONArray calendars=new JSONArray();for(AndroidSystemActions.Calendar c:system.calendars()) calendars.put(Json.obj("id",c.id(),"name",c.name(),"writable",c.writable()));return Json.tool(Json.obj("calendars",calendars));
             }
+            case "phone_calendar_events": {
+                AndroidSystemActions.CalendarEvents result=system.calendarEvents(a.getLong("start_ms"),a.getLong("end_ms"),
+                    a.has("calendar_id")?a.getLong("calendar_id"):null,a.optInt("limit",50));
+                JSONArray events=new JSONArray();
+                for(AndroidSystemActions.CalendarEvent event:result.events())events.put(Json.obj("event_id",event.eventId(),
+                    "calendar_id",event.calendarId(),"title",event.title(),"start_ms",event.startMillis(),
+                    "end_ms",event.endMillis(),"all_day",event.allDay(),"event_timezone",event.timezone()));
+                return Json.tool(Json.obj("events",events,"truncated",result.truncated(),"timezone_note",
+                    "Start/end are UTC epoch milliseconds; use the device timezone for display and check all-day boundaries."));
+            }
             case "phone_calendar_create":return outcome(system.createEvent(a.getLong("calendar_id"),a.getString("title"),a.getLong("start_ms"),a.getLong("end_ms"),a.getString("timezone")));
             case "phone_alarm":return outcome(system.setAlarm(a.getInt("hour"),a.getInt("minute"),a.optString("label","")));
             case "phone_timer":return outcome(system.startTimer(a.getInt("seconds"),a.optString("label","")));

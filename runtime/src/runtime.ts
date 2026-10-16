@@ -51,7 +51,7 @@ export class PocketRuntime {
   constructor(readonly native:NativeBridge,limits={maxExecuting:4,maxConversations:12}) {
     const phoneTools=[...nativeTools(this,'placeholder').map(x=>x.name),...MEMORY_TOOL_NAMES];
     this.registry.agents.set('phone-operator',{name:'phone-operator',description:'Performs bounded Android workflows and verifies native outcomes.',source:'project',systemPrompt:WORKER_PROMPT,tools:[...phoneTools,'subagent']});
-    this.registry.agents.set('researcher',{name:'researcher',description:'Reads phone capabilities and app data with no screen mutations.',source:'project',systemPrompt:'Read-only bounded worker. Report evidence and uncertainty.',tools:['phone_capabilities','phone_apps','phone_contacts','phone_calendars','phone_notifications','phone_operation','memory_search','memory_profile','subagent']});
+    this.registry.agents.set('researcher',{name:'researcher',description:'Reads phone capabilities and app data with no screen mutations.',source:'project',systemPrompt:'Read-only bounded worker. Report evidence and uncertainty.',tools:['phone_capabilities','phone_apps','phone_contacts','phone_calendars','phone_calendar_events','phone_notifications','phone_operation','memory_search','memory_profile','subagent']});
     this.reloadCredentials();
     this.runtime=new SubagentRuntime(this.registry,limits.maxExecuting,this.execute as any,limits.maxConversations);
     const saved=this.call('store.load',{}) ?? {};
