@@ -31,6 +31,7 @@ public final class AgentService extends Service {
     public static void observe(Observer observer) { observers.add(observer); }
     public static void unobserve(Observer observer) { observers.remove(observer); }
     public static boolean isRunning() { return instance != null; }
+    public static boolean isStopping() { AgentService current = instance; return current != null && current.stopping; }
     static RuntimeHost peekHost() { AgentService current = instance; return current == null ? null : current.host; }
     @Override public void onCreate() {
         super.onCreate(); instance = this;

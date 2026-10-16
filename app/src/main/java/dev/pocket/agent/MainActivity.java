@@ -39,6 +39,7 @@ public final class MainActivity extends Activity implements AgentService.Observe
     private Button send;
     private JSONObject state = new JSONObject();
     private String viewedWorker;
+    private String deferredUserMessage;
     private StateStore store;
     private static final int IMPORT_CODEX = 90;
     private final ExecutorService accountFiles = Executors.newSingleThreadExecutor();
@@ -68,7 +69,16 @@ public final class MainActivity extends Activity implements AgentService.Observe
         input = new EditText(this); input.setHint("Message main agent"); input.setMinLines(1); input.setMaxLines(4); input.setInputType(InputType.TYPE_CLASS_TEXT | InputType.TYPE_TEXT_FLAG_MULTI_LINE | InputType.TYPE_TEXT_FLAG_CAP_SENTENCES); root.addView(input);
         LinearLayout controls = row(); send = button("Send", () -> {
             String value = input.getText().toString().trim(); if (value.isEmpty()) return;
-            command(json("action", "send", "text", value)); input.setText("");
+            if (AgentService.isStopping()) {
+                deferredUserMessage = value;
+                status.setText("Agent stopping · message will send after shutdown");
+                return;
+            }
+            try {
+                command(json("action", "send", "text", value));
+                deferredUserMessage = null;
+                input.setText("");
+            } catch (RuntimeException error) { status.setText("Unable to submit message · try again"); }
         }); controls.addView(send, new LinearLayout.LayoutParams(0, -2, 1));
         controls.addView(button("Stop response", () -> command(json("action", "stop_main"))));
         controls.addView(button("Stop all", () -> {
@@ -83,8 +93,10 @@ public final class MainActivity extends Activity implements AgentService.Observe
         JSONArray events = store.recentEvents();
         for (int i = 0; i < events.length(); i++) {
             JSONObject event = events.optJSONObject(i);
-            if (event != null && "voice_delivery_error".equals(event.optString("type"))
-                    && System.currentTimeMillis() - event.optLong("atMs") < 120000) {
+            if (event == null) continue;
+            long ageMs = System.currentTimeMillis() - event.optLong("atMs");
+            if ("voice_delivery_error".equals(event.optString("type"))
+                    && ageMs >= 0 && ageMs < 120000) {
                 status.setText("Voice error · " + event.optString("error")); break;
             }
         }
@@ -99,7 +111,17 @@ public final class MainActivity extends Activity implements AgentService.Observe
         if (type.equals("state")) { state = event.optJSONObject("state"); if (state == null) state = new JSONObject(); render(); }
         else if (type.equals("error")) { status.setText("Error · " + event.optString("error", "Runtime unavailable")); }
         else if (type.equals("voice_delivery_error")) { status.setText("Voice error · " + event.optString("error", "Unable to start speech")); }
-        else if (type.equals("ready") || type.equals("stopped")) render();
+        else if (type.equals("stopped")) {
+            if (deferredUserMessage != null && deferredUserMessage.equals(input.getText().toString().trim())) {
+                try {
+                    command(json("action", "send", "text", deferredUserMessage));
+                    input.setText("");
+                    deferredUserMessage = null;
+                } catch (RuntimeException error) { status.setText("Unable to resend after shutdown · press Send again"); }
+            } else deferredUserMessage = null;
+            render();
+        }
+        else if (type.equals("ready")) render();
     }
     private void render() {
         status.setText(!AgentService.isRunning() ? "Stopped · Send starts the runtime" : state.optBoolean("busy") ? "Main is responding" : state.optBoolean("active") ? "Workers active · Main is available" : "Ready");
