@@ -24,5 +24,7 @@
 # Device instrumentation links these directly; R8 must retain them in the minified target APK.
 -keep class dev.pocket.agent.VoiceTranscript { *; }
 -keep class dev.pocket.agent.VoiceTextChunker { *; }
+-keep class dev.pocket.agent.VoiceCredentialStore { *; }
+-keep class dev.pocket.agent.VoiceAnnouncement { *; }
 
 -keep class dev.pocket.agent.MemoryStore { *; }

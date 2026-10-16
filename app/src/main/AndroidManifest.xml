@@ -6,6 +6,7 @@
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE" />
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE_SPECIAL_USE" />
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE_MICROPHONE" />
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE_MEDIA_PLAYBACK" />
     <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
     <uses-permission android:name="android.permission.READ_CONTACTS" />
     <uses-permission android:name="android.permission.CALL_PHONE" />
@@ -31,10 +32,7 @@
         <service android:name=".PocketVoiceSessionService" android:exported="true"
             android:permission="android.permission.BIND_VOICE_INTERACTION" />
         <service android:name=".VoiceListeningService" android:exported="false"
-            android:foregroundServiceType="microphone|specialUse">
-            <property android:name="android.app.PROPERTY_SPECIAL_USE_FGS_SUBTYPE"
-                android:value="Agent-initiated audible reply and optional short follow-up voice capture for a user-started conversational assistant" />
-        </service>
+            android:foregroundServiceType="microphone|mediaPlayback" />
         <service android:name=".AgentService" android:exported="false" android:foregroundServiceType="specialUse">
             <property android:name="android.app.PROPERTY_SPECIAL_USE_FGS_SUBTYPE" android:value="User-started conversational agent completing explicitly requested background phone tasks, with ongoing notification and Stop all control" />
         </service>

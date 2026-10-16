@@ -81,7 +81,7 @@ export function speakToUserTool(host:any,owner:string):any {
       if(!message||message.length>800)throw new Error('Spoken message must be 1..800 characters');
       const id=randomUUID();
       host.emit({type:'voice_announce',id,owner,message,listenAfter:args.listen_after!==false});
-      return toolResult({id,status:'queued',note:'Speech delivery and optional listening are handled asynchronously by Android; queued does not mean heard.'});
+      return toolResult({id,status:'requested',note:'Android will attempt to enqueue and play this speech asynchronously. This request may be rejected by Android or a full queue; requested does not mean accepted or heard.'});
     },
   };
 }

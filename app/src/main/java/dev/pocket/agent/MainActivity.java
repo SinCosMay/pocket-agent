@@ -78,7 +78,17 @@ public final class MainActivity extends Activity implements AgentService.Observe
             VoiceListeningService.class).setAction(VoiceListeningService.ACTION_STOP))));
         setContentView(root);
     }
-    @Override protected void onStart() { super.onStart(); AgentService.observe(this); state = store.load(); render(); }
+    @Override protected void onStart() {
+        super.onStart(); AgentService.observe(this); state = store.load(); render();
+        JSONArray events = store.recentEvents();
+        for (int i = 0; i < events.length(); i++) {
+            JSONObject event = events.optJSONObject(i);
+            if (event != null && "voice_delivery_error".equals(event.optString("type"))
+                    && System.currentTimeMillis() - event.optLong("atMs") < 120000) {
+                status.setText("Voice error · " + event.optString("error")); break;
+            }
+        }
+    }
     @Override protected void onStop() { AgentService.unobserve(this); super.onStop(); }
     @Override protected void onDestroy() {
         invalidateAccountOperations();
@@ -88,6 +98,7 @@ public final class MainActivity extends Activity implements AgentService.Observe
         String type = event.optString("type");
         if (type.equals("state")) { state = event.optJSONObject("state"); if (state == null) state = new JSONObject(); render(); }
         else if (type.equals("error")) { status.setText("Error · " + event.optString("error", "Runtime unavailable")); }
+        else if (type.equals("voice_delivery_error")) { status.setText("Voice error · " + event.optString("error", "Unable to start speech")); }
         else if (type.equals("ready") || type.equals("stopped")) render();
     }
     private void render() {
@@ -192,7 +203,7 @@ public final class MainActivity extends Activity implements AgentService.Observe
         panel.addView(button("Enable Shizuku virtual displays", this::enableVirtualDisplays));
         panel.addView(button("Notification access settings", () -> startActivity(new Intent(Settings.ACTION_NOTIFICATION_LISTENER_SETTINGS))));
         panel.addView(button("Choose phone permissions", this::permissions));
-        panel.addView(text("Voice uses Deepgram streaming speech recognition and synthesis with the Pi main agent. Listening stops after six seconds of idle silence or when you tap Stop listening in the notification. Background workers continue."));
+        panel.addView(text("Voice uses Deepgram streaming speech recognition and synthesis with the Pi main agent. Listening stops after three seconds of idle silence or when you tap Stop listening in the notification. Background workers continue."));
         panel.addView(button("Deepgram voice key", this::voiceKeySettings));
         panel.addView(button("Allow microphone", () -> requestPermissions(new String[]{Manifest.permission.RECORD_AUDIO}, 103)));
         panel.addView(button("Allow voice notification", () -> {

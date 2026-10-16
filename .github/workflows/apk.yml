@@ -55,10 +55,6 @@ jobs:
           test -c /dev/kvm
           sudo chmod 666 /dev/kvm
           test -r /dev/kvm && test -w /dev/kvm
-      - name: Enable hosted emulator acceleration
-        run: |
-          test -e /dev/kvm
-          sudo chmod a+rw /dev/kvm
       - name: Exercise voice contract on Android emulator
         uses: reactivecircus/android-emulator-runner@v2
         with:
@@ -67,7 +63,9 @@ jobs:
           target: google_apis
           disable-animations: true
           emulator-options: -no-window -gpu swiftshader_indirect -no-snapshot -noaudio -no-boot-anim
-          script: ./gradlew --no-daemon :app:connectedReleaseAndroidTest -Pandroid.testInstrumentationRunnerArguments.class=dev.pocket.agent.VoicePipelineDeviceTest,dev.pocket.agent.VoiceAssistantDeviceTest
+          script: |
+            ./gradlew --no-daemon :app:connectedReleaseAndroidTest -Pandroid.testInstrumentationRunnerArguments.class=dev.pocket.agent.VoicePipelineDeviceTest
+            ./gradlew --no-daemon :app:connectedReleaseAndroidTest -Pandroid.testInstrumentationRunnerArguments.class=dev.pocket.agent.VoiceAssistantDeviceTest
       - name: Upload voice emulator test report
         if: always()
         uses: actions/upload-artifact@v4

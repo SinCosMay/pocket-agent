@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 import {PocketRuntime,NativeBridge} from '../src/runtime.js';
 import {delay} from '../src/scripted.js';
 import {AssistantMessageEventStream,validateToolArguments} from '@earendil-works/pi-ai';
-import {toolResult,MobileSubagentParams,nativeTools,speakToUserTool} from '../src/tools.js';
+import {toolResult,MobileSubagentParams,nativeTools} from '../src/tools.js';
 import {SubagentParams,parseSubagentInvocation} from '../vendor/pi9/schema.js';
 
 class Bridge implements NativeBridge {
@@ -367,23 +367,26 @@ test('voice input streams only its own main reply; ordinary turns and worker com
 });
 
 
-test('optional speak_to_user queues an explicit event, never reports audio delivered, and supports silent completion',async()=>{
+test('registered speak_to_user tool requests optional speech without asserting delivery or speaking after worker completion',async()=>{
  const bridge=new Bridge(), runtime=new PocketRuntime(bridge);
  const main=runtime.main.agent.state.tools.find((tool:any)=>tool.name==='speak_to_user');
  assert.ok(main,'main has optional spoken output');
- const tool=speakToUserTool(runtime,'worker-test');
+ const worker=(runtime as any).createSession('worker-test',{definition:runtime.registry.agents.get('phone-operator'),requestedConfig:{tools:['speak_to_user']}});
+ const tool=worker.agent.state.tools.find((tool:any)=>tool.name==='speak_to_user');
+ assert.ok(tool,'registered worker can initiate speech');
  assert.equal(runtime.registry.agents.get('phone-operator')!.tools!.includes('speak_to_user'),true);
  assert.equal(runtime.registry.agents.get('researcher')!.tools!.includes('speak_to_user'),true);
  assert.equal(validateToolArguments(tool,{type:'toolCall',id:'speak1',name:'speak_to_user',arguments:{message:'Hello',listen_after:false}}).listen_after,false);
  const out=await tool.execute('speak1',{message:' Reminder at six. ',listen_after:false});
- assert.equal(out.details.status,'queued');
- assert.match(out.details.note,/does not mean heard/);
+ assert.equal(out.details.status,'requested');
+ assert.match(out.details.note,/does not mean accepted or heard/);
  assert.equal(bridge.events.filter(e=>e.type==='voice_announce').at(-1).type,'voice_announce');
  assert.equal(bridge.events.filter(e=>e.type==='voice_announce').at(-1).message,'Reminder at six.');
  assert.equal(bridge.events.filter(e=>e.type==='voice_announce').at(-1).listenAfter,false);
  assert.equal(bridge.events.filter(e=>e.type==='voice_announce').at(-1).owner,'worker-test');
  assert.match(bridge.events.filter(e=>e.type==='voice_announce').at(-1).id,/^[0-9a-f-]{36}$/);
- await tool.execute('speak2',{message:'Please reply'});
+ await main.execute('speak2',{message:'Please reply'});
+ assert.equal(bridge.events.filter(e=>e.type==='voice_announce').at(-1).owner,'main');
  assert.equal(bridge.events.filter(e=>e.type==='voice_announce').at(-1).listenAfter,true);
  await assert.rejects(tool.execute('speak3',{message:'  '}),/1..800/);
  const controller=new AbortController();controller.abort();

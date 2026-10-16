@@ -176,8 +176,8 @@ is never invoked automatically just because a worker finishes. A scheduled agent
 run can invoke the same tool while the agent runtime is active; the voice tool
 itself is **not** an alarm scheduler or a promise of execution after process death.
 
-- The tool validates and queues at most 800 characters and returns `status: queued`,
-  **not** a claim that the audio played. Speech uses Deepgram Aura on Android,
+- The tool validates at most 800 characters and returns `status: requested`,
+  **not** a claim that Android accepted the request or that audio played. Speech uses Deepgram Aura on Android,
   with a private internal service Intent. It does not use a separate LLM.
 - `listen_after` defaults to `true`: an available microphone is opened for
   interruption during speech and for a short follow-up. The microphone session

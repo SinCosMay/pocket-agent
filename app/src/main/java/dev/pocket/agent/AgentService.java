@@ -25,6 +25,7 @@ public final class AgentService extends Service {
     private static volatile AgentService instance;
     private final Handler main = new Handler(Looper.getMainLooper());
     private RuntimeHost host;
+    private volatile boolean stopping;
     private java.util.concurrent.CompletableFuture<Void> startup;
     public static void observe(Observer observer) { observers.add(observer); }
     public static void unobserve(Observer observer) { observers.remove(observer); }
@@ -49,9 +50,11 @@ public final class AgentService extends Service {
     @Override public int onStartCommand(Intent intent, int flags, int startId) {
         if (intent == null) return START_NOT_STICKY;
         if (ACTION_STOP.equals(intent.getAction())) {
+            stopping = true;
             stopService(new Intent(this, VoiceListeningService.class));
             stopSelf(); return START_NOT_STICKY;
         }
+        if (stopping) return START_NOT_STICKY;
         if (ACTION_COMMAND.equals(intent.getAction())) {
             String value = intent.getStringExtra("command");
             try {
@@ -73,6 +76,7 @@ public final class AgentService extends Service {
     }
     private void publish(JSONObject event) {
         main.post(() -> {
+            if (stopping && "voice_announce".equals(event.optString("type"))) return;
             if ("voice_announce".equals(event.optString("type"))) {
                 try {
                     VoiceAnnouncement request = VoiceAnnouncement.fromEvent(event);
@@ -87,15 +91,21 @@ public final class AgentService extends Service {
                             .setContentIntent(PendingIntent.getActivity(this, 33,
                                 new Intent(this, MainActivity.class), PendingIntent.FLAG_UPDATE_CURRENT | PendingIntent.FLAG_IMMUTABLE))
                             .setAutoCancel(true).build());
-                    try { publish(new JSONObject().put("type", "voice_delivery_error")
-                        .put("id", event.optString("id")).put("error", "Speech service could not start")); }
-                    catch (Exception ignored) { }
+                    try {
+                        JSONObject failureEvent = new JSONObject().put("type", "voice_delivery_error")
+                            .put("id", event.optString("id"))
+                            .put("error", "Speech service could not start; open Pocket Agent to check voice permissions")
+                            .put("atMs", System.currentTimeMillis());
+                        try (StateStore store = new StateStore(this)) { store.record(failureEvent); }
+                        publish(failureEvent);
+                    } catch (Exception ignored) { }
                 }
             }
             for (Observer observer : observers) observer.onAgentEvent(event);
         });
     }
     @Override public void onDestroy() {
+        stopping = true;
         instance = null; if (host != null) host.close(); stopForeground(STOP_FOREGROUND_REMOVE);
         try { publish(new JSONObject().put("type", "stopped")); } catch (Exception ignored) { }
         super.onDestroy();

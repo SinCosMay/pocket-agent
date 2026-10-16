@@ -91,7 +91,7 @@ public final class VoiceListeningService extends Service implements AgentService
         }
         try {
             if (Build.VERSION.SDK_INT >= 34) startForeground(NOTIFICATION_ID, notification("Preparing speech"),
-                ServiceInfo.FOREGROUND_SERVICE_TYPE_SPECIAL_USE);
+                ServiceInfo.FOREGROUND_SERVICE_TYPE_MEDIA_PLAYBACK);
             else startForeground(NOTIFICATION_ID, notification("Preparing speech"));
         } catch (RuntimeException denied) {
             Log.w("PocketVoice", "Android denied speech foreground service", denied);
@@ -143,6 +143,7 @@ public final class VoiceListeningService extends Service implements AgentService
                     showStatus(status);
                     if (status.startsWith("Microphone") || status.startsWith("Speech recognition")) {
                         microphoneEnabled = false;
+                        userSpeaking = false;
                         keepListening = false;
                         if (!responding) afterPlayback();
                     }
@@ -161,7 +162,7 @@ public final class VoiceListeningService extends Service implements AgentService
         }
         try {
             if (Build.VERSION.SDK_INT >= 34) startForeground(NOTIFICATION_ID, notification("Listening for your voice"),
-                ServiceInfo.FOREGROUND_SERVICE_TYPE_MICROPHONE | ServiceInfo.FOREGROUND_SERVICE_TYPE_SPECIAL_USE);
+                ServiceInfo.FOREGROUND_SERVICE_TYPE_MICROPHONE | ServiceInfo.FOREGROUND_SERVICE_TYPE_MEDIA_PLAYBACK);
             microphoneEnabled = true;
             voice.listen();
             return true;

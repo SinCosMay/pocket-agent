@@ -4,6 +4,7 @@ import androidx.test.ext.junit.runners.AndroidJUnit4;
 import androidx.test.platform.app.InstrumentationRegistry;
 import android.content.Intent;
 import android.content.ComponentName;
+import android.content.Context;
 import org.json.JSONObject;
 import java.util.List;
 import org.junit.Test;
@@ -39,16 +40,27 @@ public class VoicePipelineDeviceTest {
 
     @Test public void internalAnnouncementServiceIsDispatchableOnDevice() throws Exception {
         var context = InstrumentationRegistry.getInstrumentation().getTargetContext();
-        new VoiceCredentialStore(context).save("invalid-emulator-test-key");
-        var request = VoiceAnnouncement.fromEvent(new JSONObject()
-            .put("id", "1f05d6a1-cddb-43ac-ac2e-54842f1066f1")
-            .put("message", "Agent-initiated speech test")
-            .put("listenAfter", false));
-        Intent announcement = VoiceAnnouncement.intent(context, request);
-        ComponentName started = context.startForegroundService(announcement);
-        assertNotNull("Android must accept internal agent speech dispatch", started);
-        assertEquals(context.getPackageName(), started.getPackageName());
-        context.stopService(new Intent(context, VoiceListeningService.class));
+        var credentials = context.getSharedPreferences("voice-credentials", Context.MODE_PRIVATE);
+        String previous = credentials.getString("secret", null);
+        boolean runtimeAlreadyRunning = AgentService.isRunning();
+        try {
+            new VoiceCredentialStore(context).save("invalid-emulator-test-key");
+            var request = VoiceAnnouncement.fromEvent(new JSONObject()
+                .put("id", "1f05d6a1-cddb-43ac-ac2e-54842f1066f1")
+                .put("message", "Agent-initiated speech test")
+                .put("listenAfter", false));
+            Intent announcement = VoiceAnnouncement.intent(context, request);
+            ComponentName started = context.startForegroundService(announcement);
+            assertNotNull("Android must accept internal agent speech dispatch", started);
+            assertEquals(context.getPackageName(), started.getPackageName());
+            InstrumentationRegistry.getInstrumentation().waitForIdleSync();
+        } finally {
+            context.stopService(new Intent(context, VoiceListeningService.class));
+            if (!runtimeAlreadyRunning) context.stopService(new Intent(context, AgentService.class));
+            var editor = credentials.edit();
+            if (previous == null) editor.remove("secret"); else editor.putString("secret", previous);
+            assertTrue("Restore voice credential state after the test", editor.commit());
+        }
     }
 
     @Test public void fluxOnlyDispatchesConfirmedNonemptyTurns() throws Exception {
