@@ -54,6 +54,11 @@ public final class VoiceListeningService extends Service implements AgentService
         if (intent == null) return START_NOT_STICKY;
         if (ACTION_STOP.equals(intent.getAction())) { stopSelf(); return START_NOT_STICKY; }
         if (!ACTION_START.equals(intent.getAction())) return START_NOT_STICKY;
+        if (intent.hasExtra(WakeWordService.EXTRA_WAKE_PREROLL)
+                && !WakeWordService.enabled(this)) {
+            stopSelf();
+            return START_NOT_STICKY;
+        }
         if (started) {
             if (streamingReady && !responding && !userSpeaking) resetIdle();
             return START_NOT_STICKY;

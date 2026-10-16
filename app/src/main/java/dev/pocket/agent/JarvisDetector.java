@@ -34,14 +34,24 @@ final class JarvisDetector implements AutoCloseable {
 
     JarvisDetector(Context context) throws Exception {
         environment = OrtEnvironment.getEnvironment();
+        OrtSession melCreated = null, embeddingCreated = null, wakeCreated = null;
         try (OrtSession.SessionOptions options = new OrtSession.SessionOptions()) {
             options.setInterOpNumThreads(1);
             options.setIntraOpNumThreads(1);
             options.setOptimizationLevel(OrtSession.SessionOptions.OptLevel.BASIC_OPT);
-            mel = environment.createSession(assetFile(context, "melspectrogram.onnx").getAbsolutePath(), options);
-            embedding = environment.createSession(assetFile(context, "embedding_model.onnx").getAbsolutePath(), options);
-            wake = environment.createSession(assetFile(context, "hey_jarvis_v0.1.onnx").getAbsolutePath(), options);
+            melCreated = environment.createSession(assetFile(context, "melspectrogram.onnx").getAbsolutePath(), options);
+            embeddingCreated = environment.createSession(assetFile(context, "embedding_model.onnx").getAbsolutePath(), options);
+            wakeCreated = environment.createSession(assetFile(context, "hey_jarvis_v0.1.onnx").getAbsolutePath(), options);
+        } catch (Exception failed) {
+            for (OrtSession session : new OrtSession[]{wakeCreated, embeddingCreated, melCreated}) {
+                if (session == null) continue;
+                try { session.close(); } catch (Exception cleanup) { failed.addSuppressed(cleanup); }
+            }
+            throw failed;
         }
+        mel = melCreated;
+        embedding = embeddingCreated;
+        wake = wakeCreated;
         reset();
     }
 

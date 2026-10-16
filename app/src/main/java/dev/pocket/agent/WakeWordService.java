@@ -29,7 +29,7 @@ public final class WakeWordService extends Service {
     static final String ACTION_ENABLE = "dev.pocket.agent.WAKE_ENABLE";
     static final String ACTION_DISABLE = "dev.pocket.agent.WAKE_DISABLE";
     static final String EXTRA_WAKE_PREROLL = "dev.pocket.agent.WAKE_PREROLL";
-    private static volatile boolean enrollmentInProgress;
+    private static final java.util.concurrent.atomic.AtomicInteger enrollmentSessions = new java.util.concurrent.atomic.AtomicInteger();
     private static final int NOTIFICATION = 41;
     private static final String CHANNEL = "wakeword";
     private static volatile WakeWordService running;
@@ -42,8 +42,26 @@ public final class WakeWordService extends Service {
     private volatile boolean enabled;
     private JarvisDetector detector;
 
+    static boolean isListening() {
+        WakeWordService service = running;
+        AudioRecord record = service == null ? null : service.microphone;
+        return service != null && service.recording.get() && record != null &&
+            record.getRecordingState() == AudioRecord.RECORDSTATE_RECORDING;
+    }
+
     static boolean enabled(Context context) {
         return context.getSharedPreferences("wakeword", MODE_PRIVATE).getBoolean("enabled", false);
+    }
+
+    static void disableImmediately(Context context) {
+        context.getSharedPreferences("wakeword", MODE_PRIVATE).edit()
+            .putBoolean("enabled", false).commit();
+        WakeWordService service = running;
+        if (service != null) {
+            service.enabled = false;
+            service.transitioning = false;
+            service.pause();
+        }
     }
 
     static void pauseForConversation() {
@@ -57,12 +75,13 @@ public final class WakeWordService extends Service {
     }
 
     static void pauseForEnrollment() {
-        enrollmentInProgress = true;
+        enrollmentSessions.incrementAndGet();
         pauseForConversation();
     }
 
     static void resumeAfterEnrollment() {
-        enrollmentInProgress = false;
+        if (enrollmentSessions.decrementAndGet() > 0) return;
+        enrollmentSessions.set(0);
         WakeWordService service = running;
         if (service != null) { service.transitioning = false; service.resume(); }
     }
@@ -78,9 +97,7 @@ public final class WakeWordService extends Service {
     @Override public int onStartCommand(Intent intent, int flags, int startId) {
         String action = intent == null ? null : intent.getAction();
         if (ACTION_DISABLE.equals(action)) {
-            getSharedPreferences("wakeword", MODE_PRIVATE).edit().putBoolean("enabled", false).apply();
-            enabled = false;
-            pause();
+            disableImmediately(this);
             stopSelf();
             return START_NOT_STICKY;
         }
@@ -125,7 +142,7 @@ public final class WakeWordService extends Service {
     }
 
     private synchronized void resume() {
-        if (!enabled || transitioning || recording.get() || enrollmentInProgress) return;
+        if (!enabled || transitioning || recording.get() || (enrollmentSessions.get() != 0)) return;
         if (VoiceListeningService.isActive()) { paused = true; return; }
         paused = false;
         if (checkSelfPermission(Manifest.permission.RECORD_AUDIO) != PackageManager.PERMISSION_GRANTED) return;
@@ -172,7 +189,7 @@ public final class WakeWordService extends Service {
                 throw new IllegalStateException("Microphone initialization failed");
             // Pausing while ONNX loads must not allow a late microphone acquisition.
             synchronized (this) {
-                if (!recording.get() || paused || enrollmentInProgress) return;
+                if (!recording.get() || paused || (enrollmentSessions.get() != 0)) return;
                 microphone = record;
                 record.startRecording();
                 if (record.getRecordingState() != AudioRecord.RECORDSTATE_RECORDING)
@@ -239,7 +256,7 @@ public final class WakeWordService extends Service {
                         transitioning = false;
                         resume();
                     }
-                } else if (enabled && !paused && !VoiceListeningService.isActive() && !enrollmentInProgress) {
+                } else if (enabled && !paused && !VoiceListeningService.isActive() && !(enrollmentSessions.get() != 0)) {
                     transitioning = false;
                     if (needsBackoff) {
                         getSystemService(NotificationManager.class).notify(NOTIFICATION,

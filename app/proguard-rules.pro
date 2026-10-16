@@ -26,3 +26,7 @@
 -keep class dev.pocket.agent.VoiceTextChunker { *; }
 
 -keep class dev.pocket.agent.MemoryStore { *; }
+
+# ONNX Runtime uses Java classes referenced through JNI in release builds.
+-keep class ai.onnxruntime.** { *; }
+-keep class dev.pocket.agent.JarvisDetector { *; }

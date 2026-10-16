@@ -51,6 +51,24 @@ public final class JarvisDetectorDeviceTest {
         }
     }
 
+    @Test public void detectorRecognizesUnseenAccentsButNotOtherCommands() throws Exception {
+        Context target = InstrumentationRegistry.getInstrumentation().getTargetContext();
+        for (String filename : new String[]{"wake_gb.pcm", "wake_us_f.pcm"}) {
+            try (JarvisDetector model = new JarvisDetector(target)) {
+                float confidence = peak(model, filename);
+                assertTrue(filename + " must be recognized as Hey Jarvis, got " + confidence,
+                    confidence >= JarvisDetector.DEFAULT_THRESHOLD);
+            }
+        }
+        for (String filename : new String[]{"negative_alexa.pcm", "negative_player.pcm"}) {
+            try (JarvisDetector model = new JarvisDetector(target)) {
+                float confidence = peak(model, filename);
+                assertTrue(filename + " is not Hey Jarvis, got " + confidence,
+                    confidence < JarvisDetector.DEFAULT_THRESHOLD);
+            }
+        }
+    }
+
     @Test public void personalizedVoiceProfileSeparatesSamples() throws Exception {
         Context modelContext=InstrumentationRegistry.getInstrumentation().getTargetContext();
         File testDirectory = new File(modelContext.getCacheDir(), "jarvis-test-enrollment");

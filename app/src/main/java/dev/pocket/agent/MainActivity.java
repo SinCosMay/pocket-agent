@@ -195,23 +195,7 @@ public final class MainActivity extends Activity implements AgentService.Observe
         panel.addView(text("Voice uses Deepgram streaming speech recognition and synthesis with the Pi main agent. Listening stops after six seconds of idle silence or when you tap Stop listening in the notification. Background workers continue."));
         panel.addView(button("Deepgram voice key", this::voiceKeySettings));
         panel.addView(text("Hey Jarvis runs locally at 16 kHz, with a 75% default confidence threshold. Enabling it keeps a microphone foreground service running until disabled. Optional calibration tunes the phrase detector; it does NOT authenticate your identity. Deepgram and the agent start only after detection."));
-        panel.addView(button("Enable Hey Jarvis always-listening", () -> {
-            if (checkSelfPermission(Manifest.permission.RECORD_AUDIO) != PackageManager.PERMISSION_GRANTED) {
-                toast("Allow microphone access, then tap Enable again");
-                requestPermissions(new String[]{Manifest.permission.RECORD_AUDIO}, 103); return;
-            }
-            boolean configured;
-            try { configured = new VoiceCredentialStore(this).configured(); }
-            catch (RuntimeException unreadable) {
-                toast("Stored Deepgram key is unavailable; re-enter your voice key"); return;
-            }
-            if (!configured) {
-                toast("Configure Deepgram voice key first"); return;
-            }
-            try { startForegroundService(new Intent(this, WakeWordService.class)
-                .setAction(WakeWordService.ACTION_ENABLE)); toast("Hey Jarvis enabled"); }
-            catch (RuntimeException denied) { toast("Android denied background listening"); }
-        }));
+        panel.addView(button("Enable Hey Jarvis always-listening", this::enableWakeWord));
         panel.addView(button("Disable Hey Jarvis", () -> {
             startService(new Intent(this, WakeWordService.class).setAction(WakeWordService.ACTION_DISABLE));
             toast("Hey Jarvis disabled");
@@ -359,6 +343,32 @@ public final class MainActivity extends Activity implements AgentService.Observe
             } else toast("Shizuku permission granted; up to three background displays are available on demand");
         }catch(Exception error){toast("Shizuku unavailable; start it and authorize Pocket Agent");}
     }
+    private void enableWakeWord() {
+        if (checkSelfPermission(Manifest.permission.RECORD_AUDIO) != PackageManager.PERMISSION_GRANTED) {
+            requestPermissions(new String[]{Manifest.permission.RECORD_AUDIO}, 108);
+            return;
+        }
+        boolean configured;
+        try { configured = new VoiceCredentialStore(this).configured(); }
+        catch (RuntimeException unreadable) {
+            toast("Stored Deepgram key is unavailable; re-enter your voice key"); return;
+        }
+        if (!configured) { toast("Configure Deepgram voice key first"); return; }
+        try {
+            startForegroundService(new Intent(this, WakeWordService.class)
+                .setAction(WakeWordService.ACTION_ENABLE));
+            toast("Hey Jarvis enabled");
+        } catch (RuntimeException denied) { toast("Android denied background listening"); }
+    }
+
+    @Override public void onRequestPermissionsResult(int requestCode, String[] permissions, int[] results) {
+        super.onRequestPermissionsResult(requestCode, permissions, results);
+        if (requestCode == 108) {
+            if (results.length != 0 && results[0] == PackageManager.PERMISSION_GRANTED) enableWakeWord();
+            else toast("Microphone permission is required for Hey Jarvis");
+        }
+    }
+
     private void permissions() {
         String[] labels = {"Contacts", "Phone calls and phone status", "Send SMS", "Read and edit calendar", "Runtime notifications"};
         boolean[] selected = new boolean[labels.length];

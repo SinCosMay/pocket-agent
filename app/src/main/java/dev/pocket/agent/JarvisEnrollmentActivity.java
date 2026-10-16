@@ -33,10 +33,16 @@ public final class JarvisEnrollmentActivity extends Activity {
     private Button record, back, next, train;
     private int position;
     private boolean busy;
+    private volatile AudioRecord activeRecorder;
+    private volatile boolean destroying;
 
     @Override public void onCreate(Bundle saved) {
         super.onCreate(saved);
         WakeWordService.pauseForEnrollment();
+        if (saved != null) {
+            position = Math.max(0, Math.min(PROMPTS.length-1, saved.getInt("position")));
+            for (int i=0; i<samples.length; i++) samples[i] = saved.getFloatArray("sample"+i);
+        }
         if (VoiceListeningService.isActive())
             stopService(new android.content.Intent(this, VoiceListeningService.class));
         ScrollView scroll = new ScrollView(this);
@@ -111,12 +117,15 @@ public final class JarvisEnrollmentActivity extends Activity {
                 int size=AudioRecord.getMinBufferSize(16000,AudioFormat.CHANNEL_IN_MONO,
                     AudioFormat.ENCODING_PCM_16BIT);
                 if(size<0)throw new IllegalStateException("16 kHz recording unavailable");
+                if (destroying || Thread.currentThread().isInterrupted()) return;
                 if(checkSelfPermission(Manifest.permission.RECORD_AUDIO)!=PackageManager.PERMISSION_GRANTED)
                     throw new SecurityException("Microphone permission revoked");
                 audio=new AudioRecord(MediaRecorder.AudioSource.VOICE_RECOGNITION,16000,
                     AudioFormat.CHANNEL_IN_MONO,AudioFormat.ENCODING_PCM_16BIT,Math.max(size,4096));
                 if(audio.getState()!=AudioRecord.STATE_INITIALIZED)
                     throw new IllegalStateException("Microphone unavailable");
+                activeRecorder = audio;
+                if (destroying || Thread.currentThread().isInterrupted()) return;
                 audio.startRecording();
                 if(audio.getRecordingState()!=AudioRecord.RECORDSTATE_RECORDING)
                     throw new IllegalStateException("Microphone is busy");
@@ -162,6 +171,7 @@ public final class JarvisEnrollmentActivity extends Activity {
                 runOnUiThread(()->{busy=false;render();info.setText("Recording failed: "+message);});
             } finally {
                 if(audio!=null){try{audio.stop();}catch(Exception ignored){}audio.release();}
+                activeRecorder = null;
             }
         });
     }
@@ -187,9 +197,28 @@ public final class JarvisEnrollmentActivity extends Activity {
         });
     }
 
+    @Override protected void onSaveInstanceState(Bundle out) {
+        out.putInt("position", position);
+        for (int i=0; i<samples.length; i++) if (samples[i]!=null)
+            out.putFloatArray("sample"+i, samples[i]);
+        super.onSaveInstanceState(out);
+    }
+
     @Override protected void onDestroy() {
+        destroying = true;
         worker.shutdownNow();
-        WakeWordService.resumeAfterEnrollment();
+        AudioRecord held = activeRecorder;
+        if (held != null) {
+            try { held.stop(); } catch (RuntimeException ignored) { }
+        }
+        Thread cleanup = new Thread(() -> {
+            try {
+                while (!worker.awaitTermination(5, java.util.concurrent.TimeUnit.SECONDS)) { }
+            } catch (InterruptedException ignored) { Thread.currentThread().interrupt(); }
+            finally { WakeWordService.resumeAfterEnrollment(); }
+        }, "JarvisEnrollmentCleanup");
+        cleanup.setDaemon(true);
+        cleanup.start();
         super.onDestroy();
     }
 }
