@@ -194,6 +194,24 @@ public final class MainActivity extends Activity implements AgentService.Observe
         panel.addView(button("Choose phone permissions", this::permissions));
         panel.addView(text("Voice uses Deepgram streaming speech recognition and synthesis with the Pi main agent. Listening stops after six seconds of idle silence or when you tap Stop listening in the notification. Background workers continue."));
         panel.addView(button("Deepgram voice key", this::voiceKeySettings));
+        panel.addView(text("Hey Jarvis runs completely on device at 16 kHz, using the pretrained openWakeWord model and a 75% default confidence threshold. Enabling it keeps a microphone foreground service running until you disable it. Deepgram and the main agent start only after detection."));
+        panel.addView(button("Enable Hey Jarvis always-listening", () -> {
+            if (checkSelfPermission(Manifest.permission.RECORD_AUDIO) != PackageManager.PERMISSION_GRANTED) {
+                requestPermissions(new String[]{Manifest.permission.RECORD_AUDIO}, 103); return;
+            }
+            if (!new VoiceCredentialStore(this).configured()) {
+                toast("Configure Deepgram voice key first"); return;
+            }
+            try { startForegroundService(new Intent(this, WakeWordService.class)
+                .setAction(WakeWordService.ACTION_ENABLE)); toast("Hey Jarvis enabled"); }
+            catch (RuntimeException denied) { toast("Android denied background listening"); }
+        }));
+        panel.addView(button("Disable Hey Jarvis", () -> {
+            startService(new Intent(this, WakeWordService.class).setAction(WakeWordService.ACTION_DISABLE));
+            toast("Hey Jarvis disabled");
+        }));
+        panel.addView(button("Train my Hey Jarvis voice profile", () ->
+            startActivity(new Intent(this, JarvisEnrollmentActivity.class))));
         panel.addView(button("Allow microphone", () -> requestPermissions(new String[]{Manifest.permission.RECORD_AUDIO}, 103)));
         panel.addView(button("Allow voice notification", () -> {
             if (Build.VERSION.SDK_INT >= 33 &&

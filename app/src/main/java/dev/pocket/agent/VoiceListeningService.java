@@ -30,6 +30,8 @@ public final class VoiceListeningService extends Service implements AgentService
     private static final String CHANNEL = "voice";
     private static final long IDLE_TIMEOUT_MS = 6000;
     private final Handler main = new Handler(Looper.getMainLooper());
+    private static volatile boolean active;
+    static boolean isActive() { return active; }
     private DeepgramVoice voice;
     private String activeTurn;
     private boolean responding, userSpeaking, started, streamingReady;
@@ -73,7 +75,9 @@ public final class VoiceListeningService extends Service implements AgentService
             stopSelf();
             return START_NOT_STICKY;
         }
+        WakeWordService.pauseForConversation();
         started = true;
+        active = true;
         AgentService.observe(this);
         voice = new DeepgramVoice(this, key, new DeepgramVoice.Callback() {
             @Override public void onUtterance(String text) {
@@ -232,10 +236,12 @@ public final class VoiceListeningService extends Service implements AgentService
 
     @Override public void onDestroy() {
         started = false;
+        active = false;
         streamingReady = false;
         main.removeCallbacks(idleStop);
         AgentService.unobserve(this);
         if (voice != null) { voice.close(); voice = null; }
+        WakeWordService.resumeAfterConversation(this);
         stopForeground(STOP_FOREGROUND_REMOVE);
         super.onDestroy();
     }

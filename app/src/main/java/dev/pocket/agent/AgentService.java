@@ -49,6 +49,7 @@ public final class AgentService extends Service {
         if (intent == null) return START_NOT_STICKY;
         if (ACTION_STOP.equals(intent.getAction())) {
             stopService(new Intent(this, VoiceListeningService.class));
+            startService(new Intent(this, WakeWordService.class).setAction(WakeWordService.ACTION_DISABLE));
             stopSelf(); return START_NOT_STICKY;
         }
         if (ACTION_COMMAND.equals(intent.getAction())) {

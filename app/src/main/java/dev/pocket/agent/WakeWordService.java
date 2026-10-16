@@ -1,0 +1,226 @@
+package dev.pocket.agent;
+
+import android.Manifest;
+import android.app.Notification;
+import android.app.NotificationChannel;
+import android.app.NotificationManager;
+import android.app.PendingIntent;
+import android.app.Service;
+import android.content.Context;
+import android.content.Intent;
+import android.content.pm.PackageManager;
+import android.content.pm.ServiceInfo;
+import android.media.AudioFormat;
+import android.media.AudioRecord;
+import android.media.MediaRecorder;
+import android.os.Build;
+import android.os.Handler;
+import android.os.IBinder;
+import android.os.Looper;
+import android.os.Process;
+import android.util.Log;
+import java.util.concurrent.atomic.AtomicBoolean;
+
+/**
+ * Only the local detector and microphone run between conversations. The Node agent,
+ * Deepgram sockets and voice output start after verified wake-word detection.
+ */
+public final class WakeWordService extends Service {
+    static final String ACTION_ENABLE = "dev.pocket.agent.WAKE_ENABLE";
+    static final String ACTION_DISABLE = "dev.pocket.agent.WAKE_DISABLE";
+    private static final String ACTION_RESUME = "dev.pocket.agent.WAKE_RESUME";
+    private static final int NOTIFICATION = 41;
+    private static final String CHANNEL = "wakeword";
+    private static volatile WakeWordService running;
+
+    private final Handler main = new Handler(Looper.getMainLooper());
+    private final AtomicBoolean recording = new AtomicBoolean();
+    private volatile AudioRecord microphone;
+    private volatile Thread thread;
+    private volatile boolean paused, transitioning;
+    private volatile boolean enabled;
+    private JarvisDetector detector;
+
+    static boolean enabled(Context context) {
+        return context.getSharedPreferences("wakeword", MODE_PRIVATE).getBoolean("enabled", false);
+    }
+
+    static void pauseForConversation() {
+        WakeWordService service = running;
+        if (service != null) service.pauseAndWait();
+    }
+
+    static void resumeAfterConversation(Context context) {
+        WakeWordService service = running;
+        if (service != null) { service.transitioning = false; service.resume(); }
+        // Never silently create a new microphone service from a background Activity.
+    }
+
+    @Override public void onCreate() {
+        super.onCreate();
+        running = this;
+        getSystemService(NotificationManager.class).createNotificationChannel(
+            new NotificationChannel(CHANNEL, "Hey Jarvis wake-word detector",
+                NotificationManager.IMPORTANCE_LOW));
+    }
+
+    @Override public int onStartCommand(Intent intent, int flags, int startId) {
+        String action = intent == null ? null : intent.getAction();
+        if (ACTION_DISABLE.equals(action)) {
+            getSharedPreferences("wakeword", MODE_PRIVATE).edit().putBoolean("enabled", false).apply();
+            enabled = false;
+            pause();
+            stopSelf();
+            return START_NOT_STICKY;
+        }
+        if (ACTION_ENABLE.equals(action)) {
+            if (checkSelfPermission(Manifest.permission.RECORD_AUDIO) != PackageManager.PERMISSION_GRANTED ||
+                !new VoiceCredentialStore(this).configured()) {
+                stopSelf();
+                return START_NOT_STICKY;
+            }
+            getSharedPreferences("wakeword", MODE_PRIVATE).edit().putBoolean("enabled", true).apply();
+        }
+        enabled = enabled(this);
+        if (!enabled) { stopSelf(); return START_NOT_STICKY; }
+        try {
+            startForeground(NOTIFICATION, notification("Ready for Hey Jarvis"),
+                ServiceInfo.FOREGROUND_SERVICE_TYPE_MICROPHONE);
+        } catch (RuntimeException rejected) {
+            Log.e("JarvisWake", "Android refused foreground mic access", rejected);
+            stopSelf();
+            return START_NOT_STICKY;
+        }
+        if (ACTION_RESUME.equals(action)) resume();
+        else if (!paused && !transitioning) resume();
+        return START_STICKY;
+    }
+
+    private Notification notification(String description) {
+        PendingIntent open = PendingIntent.getActivity(this, 0, new Intent(this, MainActivity.class),
+            PendingIntent.FLAG_UPDATE_CURRENT | PendingIntent.FLAG_IMMUTABLE);
+        PendingIntent stop = PendingIntent.getService(this, 1, new Intent(this, WakeWordService.class)
+            .setAction(ACTION_DISABLE), PendingIntent.FLAG_UPDATE_CURRENT | PendingIntent.FLAG_IMMUTABLE);
+        return new Notification.Builder(this, CHANNEL)
+            .setSmallIcon(android.R.drawable.ic_btn_speak_now)
+            .setContentTitle("Pocket Agent · Hey Jarvis enabled")
+            .setContentText(description).setContentIntent(open)
+            .setOngoing(true).setOnlyAlertOnce(true)
+            .addAction(new Notification.Action.Builder(null, "Disable wake word", stop).build()).build();
+    }
+
+    private synchronized void resume() {
+        if (!enabled || transitioning || recording.get() || paused && VoiceListeningService.isActive()) return;
+        if (VoiceListeningService.isActive()) { paused = true; return; }
+        paused = false;
+        if (checkSelfPermission(Manifest.permission.RECORD_AUDIO) != PackageManager.PERMISSION_GRANTED) return;
+        recording.set(true);
+        thread = new Thread(this::detectLoop, "HeyJarvisDetector");
+        thread.setDaemon(true);
+        thread.start();
+    }
+
+    private void pauseAndWait() {
+        pause();
+        Thread previous = thread;
+        if (previous != null && previous != Thread.currentThread()) {
+            try { previous.join(1200); } catch (InterruptedException e) { Thread.currentThread().interrupt(); }
+        }
+    }
+
+    private synchronized void pause() {
+        paused = true;
+        recording.set(false);
+        AudioRecord old = microphone;
+        if (old != null) {
+            try { old.stop(); } catch (RuntimeException ignored) { }
+        }
+    }
+
+    private void detectLoop() {
+        Process.setThreadPriority(Process.THREAD_PRIORITY_AUDIO);
+        AudioRecord record = null;
+        boolean triggered = false;
+        try {
+            if (detector == null) detector = new JarvisDetector(this);
+            else detector.reset();
+            int buffer = AudioRecord.getMinBufferSize(16000, AudioFormat.CHANNEL_IN_MONO,
+                AudioFormat.ENCODING_PCM_16BIT);
+            if (buffer < 0) throw new IllegalStateException("16 kHz microphone unavailable");
+            record = new AudioRecord(MediaRecorder.AudioSource.VOICE_RECOGNITION, 16000,
+                AudioFormat.CHANNEL_IN_MONO, AudioFormat.ENCODING_PCM_16BIT, Math.max(4096, buffer));
+            if (record.getState() != AudioRecord.STATE_INITIALIZED)
+                throw new IllegalStateException("Microphone initialization failed");
+            microphone = record;
+            record.startRecording();
+            if (record.getRecordingState() != AudioRecord.RECORDSTATE_RECORDING)
+                throw new IllegalStateException("Microphone record permission unavailable");
+            final JarvisProfile.Profile profile = JarvisProfile.read(this);
+            short[] data = new short[1280];
+            int pending = 0;
+            while (recording.get()) {
+                int n = record.read(data, pending, data.length - pending);
+                if (n <= 0) break;
+                pending += n;
+                if (pending != data.length) continue;
+                pending = 0;
+                float baseConfidence = detector.process(data);
+                float confidence = profile == null || baseConfidence < 0.12f ? baseConfidence
+                    : profile.adjust(detector.featureSnapshot(), baseConfidence);
+                if (confidence >= JarvisDetector.DEFAULT_THRESHOLD) {
+                    triggered = true;
+                    transitioning = true;
+                    recording.set(false);
+                    Log.i("JarvisWake", "Hey Jarvis detected (confidence=" + confidence + ")");
+                }
+            }
+        } catch (Exception error) {
+            Log.e("JarvisWake", "Wake-word listening stopped", error);
+        } finally {
+            microphone = null;
+            if (record != null) {
+                try { record.stop(); } catch (RuntimeException ignored) { }
+                record.release();
+            }
+            thread = null;
+            final boolean handoff = triggered;
+            main.post(() -> {
+                if (handoff && enabled && !paused) {
+                    paused = true;
+                    getSystemService(NotificationManager.class).notify(
+                        NOTIFICATION, notification("Active voice conversation"));
+                    try {
+                        startForegroundService(new Intent(this, VoiceListeningService.class)
+                            .setAction(VoiceListeningService.ACTION_START));
+                    } catch (RuntimeException denied) {
+                        Log.e("JarvisWake", "Voice handoff unavailable", denied);
+                        paused = false;
+                        transitioning = false;
+                        resume();
+                    }
+                } else if (enabled && !paused && !VoiceListeningService.isActive()) {
+                    transitioning = false;
+                    resume();
+                }
+            });
+        }
+    }
+
+    @Override public void onDestroy() {
+        enabled = false;
+        pause();
+        Thread previous = thread;
+        if (previous != null && previous != Thread.currentThread()) {
+            try { previous.join(1500); } catch (InterruptedException e) { Thread.currentThread().interrupt(); }
+        }
+        if (detector != null) {
+            try { detector.close(); } catch (Exception problem) { Log.w("JarvisWake", "Failed releasing model", problem); }
+            detector = null;
+        }
+        running = null;
+        stopForeground(STOP_FOREGROUND_REMOVE);
+        super.onDestroy();
+    }
+
+    @Override public IBinder onBind(Intent intent) { return null; }
+}
