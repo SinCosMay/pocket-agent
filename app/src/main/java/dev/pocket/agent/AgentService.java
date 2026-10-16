@@ -5,6 +5,7 @@ import android.app.NotificationChannel;
 import android.app.NotificationManager;
 import android.app.PendingIntent;
 import android.app.Service;
+import android.util.Log;
 import android.content.Intent;
 import android.content.pm.ServiceInfo;
 import android.os.Build;
@@ -70,7 +71,30 @@ public final class AgentService extends Service {
         }
         return START_NOT_STICKY;
     }
-    private void publish(JSONObject event) { main.post(() -> { for (Observer observer : observers) observer.onAgentEvent(event); }); }
+    private void publish(JSONObject event) {
+        main.post(() -> {
+            if ("voice_announce".equals(event.optString("type"))) {
+                try {
+                    VoiceAnnouncement request = VoiceAnnouncement.fromEvent(event);
+                    startForegroundService(VoiceAnnouncement.intent(this, request));
+                } catch (RuntimeException failure) {
+                    Log.w("PocketVoice", "Agent-initiated speech could not be started", failure);
+                    getSystemService(NotificationManager.class).notify(33,
+                        new Notification.Builder(this, "agent")
+                            .setSmallIcon(android.R.drawable.ic_dialog_alert)
+                            .setContentTitle("Pocket Agent couldn't speak")
+                            .setContentText("Open Pocket Agent to check the voice setup")
+                            .setContentIntent(PendingIntent.getActivity(this, 33,
+                                new Intent(this, MainActivity.class), PendingIntent.FLAG_UPDATE_CURRENT | PendingIntent.FLAG_IMMUTABLE))
+                            .setAutoCancel(true).build());
+                    try { publish(new JSONObject().put("type", "voice_delivery_error")
+                        .put("id", event.optString("id")).put("error", "Speech service could not start")); }
+                    catch (Exception ignored) { }
+                }
+            }
+            for (Observer observer : observers) observer.onAgentEvent(event);
+        });
+    }
     @Override public void onDestroy() {
         instance = null; if (host != null) host.close(); stopForeground(STOP_FOREGROUND_REMOVE);
         try { publish(new JSONObject().put("type", "stopped")); } catch (Exception ignored) { }

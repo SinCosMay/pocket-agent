@@ -31,7 +31,10 @@
         <service android:name=".PocketVoiceSessionService" android:exported="true"
             android:permission="android.permission.BIND_VOICE_INTERACTION" />
         <service android:name=".VoiceListeningService" android:exported="false"
-            android:foregroundServiceType="microphone" />
+            android:foregroundServiceType="microphone|specialUse">
+            <property android:name="android.app.PROPERTY_SPECIAL_USE_FGS_SUBTYPE"
+                android:value="Agent-initiated audible reply and optional short follow-up voice capture for a user-started conversational assistant" />
+        </service>
         <service android:name=".AgentService" android:exported="false" android:foregroundServiceType="specialUse">
             <property android:name="android.app.PROPERTY_SPECIAL_USE_FGS_SUBTYPE" android:value="User-started conversational agent completing explicitly requested background phone tasks, with ongoing notification and Stop all control" />
         </service>

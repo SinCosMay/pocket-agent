@@ -1,4 +1,5 @@
 import { Type } from 'typebox';
+import { randomUUID } from 'node:crypto';
 import schemas from '../../app/src/main/assets/tools.json';
 import { SubagentParams, parseSubagentInvocation } from '../vendor/pi9/schema.js';
 
@@ -66,6 +67,25 @@ export function nativeTools(host:any,owner:string,grant?:readonly string[]):any[
     },
   }));
 }
+export function speakToUserTool(host:any,owner:string):any {
+  return {
+    name:'speak_to_user',label:'Speak to user',
+    description:'Optional spoken announcement on this device. Call only when audio is useful or explicitly requested, not automatically for every completed task. This queues delivery without proving playback. When listen_after is true, offer a three-second silence window for a spoken reply. Never speak secrets, one-time codes, or sensitive screen content aloud.',
+    parameters:Type.Object({
+      message:Type.String({minLength:1,maxLength:800,description:'Short text to say aloud.'}),
+      listen_after:Type.Optional(Type.Boolean({description:'Open microphone for a spoken response after the message; default true.'})),
+    },{additionalProperties:false}),
+    execute:async(_id:string,args:{message:string,listen_after?:boolean},signal?:AbortSignal)=>{
+      if(signal?.aborted)throw new Error('Announcement cancelled before dispatch');
+      const message=args.message.trim();
+      if(!message||message.length>800)throw new Error('Spoken message must be 1..800 characters');
+      const id=randomUUID();
+      host.emit({type:'voice_announce',id,owner,message,listenAfter:args.listen_after!==false});
+      return toolResult({id,status:'queued',note:'Speech delivery and optional listening are handled asynchronously by Android; queued does not mean heard.'});
+    },
+  };
+}
+
 export function subagentTool(app:any,parent?:any):any {
   const owner=()=>parent?{conversation:parent,generation:parent.requireCurrentGeneration()}:undefined;
   return {name:'subagent',label:'Subagent',description:'Delegate asynchronously. spawn returns immediately. End your turn and remain available; host delivers completion. inspect does not collect. join collects; use only for explicit dependencies. resume requires the initiator collection receipt. Tools are inherited by children.',parameters:MobileSubagentParams,

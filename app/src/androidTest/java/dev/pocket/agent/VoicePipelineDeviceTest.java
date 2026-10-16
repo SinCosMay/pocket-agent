@@ -1,6 +1,8 @@
 package dev.pocket.agent;
 
 import androidx.test.ext.junit.runners.AndroidJUnit4;
+import androidx.test.platform.app.InstrumentationRegistry;
+import android.content.Intent;
 import org.json.JSONObject;
 import java.util.List;
 import org.junit.Test;
@@ -9,6 +11,31 @@ import static org.junit.Assert.*;
 
 @RunWith(AndroidJUnit4.class)
 public class VoicePipelineDeviceTest {
+    @Test public void agentSpeechIntentIsPrivateValidatedAndKeepsOptionalListening() throws Exception {
+        var context = InstrumentationRegistry.getInstrumentation().getTargetContext();
+        JSONObject event = new JSONObject().put("id", "f8fcb5b1-7f09-4d38-b28c-d07e7741ec89")
+            .put("message", "Hello from a background task").put("listenAfter", false);
+        VoiceAnnouncement item = VoiceAnnouncement.fromEvent(event);
+        Intent intent = VoiceAnnouncement.intent(context, item);
+        assertEquals(context.getPackageName(), intent.getComponent().getPackageName());
+        assertEquals(VoiceListeningService.ACTION_ANNOUNCE, intent.getAction());
+        VoiceAnnouncement restored = VoiceAnnouncement.fromIntent(intent);
+        assertEquals("Hello from a background task", restored.message);
+        assertFalse(restored.listenAfter);
+        assertTrue(VoiceAnnouncement.fromEvent(new JSONObject().put("id", event.getString("id"))
+            .put("message", "Follow up")).listenAfter);
+        try {
+            VoiceAnnouncement.fromEvent(new JSONObject().put("id", event.getString("id"))
+                .put("message", " "));
+            fail("Blank speech must be rejected");
+        } catch (IllegalArgumentException expected) { }
+        try {
+            VoiceAnnouncement.fromEvent(new JSONObject().put("id", "invalid")
+                .put("message", "bad request"));
+            fail("Invalid ids must be rejected");
+        } catch (IllegalArgumentException expected) { }
+    }
+
     @Test public void fluxOnlyDispatchesConfirmedNonemptyTurns() throws Exception {
         assertNull(VoiceTranscript.completedTurn(new JSONObject().put("type", "Connected")));
         assertNull(VoiceTranscript.completedTurn(new JSONObject().put("type", "TurnInfo")

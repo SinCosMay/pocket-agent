@@ -8,7 +8,7 @@ notification, without leaving an overlay on screen. A live microphone stream goe
 a finalized utterance is submitted as **one normal main-agent user message**. Only
 text deltas produced in that particular main response are sent to Deepgram streaming
 TTS. Subsequent Pi9 worker completion messages and ordinary text messages remain
-visible in chat without speech. The listening service ends after six seconds of idle silence, or immediately via
+visible in chat without speech unless the model explicitly calls `speak_to_user`. The listening service ends after six seconds of idle silence, or immediately via
 the notification **Stop listening** action. Neither ending the voice session nor switching
 to another app cancels Pi workers. Stop response, Cancel worker and Stop all remain
 distinct actions.
@@ -167,3 +167,32 @@ The previous live Deepgram and real Pi audio round trips apply to the initial
 half-duplex implementation. Full-duplex background capture, barge-in and silence
 expiry require the new signed APK and Android device testing; a successful build
 alone does not prove acoustics or device-specific background reliability.
+
+## Optional agent-initiated announcements
+
+`speak_to_user({message,listen_after?})` is an explicitly invoked Pi tool available
+in main and delegated agent sessions (including read-only researcher sessions). It
+is never invoked automatically just because a worker finishes. A scheduled agent
+run can invoke the same tool while the agent runtime is active; the voice tool
+itself is **not** an alarm scheduler or a promise of execution after process death.
+
+- The tool validates and queues at most 800 characters and returns `status: queued`,
+  **not** a claim that the audio played. Speech uses Deepgram Aura on Android,
+  with a private internal service Intent. It does not use a separate LLM.
+- `listen_after` defaults to `true`: an available microphone is opened for
+  interruption during speech and for a short follow-up. The microphone session
+  closes after **three seconds of silence following playback**. If set to false,
+  audio-only announcements do not request microphone permission or recording.
+- Speech initiated by an agent is independent of the original voice session;
+  workers and normal main input still run while idle microphone sessions have
+  closed. An existing interactive session continues on its own. Interruption of
+  an announcement does not cancel its worker.
+- Competing announcements are queued (maximum eight waiting messages); Android
+  can refuse background foreground-service starts or microphone activation.
+  The app surfaces a notification when an announcement service launch is denied;
+  playback and follow-up listening are not guaranteed after background limits,
+  network loss, credential removal, or process termination. Announcement text
+  must not include passwords, verification codes or sensitive data the user did
+  not explicitly ask to hear aloud.
+- Stop voice closes audio capture and playback without cancelling agent work;
+  Stop all still ends the agent runtime. No perpetual listening process is added.

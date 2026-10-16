@@ -62,7 +62,7 @@ final class DeepgramVoice implements AutoCloseable {
     private volatile boolean responseOpen;
     private volatile long playbackEpoch;
     private WebSocket sttSocket, ttsSocket;
-    private boolean ttsReady, hasSpeech, ttsFailed, firstAudio;
+    private boolean ttsReady, hasSpeech, ttsFailed, firstAudio, speakerStarted;
     private volatile boolean waitingForFlush, waitingForClear;
     private AudioRecord microphone;
     private AcousticEchoCanceler echoCanceler;
@@ -79,9 +79,14 @@ final class DeepgramVoice implements AutoCloseable {
             .connectTimeout(12, TimeUnit.SECONDS).build();
     }
 
-    void start() {
-        if (closed) return;
+    synchronized void startOutput() {
+        if (closed || speakerStarted) return;
+        speakerStarted = true;
         connectSpeaker();
+    }
+
+    void start() {
+        startOutput();
         listen();
     }
 
