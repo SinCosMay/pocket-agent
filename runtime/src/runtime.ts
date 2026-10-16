@@ -40,6 +40,7 @@ export class PocketRuntime {
   private mainPaused=false;
   private totalStarts=0;
   private deliveryTransaction=false;
+  private speakingTurn:string|null=null;
   private observationPending:string[]=[];
   private observing=false;
   private observerSession?:MobileSession;
@@ -118,6 +119,9 @@ export class PocketRuntime {
       if(event.type==='message_end')this.coalesce();
       if(event.type==='agent_end')session.dropPriorImages();
       if(event.type==='tool_execution_start')this.emit({type:'log',owner,tool:event.toolName,message:'Tool started'});
+      if(owner==='main' && this.speakingTurn && event.type==='message_update' && event.assistantMessageEvent.type==='text_delta') {
+        this.emit({type:'voice_delta',sessionId:this.speakingTurn,text:event.assistantMessageEvent.delta});
+      }
     });
     return session;
   }
@@ -193,6 +197,7 @@ export class PocketRuntime {
           this.delivered.add(item.key);c.markCollected(g,'model');
         }
         this.busy=true;this.mainInterrupted=false;this.lastError=null;this.mainTurns++;
+        this.speakingTurn=typeof item.voiceSessionId==='string'&&/^[a-f0-9-]{36}$/.test(item.voiceSessionId)?item.voiceSessionId:null;
         this.main.agent.state.messages=[...this.main.messages,{role:'user',content:[{type:'text',text:prompt}],timestamp:Date.now()}];
         this.deliveryTransaction=false;
         // Delivery transcript, receipt and queue removal are one native store checkpoint.
@@ -203,7 +208,11 @@ export class PocketRuntime {
           if(last?.role==='assistant'&&last.stopReason==='error')this.reportError(last.errorMessage??'Provider request failed');
           else if(item.type==='user'&&typeof item.text==='string')this.queueObservation(item.text);
         }catch(e){this.reportError(e);}
-        finally {this.busy=false;this.dropPriorImages('main');this.releaseScreen('main');this.save();this.publish();void this.observePending();}
+        finally {
+          if(this.speakingTurn)this.emit({type:'voice_end',sessionId:this.speakingTurn});
+          this.speakingTurn=null;
+          this.busy=false;this.dropPriorImages('main');this.releaseScreen('main');this.save();this.publish();void this.observePending();
+        }
       }
     } catch(e){this.reportError(e);}
     finally {this.deliveryTransaction=false;this.pumping=false;this.publish();}
@@ -217,8 +226,23 @@ export class PocketRuntime {
         if(this.inbox.length>=32)throw new Error('Pending message limit reached (32)');
         if(!cmd.conversationId&&this.main.full())throw new Error('Main conversation is at the mobile context limit; history and pending results were retained');
         if(cmd.conversationId) void this.sendWorker(cmd.conversationId,cmd.text).catch(this.reportError);
-        else {this.mainPaused=false;this.inbox.push({type:'user',text:cmd.text});this.save();void this.pump();}
-      } else if(cmd.action==='stop_main') {this.main.agent.abort();}
+        else {
+          this.mainPaused=false;
+          const voiceSessionId=typeof cmd.voiceSessionId==='string'&&/^[a-f0-9-]{36}$/.test(cmd.voiceSessionId)?cmd.voiceSessionId:undefined;
+          this.inbox.push({type:'user',text:cmd.text,...(voiceSessionId?{voiceSessionId}:{})});this.save();void this.pump();
+        }
+      } else if(cmd.action==='stop_main') {
+        if(cmd.voiceSessionId===undefined) this.main.agent.abort();
+        else {
+          const sessionId=cmd.voiceSessionId;
+          if(typeof sessionId!=='string'||!/^[a-f0-9-]{36}$/.test(sessionId))
+            throw new Error('Invalid voice session identifier for scoped stop');
+          // A late interruption must never abort a newer spoken response.
+          // Also drop the old request if it was still waiting behind other work.
+          if(this.speakingTurn===sessionId)this.main.agent.abort();
+          this.inbox=this.inbox.filter(item=>item.voiceSessionId!==sessionId);
+        }
+      }
       else if(cmd.action==='stop_all')void this.stopAll().catch(this.reportError);
       else if(cmd.action==='cancel_worker')void this.runtime.cancelSubagent(cmd.conversationId,this.hostCaller(cmd.conversationId)).catch(this.reportError);
       else if(cmd.action==='steer_worker')void this.steer(cmd.conversationId,cmd.text,this.hostCaller(cmd.conversationId),'user').catch(this.reportError);

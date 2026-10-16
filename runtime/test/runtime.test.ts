@@ -317,3 +317,51 @@ test('account credentials stay redacted from durable state and events after prov
  for(const secret of secrets){assert.ok(!JSON.stringify(bridge.state).includes(secret));assert.ok(!JSON.stringify(bridge.events).includes(secret));}
  await until(()=>!r.state().active);
 });
+
+
+test('voice-scoped interruption aborts only its matching turn and removes stale queued speech',()=>{
+ const runtime=new PocketRuntime(new Bridge());
+ const old='9ac6c359-d522-4fa3-a00b-a7efdf0c9571';
+ const newer='a4d7ef33-3b44-4d3e-8caf-3591ae60a23b';
+ const anyRuntime=runtime as any;
+ let aborts=0;
+ runtime.main.agent.abort=()=>{aborts++;};
+ anyRuntime.speakingTurn=newer;
+ command(runtime,{action:'stop_main',voiceSessionId:old});
+ assert.equal(aborts,0,'late stop must not abort the next main response');
+ command(runtime,{action:'stop_main',voiceSessionId:newer});
+ assert.equal(aborts,1,'matching stop cancels its own main reply');
+ const rejected=JSON.parse(runtime.dispatch(JSON.stringify({action:'stop_main',voiceSessionId:'invalid'})));
+ assert.equal(rejected.ok,false,'malformed scoped abort must not fall back to global cancellation');
+ assert.equal(aborts,1);
+ anyRuntime.speakingTurn=null;
+ anyRuntime.pumping=true; // Freeze the inbox while verifying queued-turn cancellation.
+ command(runtime,{action:'send',text:'queued old',voiceSessionId:old});
+ command(runtime,{action:'send',text:'queued new',voiceSessionId:newer});
+ assert.deepEqual(anyRuntime.inbox.map((item:any)=>item.voiceSessionId),[old,newer]);
+ command(runtime,{action:'stop_main',voiceSessionId:old});
+ assert.deepEqual(anyRuntime.inbox.map((item:any)=>item.voiceSessionId),[newer],
+   'interrupted but not-yet-started requests must never speak later');
+});
+
+test('voice input streams only its own main reply; ordinary turns and worker completions remain silent',async()=>{
+ const bridge=new Bridge(),runtime=new PocketRuntime(bridge);
+ const id='9ac6c359-d522-4fa3-a00b-a7efdf0c9571';
+ command(runtime,{action:'send',text:'hello voice',voiceSessionId:id});
+ await until(()=>!runtime.state().active);
+ const own=bridge.events.filter(e=>e.sessionId===id);
+ assert.ok(own.some(e=>e.type==='voice_delta'&&e.text.includes('Main is responsive: hello voice')));
+ assert.equal(own.filter(e=>e.type==='voice_end').length,1);
+ bridge.events.length=0;
+ command(runtime,{action:'send',text:'hello text'});
+ await until(()=>!runtime.state().active);
+ assert.ok(!bridge.events.some(e=>e.type.startsWith('voice_')));
+ bridge.events.length=0;
+ command(runtime,{action:'send',text:'delegate long task delay=100',voiceSessionId:id});
+ await until(()=>runtime.state().tasks.length===1&&!runtime.state().active);
+ assert.equal(bridge.events.filter(e=>e.type==='voice_end').length,1,'worker completion cannot trigger another spoken turn');
+ bridge.events.length=0;
+ command(runtime,{action:'send',text:'hello bad id',voiceSessionId:'not-a-session-id'});
+ await until(()=>!runtime.state().active);
+ assert.ok(!bridge.events.some(e=>e.type.startsWith('voice_')),'reject unscoped voice output');
+});
