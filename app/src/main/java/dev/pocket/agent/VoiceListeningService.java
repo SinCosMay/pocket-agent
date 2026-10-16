@@ -122,7 +122,7 @@ public final class VoiceListeningService extends Service implements AgentService
             }
             @Override public void onInterim(String text) {
                 main.post(() -> {
-                    if (started && !text.isBlank()) { userSpeaking = true; main.removeCallbacks(idleStop); }
+                    if (started && !text.trim().isEmpty()) { userSpeaking = true; main.removeCallbacks(idleStop); }
                 });
             }
             @Override public void onFirstAudio() {
@@ -247,7 +247,7 @@ public final class VoiceListeningService extends Service implements AgentService
     }
 
     private void sendUtterance(String text) {
-        if (!started || voice == null || text == null || text.isBlank()) return;
+        if (!started || voice == null || text == null || text.trim().isEmpty()) return;
         if (responding) speechStarted();
         userSpeaking = false;
         main.removeCallbacks(idleStop);
