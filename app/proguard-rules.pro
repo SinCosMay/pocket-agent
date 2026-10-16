@@ -38,3 +38,9 @@
 -keep class dev.pocket.agent.WakeWordService { *; }
 -keep class dev.pocket.agent.VoiceListeningService { *; }
 -keep class dev.pocket.agent.VoiceCredentialStore { *; }
+
+# Release instrumentation and native voice transport share OkHttp WebSocket API types.
+-keep class okhttp3.WebSocket { *; }
+-keep class okhttp3.WebSocketListener { *; }
+-keep class okhttp3.Request { *; }
+-keep class okhttp3.Response { *; }
