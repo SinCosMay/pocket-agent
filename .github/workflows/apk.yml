@@ -50,6 +50,11 @@ jobs:
       - uses: gradle/actions/setup-gradle@v4
       - name: Build release and local-emulator tests (no emulator in CI)
         run: ./gradlew --no-daemon :app:assembleRelease :app:assembleReleaseAndroidTest :app:lintRelease :fixture:assembleDebug
+      - name: Enable KVM hardware acceleration for emulator
+        run: |
+          test -c /dev/kvm
+          sudo chmod 666 /dev/kvm
+          test -r /dev/kvm && test -w /dev/kvm
       - name: Exercise voice contract on Android emulator
         uses: reactivecircus/android-emulator-runner@v2
         with:
