@@ -56,7 +56,11 @@ final class JarvisProfile {
         if (!(minimumPositive > maximumNegative))
             throw new IllegalArgumentException("Samples overlap; retake the phrases in a quieter environment");
         Profile profile = new Profile(positive, negative, (minimumPositive + maximumNegative) * 0.5f);
-        AtomicFile file = new AtomicFile(path(context));
+        File profilePath = path(context);
+        File directory = profilePath.getParentFile();
+        if (directory == null || (!directory.isDirectory() && !directory.mkdirs()))
+            throw new IOException("Cannot create wake-word profile directory");
+        AtomicFile file = new AtomicFile(profilePath);
         java.io.FileOutputStream output = file.startWrite();
         try {
             DataOutputStream data = new DataOutputStream(output);
