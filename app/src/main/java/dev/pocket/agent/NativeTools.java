@@ -106,7 +106,7 @@ final class NativeTools implements AutoCloseable {
             "package_name",n.packageName(),"title",n.title(),"text",n.text(),"expanded_text",n.expandedText(),
             "conversation_title",n.conversationTitle(),"group_conversation",n.groupConversation(),"messages",messages);
         if(full.toString().length()<=16000)return full;
-        return Json.obj("notification_key",clip(n.notificationKey(),500),"posted_at_ms",n.postedAt(),
+        return Json.obj("notification_key",clip(n.notificationKey(),1000),"posted_at_ms",n.postedAt(),
             "package_name",n.packageName(),"title",clip(n.title(),200),"text",clip(n.text(),200),
             "content_truncated",true,"message_count",messages.length());
     }

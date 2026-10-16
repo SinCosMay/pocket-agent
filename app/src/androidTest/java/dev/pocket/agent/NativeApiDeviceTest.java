@@ -58,11 +58,12 @@ public class NativeApiDeviceTest {
             serialized.put(Json.obj("sender","Sender","text",control,"timestamp_ms",1000+i));
         }
         dev.pocket.android.AndroidNotificationActions.Entry entry=new dev.pocket.android.AndroidNotificationActions.Entry(
-            "synthetic-key",100L,"dev.pocket.agent","Synthetic","Notification content",
+            "key".repeat(300),100L,"dev.pocket.agent","Synthetic","Notification content",
             "Expanded",null,false,messages);
         JSONObject bounded=NativeTools.boundedNotification(entry,serialized);
         assertTrue("Fallback must fit within page budget",bounded.toString().length()<16000);
         assertTrue("Should disclose compacted notification fields",bounded.getBoolean("content_truncated"));
+        assertEquals("Oversized extras must not corrupt notification identity",entry.notificationKey(),bounded.getString("notification_key"));
         assertEquals(10,bounded.getInt("message_count"));
     }
     @Test public void readSyntheticActiveNotification() throws Exception {
