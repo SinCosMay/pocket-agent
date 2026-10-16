@@ -236,15 +236,28 @@ final class NativeTools implements AutoCloseable {
             }
             case "phone_notification_read": {
                 JSONArray notifications=new JSONArray();
+                int offset=a.optInt("offset",0);
                 AndroidNotificationActions reader=new AndroidNotificationActions(PhoneNotifications.connected);
-                for(AndroidNotificationActions.Entry n:reader.read(string(a,"package_name"),a.optInt("limit",20))) {
+                AndroidNotificationActions.Page page=reader.readPage(string(a,"package_name"),offset,a.optInt("limit",20));
+                boolean byteLimited=false;
+                int characters=0;
+                for(AndroidNotificationActions.Entry n:page.entries()) {
                     JSONArray messages=new JSONArray();
                     for(AndroidNotificationActions.Message m:n.messages()) messages.put(Json.obj("sender",m.sender(),"text",m.text(),"timestamp_ms",m.timestamp()));
-                    notifications.put(Json.obj("notification_key",n.notificationKey(),"posted_at_ms",n.postedAt(),
+                    JSONObject entry=Json.obj("notification_key",n.notificationKey(),"posted_at_ms",n.postedAt(),
                         "package_name",n.packageName(),"title",n.title(),"text",n.text(),"expanded_text",n.expandedText(),
-                        "conversation_title",n.conversationTitle(),"group_conversation",n.groupConversation(),"messages",messages));
+                        "conversation_title",n.conversationTitle(),"group_conversation",n.groupConversation(),"messages",messages);
+                    // The JS bridge rejects responses above 32K characters. Reserve ample
+                    // space for the envelope and escape expansion while keeping pagination usable.
+                    int entryCharacters=entry.toString().length()+1;
+                    if(characters+entryCharacters>20000) {byteLimited=true;break;}
+                    notifications.put(entry);
+                    characters+=entryCharacters;
                 }
-                return Json.tool(Json.obj("notifications",notifications,"scope_note","Active notifications only, not arbitrary historical conversations; content may be redacted by the posting app."));
+                boolean truncated=byteLimited||page.hasMore();
+                return Json.tool(Json.obj("notifications",notifications,"truncated",truncated,
+                    "next_offset",truncated?offset+notifications.length():null,
+                    "scope_note","Active notifications only, not historical conversations. Offset pagination is best-effort when active notifications change."));
             }
             case "phone_reply":return outcome(new AndroidNotificationActions(PhoneNotifications.connected).reply(a.getString("notification_key"),a.getLong("posted_at_ms"),a.getInt("action_index"),a.getString("text")));
             case "phone_media":return outcome(new AndroidMediaActions(context,new ComponentName(context,PhoneNotifications.class)).control(a.getString("package_name"),a.getString("action"),a.optLong("position_ms",0)));

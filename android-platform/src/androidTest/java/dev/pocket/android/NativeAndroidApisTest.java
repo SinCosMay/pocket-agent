@@ -16,7 +16,8 @@ public class NativeAndroidApisTest {
     private Context context() {return InstrumentationRegistry.getInstrumentation().getTargetContext();}
     @Test public void invalidCallCannotDial() throws Exception {
         Context c=context();
-        if(c.checkSelfPermission(Manifest.permission.CALL_PHONE)!=PackageManager.PERMISSION_GRANTED)return;
+        assertEquals("Grant CALL_PHONE to the test APK before running this case; otherwise invalid-call handling is not tested.",
+            PackageManager.PERMISSION_GRANTED,c.checkSelfPermission(Manifest.permission.CALL_PHONE));
         AndroidSystemActions system=new AndroidSystemActions(c);
         try {
             system.callNumber("not-a-number",null,false);

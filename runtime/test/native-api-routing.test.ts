@@ -27,7 +27,7 @@ test('URL and Clock intents use private-display lease and mutation IDs',async()=
   ensureDisplay:async()=>{acquired++;return {status:'acquired'};},
   call:(_method:string,args:any)=>{
    assert.ok(['phone_open_url','phone_clock_screen'].includes(args.name));
-   assert.ok(args.args.operation_id);
+   assert.equal(args.args.operation_id,args.name==='phone_open_url'?op:op+'_clock');
    dispatched++;return {status:'requested'};
   },
  };
@@ -37,6 +37,7 @@ test('URL and Clock intents use private-display lease and mutation IDs',async()=
  const clock=all.find((x:any)=>x.name==='phone_clock_screen')!;
  assert.ok(url&&clock);
  assert.deepEqual(validateToolArguments(url,{type:'toolCall',id:'u',name:url.name,arguments:{url:'https://example.org',operation_id:op}}),{url:'https://example.org',operation_id:op});
+ assert.deepEqual(validateToolArguments(url,{type:'toolCall',id:'short',name:url.name,arguments:{url:'http://a',operation_id:op}}),{url:'http://a',operation_id:op});
  assert.throws(()=>validateToolArguments(url,{type:'toolCall',id:'u',name:url.name,arguments:{url:'https://example.org'}}),/operation_id/);
  assert.throws(()=>validateToolArguments(clock,{type:'toolCall',id:'c',name:clock.name,arguments:{screen:'emails',operation_id:op}}),/screen/);
  await url.execute('u',{url:'https://example.org',operation_id:op});

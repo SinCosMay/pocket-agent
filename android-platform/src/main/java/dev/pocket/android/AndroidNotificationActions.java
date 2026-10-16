@@ -22,38 +22,51 @@ public final class AndroidNotificationActions {
     public record Entry(String notificationKey,long postedAt,String packageName,String title,String text,
                         String expandedText,String conversationTitle,Boolean groupConversation,List<Message> messages) {}
 
-    /** Only active notifications exposed by the user's authorized notification listener; never app chat history. */
+    public record Page(List<Entry> entries,boolean hasMore) {}
+
+    /** Active notifications only; offsets are best-effort because notifications can change between reads. */
     public List<Entry> read(String packageName,int limit) throws ControlException {
-        if(limit<1 || limit>50 || (packageName!=null && (!packageName.matches("[A-Za-z0-9_]+(\\.[A-Za-z0-9_]+)+") || packageName.length()>200)))
-            throw new ControlException(INVALID_ARGUMENT,"Optional Android package name and limit 1..50 required");
+        return readPage(packageName,0,limit).entries();
+    }
+
+    public Page readPage(String packageName,int offset,int limit) throws ControlException {
+        if(limit<1 || limit>50 || offset<0 || offset>1000 ||
+            (packageName!=null && (!packageName.matches("[A-Za-z0-9_]+(\\.[A-Za-z0-9_]+)+") || packageName.length()>200)))
+            throw new ControlException(INVALID_ARGUMENT,"Optional package name, offset 0..1000 and limit 1..50 required");
         List<Entry> result=new ArrayList<>();
         StatusBarNotification[] items=active();
         java.util.Arrays.sort(items,(a,b)->Long.compare(b.getPostTime(),a.getPostTime()));
+        int skipped=0;
         for(StatusBarNotification item:items) {
             if(packageName!=null && !packageName.equals(item.getPackageName()))continue;
-            Notification n=item.getNotification();
-            Bundle extras=n.extras;
-            List<Message> messages=new ArrayList<>();
             try {
-                Parcelable[] bundled=extras.getParcelableArray(Notification.EXTRA_MESSAGES);
-                if(bundled!=null) {
-                    List<Notification.MessagingStyle.Message> parsed=Notification.MessagingStyle.Message.getMessagesFromBundleArray(bundled);
-                    for(int i=Math.max(0,parsed.size()-10);i<parsed.size();i++) {
-                        Notification.MessagingStyle.Message message=parsed.get(i);
-                        messages.add(new Message(clipped(message.getSender()),clipped(message.getText()),message.getTimestamp()));
+                Notification n=item.getNotification();
+                if(n==null || n.extras==null)continue;
+                Bundle extras=n.extras;
+                List<Message> messages=new ArrayList<>();
+                try {
+                    Parcelable[] bundled=extras.getParcelableArray(Notification.EXTRA_MESSAGES);
+                    if(bundled!=null) {
+                        List<Notification.MessagingStyle.Message> parsed=Notification.MessagingStyle.Message.getMessagesFromBundleArray(bundled);
+                        for(int i=Math.max(0,parsed.size()-10);i<parsed.size();i++) {
+                            Notification.MessagingStyle.Message message=parsed.get(i);
+                            messages.add(new Message(clipped(message.getSender(),100),clipped(message.getText(),500),message.getTimestamp()));
+                        }
                     }
-                }
-            }catch(RuntimeException ignored) { /* One malformed notification must not abort the whole read. */ }
-            result.add(new Entry(item.getKey(),item.getPostTime(),item.getPackageName(),
-                clipped(extras.getCharSequence(Notification.EXTRA_TITLE)),
-                clipped(extras.getCharSequence(Notification.EXTRA_TEXT)),
-                clipped(extras.getCharSequence(Notification.EXTRA_BIG_TEXT)),
-                clipped(extras.getCharSequence(Notification.EXTRA_CONVERSATION_TITLE)),
-                extras.containsKey(Notification.EXTRA_IS_GROUP_CONVERSATION)?extras.getBoolean(Notification.EXTRA_IS_GROUP_CONVERSATION):null,
-                messages));
-            if(result.size()==limit)break;
+                }catch(RuntimeException ignored) { /* A malformed message history need not hide valid metadata. */ }
+                Entry entry=new Entry(item.getKey(),item.getPostTime(),item.getPackageName(),
+                    clipped(extras.getCharSequence(Notification.EXTRA_TITLE)),
+                    clipped(extras.getCharSequence(Notification.EXTRA_TEXT)),
+                    clipped(extras.getCharSequence(Notification.EXTRA_BIG_TEXT)),
+                    clipped(extras.getCharSequence(Notification.EXTRA_CONVERSATION_TITLE)),
+                    extras.containsKey(Notification.EXTRA_IS_GROUP_CONVERSATION)?extras.getBoolean(Notification.EXTRA_IS_GROUP_CONVERSATION):null,
+                    messages);
+                if(skipped<offset){skipped++;continue;}
+                if(result.size()==limit)return new Page(result,true);
+                result.add(entry);
+            }catch(RuntimeException ignored) { /* Skip one malformed notification without discarding the rest. */ }
         }
-        return result;
+        return new Page(result,false);
     }
 
     public List<Reply> replies() throws ControlException {
@@ -74,7 +87,8 @@ public final class AndroidNotificationActions {
         }
         return result;
     }
-    private static String clipped(CharSequence value) {String s=value==null?"":value.toString();return s.length()>1000?s.substring(0,1000):s;}
+    private static String clipped(CharSequence value) {return clipped(value,1000);}
+    private static String clipped(CharSequence value,int max) {String s=value==null?"":value.toString();return s.length()>max?s.substring(0,max):s;}
 
     public AndroidSystemActions.Outcome reply(String key,long postedAt,int actionIndex,String text) throws ControlException {
         if(text==null || text.trim().isEmpty() || text.length()>20000) throw new ControlException(INVALID_ARGUMENT,"Reply text required");

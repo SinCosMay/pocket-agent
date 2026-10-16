@@ -226,7 +226,7 @@
       "properties": {
         "url": {
           "type": "string",
-          "minLength": 10,
+          "minLength": 8,
           "maxLength": 2048
         },
         "operation_id": {
@@ -607,7 +607,7 @@
   },
   {
     "name": "phone_notification_read",
-    "description": "Read bounded content from currently active Android notifications (not an arbitrary chat history). Requires an authorized notification listener. Optional package filter.",
+    "description": "Read a bounded page of current notifications (not chat history). offset is a best-effort paging cursor; use next_offset when truncated. Requires notification listener access.",
     "inputSchema": {
       "type": "object",
       "properties": {
@@ -620,6 +620,11 @@
           "type": "integer",
           "minimum": 1,
           "maximum": 50
+        },
+        "offset": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 1000
         }
       },
       "required": [],

@@ -52,6 +52,14 @@ public class NativeApiDeviceTest {
     @Test public void readSyntheticActiveNotification() throws Exception {
         assertNotNull("Enable the authorized notification listener on emulator before this test",PhoneNotifications.connected);
         Context c=context();
+        if(c.checkSelfPermission(Manifest.permission.POST_NOTIFICATIONS)!=android.content.pm.PackageManager.PERMISSION_GRANTED) {
+            android.app.UiAutomation automation=InstrumentationRegistry.getInstrumentation().getUiAutomation();
+            automation.adoptShellPermissionIdentity(Manifest.permission.GRANT_RUNTIME_PERMISSIONS);
+            try {automation.grantRuntimePermission(c.getPackageName(),Manifest.permission.POST_NOTIFICATIONS);}
+            finally {automation.dropShellPermissionIdentity();}
+        }
+        assertEquals("Notification test requires POST_NOTIFICATIONS",android.content.pm.PackageManager.PERMISSION_GRANTED,
+            c.checkSelfPermission(Manifest.permission.POST_NOTIFICATIONS));
         NotificationManager manager=c.getSystemService(NotificationManager.class);
         String channel="pocket-native-api-instrumentation";
         manager.createNotificationChannel(new NotificationChannel(channel,"Pocket test",NotificationManager.IMPORTANCE_DEFAULT));
@@ -60,15 +68,31 @@ public class NativeApiDeviceTest {
             manager.notify(id,new Notification.Builder(c,channel).setSmallIcon(android.R.drawable.ic_dialog_info)
                 .setContentTitle("Pocket native test").setContentText("Synthetic notification content").build());
             JSONObject result=new JSONObject();
-            for(int n=0;n<25;n++) {
+            boolean found=false;
+            for(int n=0;n<25&&!found;n++) {
                 result=tools.execute("phone_notification_read",new JSONObject()
                     .put("package_name","dev.pocket.agent").put("limit",30),"emulator-notification-tests");
                 JSONArray entries=result.optJSONArray("notifications");
                 if(entries!=null)for(int i=0;i<entries.length();i++)
-                    if("Synthetic notification content".equals(entries.getJSONObject(i).optString("text")))return;
-                Thread.sleep(150);
+                    if("Synthetic notification content".equals(entries.getJSONObject(i).optString("text")))found=true;
+                if(!found)Thread.sleep(150);
             }
-            fail("Posted test notification not returned by listener: "+result);
-        }finally {manager.cancel(id);}
+            assertTrue("Posted test notification not returned by listener: "+result,found);
+            String longText="n".repeat(1000);
+            for(int i=1;i<=35;i++)manager.notify(id+i,new Notification.Builder(c,channel)
+                .setSmallIcon(android.R.drawable.ic_dialog_info).setContentTitle("Pocket volume "+i)
+                .setContentText(longText).build());
+            Thread.sleep(400);
+            JSONObject first=tools.execute("phone_notification_read",new JSONObject()
+                .put("package_name","dev.pocket.agent").put("limit",50),"emulator-notification-tests");
+            assertFalse(first.toString(),first.optBoolean("isError"));
+            assertTrue("Response exceeded embedded JS limit",first.toString().length()<32000);
+            assertTrue("Expected bounded output to report truncation",first.optBoolean("truncated"));
+            int offset=first.getInt("next_offset");
+            assertTrue("Pagination must advance",offset>0);
+            JSONObject second=tools.execute("phone_notification_read",new JSONObject()
+                .put("package_name","dev.pocket.agent").put("offset",offset).put("limit",50),"emulator-notification-tests");
+            assertTrue("Pagination must return further notifications",second.getJSONArray("notifications").length()>0);
+        }finally {for(int i=0;i<=35;i++)manager.cancel(id+i);}
     }
 }
