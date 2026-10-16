@@ -1,6 +1,7 @@
 package dev.pocket.android;
 
 import android.app.Notification;
+import android.os.Parcelable;
 import android.app.PendingIntent;
 import android.app.RemoteInput;
 import android.content.Intent;
@@ -17,6 +18,43 @@ public final class AndroidNotificationActions {
     private final NotificationListenerService listener;
     public AndroidNotificationActions(NotificationListenerService connectedListener) { listener=connectedListener; }
     public record Reply(String notificationKey,long postedAt,String packageName,int actionIndex,String label,String title,String conversationTitle,Boolean groupConversation) {}
+    public record Message(String sender,String text,long timestamp) {}
+    public record Entry(String notificationKey,long postedAt,String packageName,String title,String text,
+                        String expandedText,String conversationTitle,Boolean groupConversation,List<Message> messages) {}
+
+    /** Only active notifications exposed by the user's authorized notification listener; never app chat history. */
+    public List<Entry> read(String packageName,int limit) throws ControlException {
+        if(limit<1 || limit>50 || (packageName!=null && (!packageName.matches("[A-Za-z0-9_]+(\\.[A-Za-z0-9_]+)+") || packageName.length()>200)))
+            throw new ControlException(INVALID_ARGUMENT,"Optional Android package name and limit 1..50 required");
+        List<Entry> result=new ArrayList<>();
+        StatusBarNotification[] items=active();
+        java.util.Arrays.sort(items,(a,b)->Long.compare(b.getPostTime(),a.getPostTime()));
+        for(StatusBarNotification item:items) {
+            if(packageName!=null && !packageName.equals(item.getPackageName()))continue;
+            Notification n=item.getNotification();
+            Bundle extras=n.extras;
+            List<Message> messages=new ArrayList<>();
+            Parcelable[] bundled=extras.getParcelableArray(Notification.EXTRA_MESSAGES);
+            if(bundled!=null) {
+                try {
+                    List<Notification.MessagingStyle.Message> parsed=Notification.MessagingStyle.Message.getMessagesFromBundleArray(bundled);
+                    for(int i=Math.max(0,parsed.size()-10);i<parsed.size();i++) {
+                        Notification.MessagingStyle.Message message=parsed.get(i);
+                        messages.add(new Message(clipped(message.getSender()),clipped(message.getText()),message.getTimestamp()));
+                    }
+                }catch(RuntimeException ignored) { /* Untrusted app extras may be malformed. */ }
+            }
+            result.add(new Entry(item.getKey(),item.getPostTime(),item.getPackageName(),
+                clipped(extras.getCharSequence(Notification.EXTRA_TITLE)),
+                clipped(extras.getCharSequence(Notification.EXTRA_TEXT)),
+                clipped(extras.getCharSequence(Notification.EXTRA_BIG_TEXT)),
+                clipped(extras.getCharSequence(Notification.EXTRA_CONVERSATION_TITLE)),
+                extras.containsKey(Notification.EXTRA_IS_GROUP_CONVERSATION)?extras.getBoolean(Notification.EXTRA_IS_GROUP_CONVERSATION):null,
+                messages));
+            if(result.size()==limit)break;
+        }
+        return result;
+    }
 
     public List<Reply> replies() throws ControlException {
         List<Reply> result=new ArrayList<>();

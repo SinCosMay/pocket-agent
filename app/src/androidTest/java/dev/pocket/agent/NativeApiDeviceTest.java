@@ -1,0 +1,74 @@
+package dev.pocket.agent;
+
+import android.Manifest;
+import android.app.Notification;
+import android.app.NotificationChannel;
+import android.app.NotificationManager;
+import android.content.Context;
+import androidx.test.ext.junit.runners.AndroidJUnit4;
+import androidx.test.platform.app.InstrumentationRegistry;
+import org.json.JSONArray;
+import org.json.JSONObject;
+import org.junit.Test;
+import org.junit.runner.RunWith;
+import static org.junit.Assert.*;
+
+/** Emulator-only native capability tests: never places a real call or sends a message. */
+@RunWith(AndroidJUnit4.class)
+public class NativeApiDeviceTest {
+    private Context context() {return InstrumentationRegistry.getInstrumentation().getTargetContext();}
+    @Test public void directApiValidationAndCalendarRead() throws Exception {
+        NativeTools tools=new NativeTools(context());
+        try {
+            JSONArray list=tools.list();
+            for(String required:new String[]{"phone_calendar_events","phone_notification_read","phone_open_url","phone_clock_screen"}) {
+                boolean found=false;
+                for(int i=0;i<list.length();i++)if(list.getJSONObject(i).getString("name").equals(required))found=true;
+                assertTrue("Missing native tool: "+required,found);
+            }
+            String operationId=tools.execute("phone_capabilities",new JSONObject(),"emulator-native-tests")
+                .getString("operation_prefix")+"_badurl0001";
+            JSONObject invalid=tools.execute("phone_open_url",new JSONObject()
+                .put("url","javascript:alert(1)").put("operation_id",operationId),"emulator-native-tests");
+            assertEquals(invalid.toString(),"INVALID_ARGUMENT",invalid.optString("code"));
+            JSONObject badClock=tools.execute("phone_clock_screen",new JSONObject().put("screen","unsupported").put("operation_id","fake"),"emulator-native-tests");
+            assertEquals(badClock.toString(),"INVALID_ARGUMENT",badClock.optString("code"));
+            JSONObject invalidWindow=tools.execute("phone_calendar_events",new JSONObject().put("start_ms",1000).put("end_ms",999),"emulator-native-tests");
+            assertEquals(invalidWindow.toString(),"INVALID_ARGUMENT",invalidWindow.optString("code"));
+            if(context().checkSelfPermission(Manifest.permission.READ_CALENDAR)==android.content.pm.PackageManager.PERMISSION_GRANTED) {
+                long now=System.currentTimeMillis();
+                JSONObject result=tools.execute("phone_calendar_events",new JSONObject().put("start_ms",now).put("end_ms",now+86400000L),"emulator-native-tests");
+                assertFalse(result.toString(),result.optBoolean("isError"));
+                assertNotNull(result.toString(),result.optJSONArray("events"));
+                JSONObject calendars=tools.execute("phone_calendars",new JSONObject(),"emulator-native-tests");
+                assertFalse(calendars.toString(),calendars.optBoolean("isError"));
+                assertNotNull(calendars.toString(),calendars.optJSONArray("calendars"));
+            } else {
+                JSONObject denied=tools.execute("phone_calendars",new JSONObject(),"emulator-native-tests");
+                assertEquals(denied.toString(),"PERMISSION_REQUIRED",denied.optString("code"));
+            }
+        } finally {tools.close();}
+    }
+    @Test public void readSyntheticActiveNotification() throws Exception {
+        assertNotNull("Enable the authorized notification listener on emulator before this test",PhoneNotifications.connected);
+        Context c=context();
+        NotificationManager manager=c.getSystemService(NotificationManager.class);
+        String channel="pocket-native-api-instrumentation";
+        manager.createNotificationChannel(new NotificationChannel(channel,"Pocket test",NotificationManager.IMPORTANCE_DEFAULT));
+        int id=46071;
+        try(NativeTools tools=new NativeTools(c)) {
+            manager.notify(id,new Notification.Builder(c,channel).setSmallIcon(android.R.drawable.ic_dialog_info)
+                .setContentTitle("Pocket native test").setContentText("Synthetic notification content").build());
+            JSONObject result=new JSONObject();
+            for(int n=0;n<25;n++) {
+                result=tools.execute("phone_notification_read",new JSONObject()
+                    .put("package_name","dev.pocket.agent").put("limit",30),"emulator-notification-tests");
+                JSONArray entries=result.optJSONArray("notifications");
+                if(entries!=null)for(int i=0;i<entries.length();i++)
+                    if("Synthetic notification content".equals(entries.getJSONObject(i).optString("text")))return;
+                Thread.sleep(150);
+            }
+            fail("Posted test notification not returned by listener: "+result);
+        }finally {manager.cancel(id);}
+    }
+}

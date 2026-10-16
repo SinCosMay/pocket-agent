@@ -50,8 +50,8 @@ export function nativeTools(host:any,owner:string,grant?:readonly string[]):any[
         }
         if(args.action==='acquire'&&host.ensureDisplay)return toolResult(await host.ensureDisplay(owner,signal));
       }
-      const needsUi=s.name==='phone_observe'||s.name==='phone_act'||s.name==='phone_open_app'||
-        (s.name==='phone_batch'&&args.calls?.some((c:any)=>['phone_observe','phone_act','phone_open_app'].includes(c.name)));
+      const needsUi=s.name==='phone_observe'||s.name==='phone_act'||s.name==='phone_open_app'||s.name==='phone_open_url'||s.name==='phone_clock_screen'||
+        (s.name==='phone_batch'&&args.calls?.some((c:any)=>['phone_observe','phone_act','phone_open_app','phone_open_url','phone_clock_screen'].includes(c.name)));
       if(needsUi&&host.ensureDisplay){
         const result=await host.ensureDisplay(owner,signal);
         if(result?.isError)return toolResult(result);

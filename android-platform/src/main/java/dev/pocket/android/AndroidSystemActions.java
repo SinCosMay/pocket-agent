@@ -27,7 +27,7 @@ public final class AndroidSystemActions {
     private final Context context;
     public AndroidSystemActions(Context context) { this.context=context.getApplicationContext(); }
     public record Contact(long contactId,String name,String number) {}
-    public record Calendar(long id,String name,boolean writable) {}
+    public record Calendar(long id,String name,boolean writable,String accountName,String accountType,String ownerAccount,boolean visible) {}
     public record CalendarEvent(long eventId,long calendarId,String title,long startMillis,long endMillis,boolean allDay,String timezone) {}
     public record CalendarEvents(List<CalendarEvent> events,boolean truncated) {}
     public record Outcome(String status,String reference,String message) {}
@@ -78,10 +78,6 @@ public final class AndroidSystemActions {
     public Outcome callNumber(String number,PhoneAccountHandle account,boolean speaker) throws ControlException {
         requirePermission(Manifest.permission.CALL_PHONE);
         String normalized=normalizePhone(number);
-        String feature=android.os.Build.VERSION.SDK_INT>=33?PackageManager.FEATURE_TELEPHONY_CALLING:PackageManager.FEATURE_TELEPHONY;
-        if(!context.getPackageManager().hasSystemFeature(feature)) {
-            throw new ControlException(UNSUPPORTED,"Device has no telephony calling feature");
-        }
         TelecomManager telecom=context.getSystemService(TelecomManager.class);
         if(telecom==null) throw new ControlException(NOT_READY,"Telecom service unavailable");
         Bundle extras=new Bundle();
@@ -89,6 +85,7 @@ public final class AndroidSystemActions {
         extras.putBoolean(TelecomManager.EXTRA_START_CALL_WITH_SPEAKERPHONE,speaker);
         try { telecom.placeCall(Uri.fromParts("tel",normalized,null),extras); }
         catch(SecurityException e) { throw new ControlException(PERMISSION_REQUIRED,"Android denied phone-call permission"); }
+        catch(IllegalArgumentException | UnsupportedOperationException e) { throw new ControlException(UNSUPPORTED,"Android Telecom rejected the requested call"); }
         return new Outcome("requested",normalized,"System call requested; observe call state before reporting connection");
     }
 
@@ -125,10 +122,13 @@ public final class AndroidSystemActions {
         requirePermission(Manifest.permission.READ_CALENDAR);
         List<Calendar> result=new ArrayList<>();
         String[] columns={CalendarContract.Calendars._ID,CalendarContract.Calendars.CALENDAR_DISPLAY_NAME,
-            CalendarContract.Calendars.CALENDAR_ACCESS_LEVEL};
+            CalendarContract.Calendars.CALENDAR_ACCESS_LEVEL,CalendarContract.Calendars.ACCOUNT_NAME,
+            CalendarContract.Calendars.ACCOUNT_TYPE,CalendarContract.Calendars.OWNER_ACCOUNT,
+            CalendarContract.Calendars.VISIBLE};
         try(Cursor c=context.getContentResolver().query(CalendarContract.Calendars.CONTENT_URI,columns,null,null,null)) {
             if(c!=null) while(c.moveToNext()) result.add(new Calendar(c.getLong(0),c.getString(1),
-                c.getInt(2)>=CalendarContract.Calendars.CAL_ACCESS_CONTRIBUTOR));
+                c.getInt(2)>=CalendarContract.Calendars.CAL_ACCESS_CONTRIBUTOR,
+                c.getString(3),c.getString(4),c.getString(5),c.getInt(6)!=0));
         }
         return result;
     }

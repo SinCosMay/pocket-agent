@@ -114,13 +114,18 @@ final class NativeTools implements AutoCloseable {
         return result;
     }
     private PhoneAccountHandle account(String id) throws ControlException {
-        if(context.checkSelfPermission(Manifest.permission.READ_PHONE_STATE)!=PackageManager.PERMISSION_GRANTED) throw new ControlException(PERMISSION_REQUIRED,"Grant phone-state access to select a SIM");
+        // Without an explicit account, Telecom can use the configured default.
+        if(context.checkSelfPermission(Manifest.permission.READ_PHONE_STATE)!=PackageManager.PERMISSION_GRANTED) {
+            if(id!=null) throw new ControlException(PERMISSION_REQUIRED,"Grant phone-state access to select a SIM");
+            return null;
+        }
         TelecomManager manager=context.getSystemService(TelecomManager.class);if(manager==null) throw new ControlException(NOT_READY,"Telecom unavailable");List<PhoneAccountHandle> accounts;
         try {accounts=manager.getCallCapablePhoneAccounts();}catch(SecurityException denied) {throw new ControlException(PERMISSION_REQUIRED,"Android denied phone-account access");}
         if(id!=null) for(PhoneAccountHandle handle:accounts) if(accountId(handle).equals(id)) return handle;
         if(id!=null) throw new ControlException(INVALID_ARGUMENT,"Unknown phone account ID");
         if(accounts.size()>1) throw new ControlException(AMBIGUOUS_TARGET,"Choose phone_account_id from phone_capabilities for dual-SIM calling");
-        if(accounts.isEmpty()) throw new ControlException(NOT_READY,"No callable SIM/account");return accounts.get(0);
+        if(accounts.isEmpty()) return null;
+        return accounts.get(0);
     }
     private static String accountId(PhoneAccountHandle account) {return account.getComponentName().flattenToString()+"#"+account.getId();}
     private PendingIntent receipt(String op,String stage,int part) {
@@ -178,6 +183,23 @@ final class NativeTools implements AutoCloseable {
                 displays.launch(owner,launch.getComponent().flattenToString());
                 return Json.tool(Json.obj("status","requested","package_name",pkg,"display_id",displays.display(owner),"message","Launch requested on the private virtual display; verify with phone_observe."));
             }
+            case "phone_open_url": {
+                String raw=a.getString("url");
+                Uri uri=Uri.parse(raw);
+                if(!("https".equalsIgnoreCase(uri.getScheme())||"http".equalsIgnoreCase(uri.getScheme())) ||
+                    uri.getHost()==null || uri.getHost().isBlank() || uri.getUserInfo()!=null ||
+                    raw.length()>2048 || raw.contains("\n") || raw.contains("\r"))
+                    throw new ControlException(INVALID_ARGUMENT,"Provide an HTTP(S) URL without embedded credentials or control characters");
+                displays.openUrl(owner,uri.toString());
+                return Json.tool(Json.obj("status","requested","display_id",displays.display(owner),
+                    "message","URL launch requested on the virtual display; verify in phone_observe."));
+            }
+            case "phone_clock_screen": {
+                String screen=a.getString("screen");
+                displays.showClock(owner,screen);
+                return Json.tool(Json.obj("status","requested","display_id",displays.display(owner),
+                    "message","Clock screen requested; read alarms/timers from the UI, not from an unsupported provider API."));
+            }
             case "phone_contacts": {
                 JSONArray contacts=new JSONArray();for(AndroidSystemActions.Contact c:system.findContacts(a.getString("query"),a.optInt("limit",20))) contacts.put(Json.obj("contact_id",c.contactId(),"name",c.name(),"number",c.number()));return Json.tool(Json.obj("contacts",contacts));
             }
@@ -188,7 +210,7 @@ final class NativeTools implements AutoCloseable {
                 return outcome(a.has("name")?system.callContact(a.getString("name"),handle,speaker):system.callNumber(a.getString("number"),handle,speaker));
             }
             case "phone_calendars": {
-                JSONArray calendars=new JSONArray();for(AndroidSystemActions.Calendar c:system.calendars()) calendars.put(Json.obj("id",c.id(),"name",c.name(),"writable",c.writable()));return Json.tool(Json.obj("calendars",calendars));
+                JSONArray calendars=new JSONArray();for(AndroidSystemActions.Calendar c:system.calendars()) calendars.put(Json.obj("id",c.id(),"name",c.name(),"writable",c.writable(),"account_name",c.accountName(),"account_type",c.accountType(),"owner_account",c.ownerAccount(),"visible",c.visible()));return Json.tool(Json.obj("calendars",calendars));
             }
             case "phone_calendar_events": {
                 AndroidSystemActions.CalendarEvents result=system.calendarEvents(a.getLong("start_ms"),a.getLong("end_ms"),
@@ -211,6 +233,18 @@ final class NativeTools implements AutoCloseable {
             }
             case "phone_notifications": {
                 JSONArray replies=new JSONArray();for(AndroidNotificationActions.Reply r:new AndroidNotificationActions(PhoneNotifications.connected).replies()) replies.put(Json.obj("notification_key",r.notificationKey(),"posted_at_ms",r.postedAt(),"package_name",r.packageName(),"action_index",r.actionIndex(),"label",r.label(),"title",r.title(),"conversation_title",r.conversationTitle(),"group_conversation",r.groupConversation(),"identity_note","Titles are recipient hints, not contact identity proof; distinguish group conversations before replying"));return Json.tool(Json.obj("reply_actions",replies));
+            }
+            case "phone_notification_read": {
+                JSONArray notifications=new JSONArray();
+                AndroidNotificationActions reader=new AndroidNotificationActions(PhoneNotifications.connected);
+                for(AndroidNotificationActions.Entry n:reader.read(string(a,"package_name"),a.optInt("limit",20))) {
+                    JSONArray messages=new JSONArray();
+                    for(AndroidNotificationActions.Message m:n.messages()) messages.put(Json.obj("sender",m.sender(),"text",m.text(),"timestamp_ms",m.timestamp()));
+                    notifications.put(Json.obj("notification_key",n.notificationKey(),"posted_at_ms",n.postedAt(),
+                        "package_name",n.packageName(),"title",n.title(),"text",n.text(),"expanded_text",n.expandedText(),
+                        "conversation_title",n.conversationTitle(),"group_conversation",n.groupConversation(),"messages",messages));
+                }
+                return Json.tool(Json.obj("notifications",notifications,"scope_note","Active notifications only, not arbitrary historical conversations; content may be redacted by the posting app."));
             }
             case "phone_reply":return outcome(new AndroidNotificationActions(PhoneNotifications.connected).reply(a.getString("notification_key"),a.getLong("posted_at_ms"),a.getInt("action_index"),a.getString("text")));
             case "phone_media":return outcome(new AndroidMediaActions(context,new ComponentName(context,PhoneNotifications.class)).control(a.getString("package_name"),a.getString("action"),a.optLong("position_ms",0)));
