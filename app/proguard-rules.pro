@@ -26,7 +26,3 @@
 -keep class dev.pocket.agent.VoiceTextChunker { *; }
 
 -keep class dev.pocket.agent.MemoryStore { *; }
-
-# Release instrumentation exercises delayed socket delivery against real AudioRecord.
--keep class dev.pocket.agent.DeepgramVoice* { *; }
--keep class dev.pocket.agent.PcmCaptureQueue { *; }

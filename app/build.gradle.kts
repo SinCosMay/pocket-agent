@@ -25,7 +25,7 @@ android {
         release { testProguardFiles.add(file("test-proguard-rules.pro")); signingConfig = signingConfigs.getByName("distribution"); isMinifyEnabled = true; isShrinkResources = true; proguardFiles(getDefaultProguardFile("proguard-android-optimize.txt"), "proguard-rules.pro") }
     }
     splits { abi { isEnable=true; reset(); include("arm64-v8a", "x86_64"); isUniversalApk=true } }
-    testBuildType = "release"
+    testBuildType = if (providers.gradleProperty("voiceEmulatorTest").isPresent) "debug" else "release"
     lint { textReport=true; textOutput=file("build/reports/lint-results-release.txt") }
     packaging { jniLibs { useLegacyPackaging = true }; resources { excludes += "META-INF/DEPENDENCIES" } }
 }
