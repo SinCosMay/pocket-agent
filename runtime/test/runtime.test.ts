@@ -384,7 +384,7 @@ test('registered speak_to_user tool requests optional speech without asserting d
  assert.equal(bridge.events.filter(e=>e.type==='voice_announce').at(-1).message,'Reminder at six.');
  assert.equal(bridge.events.filter(e=>e.type==='voice_announce').at(-1).listenAfter,false);
  assert.equal(bridge.events.filter(e=>e.type==='voice_announce').at(-1).owner,'worker-test');
- assert.match(bridge.events.filter(e=>e.type==='voice_announce').at(-1).id,/^[0-9a-f-]{36}$/);
+ assert.match(bridge.events.filter(e=>e.type==='voice_announce').at(-1).id,/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/);
  await main.execute('speak2',{message:'Please reply'});
  assert.equal(bridge.events.filter(e=>e.type==='voice_announce').at(-1).owner,'main');
  assert.equal(bridge.events.filter(e=>e.type==='voice_announce').at(-1).listenAfter,true);

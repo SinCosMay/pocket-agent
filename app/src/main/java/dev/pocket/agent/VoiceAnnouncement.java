@@ -39,7 +39,7 @@ final class VoiceAnnouncement {
         String message = intent.getStringExtra("message");
         if (id == null || message == null) throw new IllegalArgumentException("Missing speech request");
         UUID.fromString(id);
-        if (message.isBlank() || message.length() > 800)
+        if (message.trim().isEmpty() || message.length() > 800)
             throw new IllegalArgumentException("Invalid speech request length");
         return new VoiceAnnouncement(id, message.trim(), intent.getBooleanExtra("listenAfter", true));
     }

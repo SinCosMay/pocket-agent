@@ -5,6 +5,7 @@ import android.app.NotificationChannel;
 import android.app.NotificationManager;
 import android.app.PendingIntent;
 import android.app.Service;
+import android.content.Context;
 import android.util.Log;
 import android.content.Intent;
 import android.content.pm.ServiceInfo;
@@ -74,6 +75,25 @@ public final class AgentService extends Service {
         }
         return START_NOT_STICKY;
     }
+    static void reportVoiceFailure(Context context, String id, String reason) {
+        try {
+            JSONObject event = new JSONObject().put("type", "voice_delivery_error")
+                .put("id", id).put("error", reason).put("atMs", System.currentTimeMillis());
+            try (StateStore store = new StateStore(context)) { store.record(event); }
+            NotificationManager notifications = context.getSystemService(NotificationManager.class);
+            notifications.createNotificationChannel(new NotificationChannel("agent", "Agent runtime", NotificationManager.IMPORTANCE_LOW));
+            notifications.notify(33, new Notification.Builder(context, "agent")
+                .setSmallIcon(android.R.drawable.ic_dialog_alert)
+                .setContentTitle("Pocket Agent couldn't speak")
+                .setContentText(reason)
+                .setContentIntent(PendingIntent.getActivity(context, 33, new Intent(context, MainActivity.class),
+                    PendingIntent.FLAG_UPDATE_CURRENT | PendingIntent.FLAG_IMMUTABLE))
+                .setAutoCancel(true).build());
+            AgentService running = instance;
+            if (running != null && !running.stopping) running.publish(event);
+        } catch (Exception error) { Log.w("PocketVoice", "Could not report speech failure", error); }
+    }
+
     private void publish(JSONObject event) {
         main.post(() -> {
             if (stopping && "voice_announce".equals(event.optString("type"))) return;
@@ -83,22 +103,8 @@ public final class AgentService extends Service {
                     startForegroundService(VoiceAnnouncement.intent(this, request));
                 } catch (RuntimeException failure) {
                     Log.w("PocketVoice", "Agent-initiated speech could not be started", failure);
-                    getSystemService(NotificationManager.class).notify(33,
-                        new Notification.Builder(this, "agent")
-                            .setSmallIcon(android.R.drawable.ic_dialog_alert)
-                            .setContentTitle("Pocket Agent couldn't speak")
-                            .setContentText("Open Pocket Agent to check the voice setup")
-                            .setContentIntent(PendingIntent.getActivity(this, 33,
-                                new Intent(this, MainActivity.class), PendingIntent.FLAG_UPDATE_CURRENT | PendingIntent.FLAG_IMMUTABLE))
-                            .setAutoCancel(true).build());
-                    try {
-                        JSONObject failureEvent = new JSONObject().put("type", "voice_delivery_error")
-                            .put("id", event.optString("id"))
-                            .put("error", "Speech service could not start; open Pocket Agent to check voice permissions")
-                            .put("atMs", System.currentTimeMillis());
-                        try (StateStore store = new StateStore(this)) { store.record(failureEvent); }
-                        publish(failureEvent);
-                    } catch (Exception ignored) { }
+                    reportVoiceFailure(this, event.optString("id"),
+                        "Speech service could not start; check Pocket Agent voice permissions");
                 }
             }
             for (Observer observer : observers) observer.onAgentEvent(event);

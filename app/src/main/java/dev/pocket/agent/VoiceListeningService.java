@@ -62,12 +62,13 @@ public final class VoiceListeningService extends Service implements AgentService
             if (acceptedIds.contains(request.id)) return START_NOT_STICKY;
             if (pendingAnnouncements.size() >= MAX_PENDING_ANNOUNCEMENTS) {
                 Log.w("PocketVoice", "Announcement queue is full; rejecting request");
+                AgentService.reportVoiceFailure(this, request.id, "Too many pending voice announcements");
                 return START_NOT_STICKY;
             }
             acceptedIds.add(request.id);
             if (acceptedIds.size() > 64) acceptedIds.remove(acceptedIds.iterator().next());
         }
-        if (!started && !startOutput()) return START_NOT_STICKY;
+        if (!started && !startOutput(request == null ? "" : request.id)) return START_NOT_STICKY;
         if (ACTION_START.equals(action)) {
             if (!enableMicrophone()) { stopSelf(); return START_NOT_STICKY; }
             keepListening = true;
@@ -81,12 +82,16 @@ public final class VoiceListeningService extends Service implements AgentService
         return START_NOT_STICKY;
     }
 
-    private boolean startOutput() {
+    private boolean startOutput(String requestId) {
         String key;
         try { key = new VoiceCredentialStore(this).read(); }
-        catch (Exception error) { stopSelf(); return false; }
+        catch (Exception error) {
+            AgentService.reportVoiceFailure(this, requestId, "Saved Deepgram voice key is unreadable");
+            stopSelf(); return false;
+        }
         if (key.isEmpty()) {
             Log.w("PocketVoice", "Speech requires configured Deepgram credentials");
+            AgentService.reportVoiceFailure(this, requestId, "Configure a Deepgram voice key in Pocket Agent Settings");
             stopSelf(); return false;
         }
         try {
@@ -95,6 +100,7 @@ public final class VoiceListeningService extends Service implements AgentService
             else startForeground(NOTIFICATION_ID, notification("Preparing speech"));
         } catch (RuntimeException denied) {
             Log.w("PocketVoice", "Android denied speech foreground service", denied);
+            AgentService.reportVoiceFailure(this, requestId, "Android denied speech in the background");
             stopSelf(); return false;
         }
         started = true;

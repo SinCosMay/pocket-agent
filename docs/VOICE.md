@@ -172,9 +172,10 @@ alone does not prove acoustics or device-specific background reliability.
 
 `speak_to_user({message,listen_after?})` is an explicitly invoked Pi tool available
 in main and delegated agent sessions (including read-only researcher sessions). It
-is never invoked automatically just because a worker finishes. A scheduled agent
-run can invoke the same tool while the agent runtime is active; the voice tool
-itself is **not** an alarm scheduler or a promise of execution after process death.
+is never invoked automatically just because a worker finishes. An external
+scheduler may trigger a future agent turn that invokes the tool, but this app
+currently has no native scheduled-agent trigger (`phone_alarm` sets a clock
+alarm only). Speech requests cannot run after the agent process has stopped.
 
 - The tool validates at most 800 characters and returns `status: requested`,
   **not** a claim that Android accepted the request or that audio played. Speech uses Deepgram Aura on Android,
