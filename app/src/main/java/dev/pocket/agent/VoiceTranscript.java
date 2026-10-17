@@ -33,10 +33,10 @@ final class VoiceTranscript {
         double last = Double.NEGATIVE_INFINITY;
         for (int index = 0; index < words.length(); index++) {
             JSONObject word = words.optJSONObject(index);
-            if (word == null || !word.has("start") || !word.has("end")) continue;
+            if (word == null || !word.has("start") || !word.has("end")) return -1L;
             double start = word.optDouble("start", Double.NaN);
             double end = word.optDouble("end", Double.NaN);
-            if (!Double.isFinite(start) || !Double.isFinite(end) || end < start) continue;
+            if (!Double.isFinite(start) || !Double.isFinite(end) || end < start) return -1L;
             first = Math.min(first, start);
             last = Math.max(last, end);
         }
