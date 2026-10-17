@@ -385,7 +385,15 @@ public final class VoiceListeningService extends Service implements AgentService
         if (!started || transcriptArbiter == null) return;
         long cycle = activeRecognitionCycle;
         boolean shortTurn = transcriptArbiter.systemSpeechEnded(cycle, SystemClock.elapsedRealtime());
-        if (shortTurn) return;
+        if (shortTurn) {
+            // If Deepgram already finalized, give Android a fresh bounded window to return
+            // its short-turn result. This avoids inheriting a nearly expired timer that was
+            // armed before Android's end-of-speech callback.
+            cancelSystemResultFallback();
+            if (transcriptArbiter.hasPendingDeepgramFinal())
+                scheduleSystemResultFallback(cycle);
+            return;
+        }
 
         // Android has now finished endpointing this utterance. Only at this point do we
         // reject the system path for a long turn; any Deepgram final already received
