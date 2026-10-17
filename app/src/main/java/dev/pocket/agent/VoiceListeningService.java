@@ -52,7 +52,7 @@ public final class VoiceListeningService extends Service implements AgentService
             stopSelf();
         }
     };
-    private Runnable shortSpeechCutoff, systemResultFallback;
+    private Runnable shortSpeechCutoff, systemResultFallback, deepgramDuplicateFallback;
 
     @Override public void onCreate() {
         super.onCreate();
@@ -143,6 +143,8 @@ public final class VoiceListeningService extends Service implements AgentService
                     boolean waitingForSystem = false;
                     if (transcriptArbiter != null) {
                         transcriptArbiter.deepgramEmptyTurn(activeRecognitionCycle);
+                        if (!transcriptArbiter.waitingForMatchingDeepgramFinal())
+                            cancelDeepgramDuplicateFallback();
                         waitingForSystem = !transcriptArbiter.turnSettled()
                             && transcriptArbiter.systemEligible();
                         if (waitingForSystem)
@@ -329,6 +331,28 @@ public final class VoiceListeningService extends Service implements AgentService
         main.postDelayed(task, SYSTEM_RESULT_GRACE_MS);
     }
 
+    private void cancelDeepgramDuplicateFallback() {
+        if (deepgramDuplicateFallback != null) {
+            main.removeCallbacks(deepgramDuplicateFallback);
+            deepgramDuplicateFallback = null;
+        }
+    }
+
+    private void scheduleDeepgramDuplicateFallback(long cycle) {
+        cancelDeepgramDuplicateFallback();
+        Runnable task = () -> {
+            if (!started || transcriptArbiter == null || cycle != activeRecognitionCycle) return;
+            deepgramDuplicateFallback = null;
+            if (!transcriptArbiter.matchingDeepgramWaitExpired(cycle)) return;
+            if (transcriptArbiter.turnSettled()) {
+                if (responding || userSpeaking) prepareNextRecognitionTurn();
+                else afterPlayback();
+            }
+        };
+        deepgramDuplicateFallback = task;
+        main.postDelayed(task, SYSTEM_RESULT_GRACE_MS);
+    }
+
     private void resetIdle() {
         main.removeCallbacks(idleStop);
         main.postDelayed(idleStop, IDLE_TIMEOUT_MS);
@@ -362,14 +386,22 @@ public final class VoiceListeningService extends Service implements AgentService
 
     private void deepgramSpeechStarted() {
         if (!started) return;
-        if (transcriptArbiter != null && transcriptArbiter.waitingForMatchingDeepgramFinal())
-            return;
+        if (transcriptArbiter != null) {
+            if (transcriptArbiter.turnSettled()) prepareNextRecognitionTurn();
+            transcriptArbiter.deepgramSpeechStarted(activeRecognitionCycle);
+            if (transcriptArbiter.waitingForMatchingDeepgramFinal()) return;
+        }
         speechStarted();
     }
 
     private void systemSpeechStarted() {
         if (!started) return;
-        speechStarted();
+        markSpeechForArbitration();
+        if (!responding) {
+            userSpeaking = true;
+            main.removeCallbacks(idleStop);
+            showStatus("Hearing you");
+        }
     }
 
     private void systemSpeechEnded() {
@@ -383,14 +415,27 @@ public final class VoiceListeningService extends Service implements AgentService
         if (!started || transcriptArbiter == null) return;
         cancelShortSpeechCutoff();
         cancelSystemResultFallback();
-        acceptTranscriptChoice(transcriptArbiter.systemFinal(activeRecognitionCycle, text, SystemClock.elapsedRealtime()));
+        if (wakeStarted && text != null
+                && text.replaceFirst("(?i)^\\s*hey[,]?\\s+jarvis[,!?.\\s]*", "").trim().isEmpty()) {
+            if (shortSpeech != null) shortSpeech.cancelCycle();
+            systemRecognitionFailed();
+            return;
+        }
+        acceptTranscriptChoice(transcriptArbiter.systemFinal(
+            activeRecognitionCycle, text, SystemClock.elapsedRealtime()));
     }
 
     private void systemRecognitionFailed() {
         if (!started || transcriptArbiter == null) return;
         cancelShortSpeechCutoff();
         cancelSystemResultFallback();
-        acceptTranscriptChoice(transcriptArbiter.systemFailed(activeRecognitionCycle));
+        HybridTranscriptArbiter.Choice choice =
+            transcriptArbiter.systemFailed(activeRecognitionCycle);
+        acceptTranscriptChoice(choice);
+        if (choice == null && !responding && !transcriptArbiter.deepgramTurnOpen()) {
+            userSpeaking = false;
+            if (streamingReady) resetIdle();
+        }
     }
 
     private void deepgramUtterance(String text) {
@@ -401,6 +446,8 @@ public final class VoiceListeningService extends Service implements AgentService
         }
         HybridTranscriptArbiter.Choice choice =
             transcriptArbiter.deepgramFinal(activeRecognitionCycle, text, SystemClock.elapsedRealtime());
+        if (!transcriptArbiter.waitingForMatchingDeepgramFinal())
+            cancelDeepgramDuplicateFallback();
         if (choice == null && transcriptArbiter.systemEligible())
             scheduleSystemResultFallback(activeRecognitionCycle);
         acceptTranscriptChoice(choice);
@@ -413,6 +460,10 @@ public final class VoiceListeningService extends Service implements AgentService
             Log.i("PocketVoice", "Transcript source=" +
                 (choice.source == HybridTranscriptArbiter.Source.SYSTEM ? "android-system" : "deepgram"));
             sendUtterance(choice.text);
+            if (choice.source == HybridTranscriptArbiter.Source.SYSTEM
+                    && transcriptArbiter != null
+                    && transcriptArbiter.waitingForMatchingDeepgramFinal())
+                scheduleDeepgramDuplicateFallback(activeRecognitionCycle);
         }
         if (transcriptArbiter != null && transcriptArbiter.turnSettled()) {
             if (!responding && !userSpeaking) afterPlayback();
@@ -423,6 +474,7 @@ public final class VoiceListeningService extends Service implements AgentService
     private void prepareNextRecognitionTurn() {
         cancelShortSpeechCutoff();
         cancelSystemResultFallback();
+        cancelDeepgramDuplicateFallback();
         if (!started || !microphoneEnabled || transcriptArbiter == null) return;
         long cycle = ++activeRecognitionCycle;
         boolean systemReady = shortSpeech != null && shortSpeech.startCycle();
@@ -495,6 +547,7 @@ public final class VoiceListeningService extends Service implements AgentService
         main.removeCallbacks(idleStop);
         cancelShortSpeechCutoff();
         cancelSystemResultFallback();
+        cancelDeepgramDuplicateFallback();
         AgentService.unobserve(this);
         pendingAnnouncements.clear();
         acceptedIds.clear();

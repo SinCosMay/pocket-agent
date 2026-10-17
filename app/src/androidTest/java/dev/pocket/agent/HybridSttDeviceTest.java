@@ -69,6 +69,7 @@ public final class HybridSttDeviceTest {
         HybridTranscriptArbiter arbiter = new HybridTranscriptArbiter(true);
         long gen = arbiter.generation();
         arbiter.speechStarted(gen, 1000L);
+        arbiter.deepgramSpeechStarted(gen);
         assertTrue(arbiter.systemSpeechEnded(gen, 2000L));
 
         HybridTranscriptArbiter.Choice winner =
@@ -175,6 +176,7 @@ public final class HybridSttDeviceTest {
         HybridTranscriptArbiter arbiter = new HybridTranscriptArbiter(true);
         long gen = arbiter.generation();
         arbiter.speechStarted(gen, 1000L);
+        arbiter.deepgramSpeechStarted(gen);
         assertTrue(arbiter.systemSpeechEnded(gen, 1800L));
         HybridTranscriptArbiter.Choice choice =
             arbiter.systemFinal(gen, "System winner", 2000L);
@@ -184,6 +186,35 @@ public final class HybridSttDeviceTest {
         assertNull(arbiter.deepgramFinal(gen, "Matching Deepgram final", 2200L));
         assertFalse(arbiter.waitingForMatchingDeepgramFinal());
         assertTrue(arbiter.turnSettled());
+    }
+
+    @Test public void systemWinnerDoesNotWaitWhenDeepgramNeverOpenedTurn() {
+        HybridTranscriptArbiter arbiter = new HybridTranscriptArbiter(true);
+        long gen = arbiter.generation();
+        arbiter.speechStarted(gen, 1000L);
+        assertTrue(arbiter.systemSpeechEnded(gen, 1800L));
+
+        HybridTranscriptArbiter.Choice choice =
+            arbiter.systemFinal(gen, "System only", 2000L);
+        assertNotNull(choice);
+        assertEquals(HybridTranscriptArbiter.Source.SYSTEM, choice.source);
+        assertFalse(arbiter.waitingForMatchingDeepgramFinal());
+        assertTrue(arbiter.turnSettled());
+    }
+
+    @Test public void matchingDeepgramWaitHasBoundedEscape() {
+        HybridTranscriptArbiter arbiter = new HybridTranscriptArbiter(true);
+        long gen = arbiter.generation();
+        arbiter.speechStarted(gen, 1000L);
+        arbiter.deepgramSpeechStarted(gen);
+        assertTrue(arbiter.systemSpeechEnded(gen, 1800L));
+        assertNotNull(arbiter.systemFinal(gen, "System winner", 2000L));
+        assertTrue(arbiter.waitingForMatchingDeepgramFinal());
+
+        assertTrue(arbiter.matchingDeepgramWaitExpired(gen));
+        assertFalse(arbiter.waitingForMatchingDeepgramFinal());
+        assertTrue(arbiter.turnSettled());
+        assertFalse(arbiter.matchingDeepgramWaitExpired(gen));
     }
 
     @Test public void unavailableSystemRecognizerMakesDeepgramAuthoritativeImmediately() {

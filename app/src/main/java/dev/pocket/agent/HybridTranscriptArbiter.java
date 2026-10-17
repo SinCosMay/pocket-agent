@@ -27,6 +27,7 @@ final class HybridTranscriptArbiter {
     private long speechStartedAt = -1L;
     private long systemSpeechEndedAt = -1L;
     private String pendingDeepgram;
+    private boolean deepgramTurnOpen;
     private boolean deepgramEnded;
     private boolean resolved;
     private boolean waitingForMatchingDeepgramFinal;
@@ -41,6 +42,7 @@ final class HybridTranscriptArbiter {
         speechStartedAt = -1L;
         systemSpeechEndedAt = -1L;
         pendingDeepgram = null;
+        deepgramTurnOpen = false;
         deepgramEnded = false;
         resolved = false;
         waitingForMatchingDeepgramFinal = false;
@@ -78,13 +80,19 @@ final class HybridTranscriptArbiter {
             return choosePendingDeepgram();
         }
         resolved = true;
-        waitingForMatchingDeepgramFinal = pendingDeepgram == null && !deepgramEnded;
+        waitingForMatchingDeepgramFinal = deepgramTurnOpen && pendingDeepgram == null && !deepgramEnded;
         pendingDeepgram = null;
         return new Choice(text.trim(), Source.SYSTEM);
     }
 
+    synchronized void deepgramSpeechStarted(long gen) {
+        if (gen != generation || deepgramEnded) return;
+        deepgramTurnOpen = true;
+    }
+
     synchronized Choice deepgramFinal(long gen, String text, long nowMs) {
         if (gen != generation || text == null || text.trim().isEmpty()) return null;
+        deepgramTurnOpen = false;
         deepgramEnded = true;
         if (waitingForMatchingDeepgramFinal) {
             waitingForMatchingDeepgramFinal = false;
@@ -132,6 +140,7 @@ final class HybridTranscriptArbiter {
 
     synchronized void deepgramEmptyTurn(long gen) {
         if (gen != generation) return;
+        deepgramTurnOpen = false;
         deepgramEnded = true;
         if (waitingForMatchingDeepgramFinal) waitingForMatchingDeepgramFinal = false;
         else if (!resolved && !systemEnabled) resolved = true;
@@ -155,6 +164,16 @@ final class HybridTranscriptArbiter {
 
     synchronized boolean waitingForMatchingDeepgramFinal() {
         return resolved && waitingForMatchingDeepgramFinal;
+    }
+
+    synchronized boolean deepgramTurnOpen() {
+        return deepgramTurnOpen;
+    }
+
+    synchronized boolean matchingDeepgramWaitExpired(long gen) {
+        if (gen != generation || !resolved || !waitingForMatchingDeepgramFinal) return false;
+        waitingForMatchingDeepgramFinal = false;
+        return true;
     }
 
     private Choice choosePendingDeepgram() {
