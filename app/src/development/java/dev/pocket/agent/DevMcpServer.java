@@ -12,6 +12,8 @@ import org.json.JSONObject;
 
 final class DevMcpServer extends NanoHTTPD {
     private static final int MAX_BODY = 1_048_576;
+    private static final int MAX_CHUNKS = 4096;
+    private static final int MAX_FRAMING_BYTES = 64 * 1024;
     private final byte[] auth;
     private final android.content.Context context;
     private final ThreadPoolExecutor workers = new ThreadPoolExecutor(2, 2, 0, TimeUnit.SECONDS, new ArrayBlockingQueue<>(12));
@@ -107,9 +109,13 @@ final class DevMcpServer extends NanoHTTPD {
             return readFully(input,size);
         }
         ByteArrayOutputStream result=new ByteArrayOutputStream();
-        int trailerBytes=0;
+        long framingBytes=0;
+        int chunks=0;
         while (true) {
+            if (++chunks>MAX_CHUNKS) throw new IOException("Too many chunks");
             String header=readHeaderLine(input);
+            framingBytes+=header.length()+2L;
+            if (framingBytes>MAX_FRAMING_BYTES) throw new IOException("Chunk framing too large");
             String sizeHex=header.split(";",2)[0].trim();
             if (sizeHex.isEmpty() || sizeHex.length()>8) throw new IOException("Invalid chunk length");
             long size;
@@ -120,11 +126,13 @@ final class DevMcpServer extends NanoHTTPD {
                 // Trailer headers must be finite, and never influence authorization.
                 while (true) {
                     String trailer=readHeaderLine(input);
-                    trailerBytes+=trailer.length()+2;
-                    if (trailerBytes>8192) throw new IOException("Trailer too large");
+                    framingBytes+=trailer.length()+2L;
+                    if (framingBytes>MAX_FRAMING_BYTES) throw new IOException("Chunk framing too large");
                     if (trailer.isEmpty()) return result.toByteArray();
                 }
             }
+            framingBytes+=2; // Required CRLF after each payload.
+            if (framingBytes>MAX_FRAMING_BYTES) throw new IOException("Chunk framing too large");
             result.write(readFully(input,(int)size));
             if (input.read()!='\r'||input.read()!='\n') throw new IOException("Invalid chunk terminator");
         }

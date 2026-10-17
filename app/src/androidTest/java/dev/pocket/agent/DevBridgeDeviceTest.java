@@ -90,6 +90,26 @@ public class DevBridgeDeviceTest {
             assertTrue(tools,tools.contains("debug_history"));
         } finally {bridge.getClass().getMethod("stop").invoke(bridge);}
     }
+    @Test public void chunkFramingBudgetRejectsExcessiveTinyChunks() throws Exception {
+        Assume.assumeTrue(BuildConfig.DEVELOPMENT_TOOLS);
+        Object bridge=server();
+        try(Socket socket=new Socket("127.0.0.1",8767)) {
+            socket.setSoTimeout(9000);
+            java.io.ByteArrayOutputStream wire=new java.io.ByteArrayOutputStream();
+            wire.write(("POST /mcp HTTP/1.1\r\nHost: localhost\r\nContent-Type: application/json\r\n"+
+                "Authorization: Bearer instrumentation-test-token\r\nTransfer-Encoding: chunked\r\nConnection: close\r\n\r\n").getBytes(StandardCharsets.US_ASCII));
+            // The decoded body is only 4 KiB, but thousands of chunks waste CPU
+            // and framing bytes unless a separate chunk-count limit is enforced.
+            for(int i=0;i<4200;i++)wire.write("1\r\n \r\n".getBytes(StandardCharsets.US_ASCII));
+            wire.write("0\r\n\r\n".getBytes(StandardCharsets.US_ASCII));
+            socket.getOutputStream().write(wire.toByteArray());
+            socket.getOutputStream().flush();
+            byte[] response=new byte[512];
+            int count=socket.getInputStream().read(response);
+            assertTrue("Expected bounded chunk framing rejection",count>0 &&
+                new String(response,0,count,StandardCharsets.US_ASCII).startsWith("HTTP/1.1 400"));
+        } finally {bridge.getClass().getMethod("stop").invoke(bridge);}
+    }
     @Test public void localLogSearchAndPaginationRejectInvalidBounds() throws Exception {
         Assume.assumeTrue(BuildConfig.DEVELOPMENT_TOOLS);
         try(StateStore store=new StateStore(context())) {
