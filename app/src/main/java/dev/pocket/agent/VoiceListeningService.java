@@ -353,6 +353,7 @@ public final class VoiceListeningService extends Service implements AgentService
     }
 
     private void playSystemReadyCue() {
+        if (WakeWordService.playAcknowledgement()) return;
         try {
             ToneGenerator tone = new ToneGenerator(AudioManager.STREAM_NOTIFICATION, 80);
             tone.startTone(ToneGenerator.TONE_PROP_BEEP, 120);
