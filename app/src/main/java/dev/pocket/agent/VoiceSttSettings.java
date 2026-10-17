@@ -3,14 +3,43 @@ package dev.pocket.agent;
 import android.content.Context;
 import android.content.SharedPreferences;
 
-/** User-tunable arbitration between Android system recognition and Deepgram. */
+/** User-tunable speech-to-text routing and hybrid arbitration settings. */
 final class VoiceSttSettings {
+    enum Mode {
+        HYBRID_THRESHOLD("hybrid_threshold"),
+        ANDROID_DEFAULT_ONLY("android_default_only"),
+        DEEPGRAM_ONLY("deepgram_only");
+
+        final String storedValue;
+
+        Mode(String storedValue) {
+            this.storedValue = storedValue;
+        }
+    }
+
     static final int DEFAULT_SHORT_UTTERANCE_MS = 3000;
     static final int MIN_SHORT_UTTERANCE_MS = 500;
     static final int MAX_SHORT_UTTERANCE_MS = 8000;
     static final int SHORT_UTTERANCE_STEP_MS = 250;
     private static final String PREFS = "voice_stt";
+    private static final String MODE_KEY = "mode";
     private static final String SHORT_UTTERANCE_KEY = "short_utterance_ms";
+
+    static Mode mode(Context context) {
+        String value = prefs(context).getString(MODE_KEY, Mode.HYBRID_THRESHOLD.storedValue);
+        if (Mode.ANDROID_DEFAULT_ONLY.storedValue.equals(value)) return Mode.ANDROID_DEFAULT_ONLY;
+        if (Mode.DEEPGRAM_ONLY.storedValue.equals(value)) return Mode.DEEPGRAM_ONLY;
+        return Mode.HYBRID_THRESHOLD;
+    }
+
+    static void setMode(Context context, Mode mode) {
+        if (mode == null) throw new IllegalArgumentException("STT mode is required");
+        prefs(context).edit().putString(MODE_KEY, mode.storedValue).apply();
+    }
+
+    static boolean usesThreshold(Context context) {
+        return mode(context) == Mode.HYBRID_THRESHOLD;
+    }
 
     static int shortUtteranceMs(Context context) {
         int value = prefs(context).getInt(SHORT_UTTERANCE_KEY, DEFAULT_SHORT_UTTERANCE_MS);
