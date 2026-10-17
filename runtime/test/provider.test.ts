@@ -191,10 +191,12 @@ test('keyed OpenCode and Nebius inference send the configured bearer credential'
 });
 
 
-test('fixed OpenCode timeout remains active while the SSE response body is stalled',async()=>{
+test('fixed OpenCode timeout remains active while the SSE response body is stalled',{timeout:3000},async()=>{
  const originalTimeout=AbortSignal.timeout;
  const timeoutController=new AbortController();
  let wireSignal:AbortSignal|undefined,bodyAborted=false;
+ let readyResolve!:()=>void;
+ const ready=new Promise<void>(resolve=>{readyResolve=resolve;});
  (AbortSignal as any).timeout=(ms:number)=>{
    assert.equal(ms,120000);
    return timeoutController.signal;
@@ -215,6 +217,7 @@ test('fixed OpenCode timeout remains active while the SSE response body is stall
            bodyAborted=true;
            controller.error(new DOMException('timed out','AbortError'));
          },{once:true});
+         readyResolve();
        },
      });
      return new Response(body,{headers:{'content-type':'text/event-stream'}});
@@ -224,8 +227,15 @@ test('fixed OpenCode timeout remains active while the SSE response body is stall
      {messages:[{role:'user',content:[{type:'text',text:'stall'}],timestamp:Date.now()}]},
      {fetch:fetcher},
    );
+   await Promise.race([
+     ready,
+     new Promise<never>((_,reject)=>setTimeout(()=>reject(new Error('provider fetch did not start')),1000)),
+   ]);
    timeoutController.abort();
-   const result=await stream.result();
+   const result=await Promise.race([
+     stream.result(),
+     new Promise<never>((_,reject)=>setTimeout(()=>reject(new Error('provider stream did not stop after timeout')),1000)),
+   ]);
    assert.equal(bodyAborted,true);
    assert.equal(wireSignal?.aborted,true);
    assert.equal(result.stopReason,'error');
