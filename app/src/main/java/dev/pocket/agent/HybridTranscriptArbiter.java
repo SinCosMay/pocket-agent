@@ -153,6 +153,9 @@ final class HybridTranscriptArbiter {
                 || nowMs - speechStartedAt < shortUtteranceMs) return null;
         if (deepgramSpokenDurationMs >= 0L && deepgramSpokenDurationMs < shortUtteranceMs)
             return null;
+        if (systemSpeechEndedAt >= 0L
+                && systemSpeechEndedAt - speechStartedAt < shortUtteranceMs)
+            return null;
         systemEnabled = false;
         pendingSystem = null;
         return choosePendingDeepgram();
@@ -220,9 +223,10 @@ final class HybridTranscriptArbiter {
 
     private long effectiveSpokenDurationMs(long nowMs) {
         if (deepgramSpokenDurationMs >= 0L) return deepgramSpokenDurationMs;
-        long effectiveEnd = systemSpeechEndedAt >= 0L ? systemSpeechEndedAt : nowMs;
-        if (speechStartedAt < 0L || effectiveEnd < speechStartedAt) return -1L;
-        return effectiveEnd - speechStartedAt;
+        // Never substitute result-arrival wall clock for speech duration. If Flux omitted
+        // word timings, wait until Android has supplied both speech callbacks.
+        if (speechStartedAt < 0L || systemSpeechEndedAt < speechStartedAt) return -1L;
+        return systemSpeechEndedAt - speechStartedAt;
     }
 
     private Choice choosePendingDeepgram() {
