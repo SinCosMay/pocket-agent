@@ -30,6 +30,7 @@ public final class VoiceListeningService extends Service implements AgentService
     private static final String CHANNEL = "voice";
     private static final long IDLE_TIMEOUT_MS = 3000;
     private static final long SYSTEM_RESULT_GRACE_MS = 1500;
+    private static final long SYSTEM_ENDPOINT_TIMEOUT_MS = 5000;
     private static final int MAX_PENDING_ANNOUNCEMENTS = 8;
     private static volatile VoiceListeningService runningService;
     static boolean isRunning() { return runningService != null; }
@@ -299,6 +300,14 @@ public final class VoiceListeningService extends Service implements AgentService
     }
 
     private void scheduleSystemResultFallback(long cycle) {
+        scheduleSystemFallback(cycle, SYSTEM_RESULT_GRACE_MS);
+    }
+
+    private void scheduleSystemEndpointFallback(long cycle) {
+        scheduleSystemFallback(cycle, SYSTEM_ENDPOINT_TIMEOUT_MS);
+    }
+
+    private void scheduleSystemFallback(long cycle, long delayMs) {
         cancelSystemResultFallback();
         Runnable task = () -> {
             if (!started || transcriptArbiter == null || cycle != activeRecognitionCycle) return;
@@ -307,7 +316,7 @@ public final class VoiceListeningService extends Service implements AgentService
             acceptTranscriptChoice(choice);
         };
         systemResultFallback = task;
-        main.postDelayed(task, SYSTEM_RESULT_GRACE_MS);
+        main.postDelayed(task, delayMs);
     }
 
     private void cancelDeepgramDuplicateFallback() {
@@ -437,8 +446,11 @@ public final class VoiceListeningService extends Service implements AgentService
             transcriptArbiter.deepgramFinal(activeRecognitionCycle, text, SystemClock.elapsedRealtime());
         if (!transcriptArbiter.waitingForMatchingDeepgramFinal())
             cancelDeepgramDuplicateFallback();
-        if (choice == null && transcriptArbiter.systemEligible())
-            scheduleSystemResultFallback(activeRecognitionCycle);
+        if (choice == null && transcriptArbiter.systemEligible()) {
+            if (transcriptArbiter.systemEndpointObserved())
+                scheduleSystemResultFallback(activeRecognitionCycle);
+            else scheduleSystemEndpointFallback(activeRecognitionCycle);
+        }
         acceptTranscriptChoice(choice);
     }
 
