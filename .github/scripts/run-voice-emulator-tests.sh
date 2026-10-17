@@ -3,7 +3,12 @@ set -uo pipefail
 
 app_id=dev.pocket.agent
 microphone_permission=android.permission.RECORD_AUDIO
+connected_results=app/build/outputs/androidTest-results/connected
+evidence_root=app/build/outputs/voice-emulator-test-evidence
 had_microphone_permission=false
+
+rm -rf "$evidence_root"
+mkdir -p "$evidence_root"
 
 # Preserve the permission on a developer's already-installed app as well as
 # on a freshly installed CI app. Cleanup runs on failure or interruption.
@@ -30,10 +35,17 @@ trap 'exit 143' TERM
 
 run_test() {
   local test_class="$1"
+  local test_name="${test_class##*.}"
+  local status=0
   ./gradlew --no-daemon :app:installDebug -PvoiceEmulatorTest=true || return 1
   adb shell pm grant "$app_id" "$microphone_permission" || return 1
   ./gradlew --no-daemon :app:connectedDebugAndroidTest -PvoiceEmulatorTest=true \
-    "-Pandroid.testInstrumentationRunnerArguments.class=${test_class}"
+    "-Pandroid.testInstrumentationRunnerArguments.class=${test_class}" || status=$?
+  mkdir -p "$evidence_root/$test_name"
+  if [[ -d "$connected_results" ]]; then
+    cp -a "$connected_results/." "$evidence_root/$test_name/"
+  fi
+  return "$status"
 }
 
 result=0

@@ -64,6 +64,8 @@ jobs:
         uses: actions/upload-artifact@v4
         with:
           name: voice-capture-emulator-tests
-          path: app/build/outputs/androidTest-results/connected/
+          path: |
+            app/build/outputs/androidTest-results/connected/
+            app/build/outputs/voice-emulator-test-evidence/
           retention-days: 30
           if-no-files-found: ignore
