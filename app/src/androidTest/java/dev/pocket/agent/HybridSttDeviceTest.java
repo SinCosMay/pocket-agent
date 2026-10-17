@@ -232,6 +232,37 @@ public final class HybridSttDeviceTest {
         assertTrue(arbiter.turnSettled());
     }
 
+    @Test public void deepgramFinalPastThresholdWaitsForAndroidEndpoint() {
+        HybridTranscriptArbiter arbiter = new HybridTranscriptArbiter(true);
+        long gen = arbiter.generation();
+        arbiter.speechStarted(gen, 1000L);
+
+        assertNull(arbiter.deepgramFinal(gen, "Buffered Deepgram", 4500L));
+        assertTrue(arbiter.systemEligible());
+        assertFalse(arbiter.turnSettled());
+
+        assertFalse(arbiter.systemSpeechEnded(gen, 4600L));
+        HybridTranscriptArbiter.Choice choice = arbiter.systemFailed(gen);
+        assertNotNull(choice);
+        assertEquals(HybridTranscriptArbiter.Source.DEEPGRAM, choice.source);
+        assertEquals("Buffered Deepgram", choice.text);
+        assertTrue(arbiter.turnSettled());
+    }
+
+    @Test public void configurableThresholdControlsShortTurnOwnership() {
+        HybridTranscriptArbiter arbiter = new HybridTranscriptArbiter(true, 5000L);
+        long gen = arbiter.generation();
+        arbiter.speechStarted(gen, 1000L);
+        assertNull(arbiter.deepgramFinal(gen, "Deepgram candidate", 4600L));
+        assertTrue(arbiter.systemSpeechEnded(gen, 4800L));
+
+        HybridTranscriptArbiter.Choice choice =
+            arbiter.systemFinal(gen, "System candidate", 5200L);
+        assertNotNull(choice);
+        assertEquals(HybridTranscriptArbiter.Source.SYSTEM, choice.source);
+        assertEquals("System candidate", choice.text);
+    }
+
     @Test public void unavailableSystemRecognizerMakesDeepgramAuthoritativeImmediately() {
         HybridTranscriptArbiter arbiter = new HybridTranscriptArbiter(false);
         long gen = arbiter.generation();
