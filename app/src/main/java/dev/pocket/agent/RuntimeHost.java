@@ -30,6 +30,7 @@ public final class RuntimeHost implements AutoCloseable {
     private NodeRuntime runtime;
     private boolean active, pumpScheduled, closed;
     private CompletableFuture<JSONObject> gate;
+    private final java.util.Map<String, CompletableFuture<JSONObject>> debugPending = new java.util.HashMap<>();
     private final Runnable pump = this::pumpEvents;
     private void pumpEvents() {
         pumpScheduled = false;
@@ -77,10 +78,15 @@ public final class RuntimeHost implements AutoCloseable {
         }); return result;
     }
     private void schedulePump() {
-        if (!closed && !pumpScheduled && (active || gate != null)) { pumpScheduled = true; handler.postDelayed(pump, 16); }
+        if (!closed && !pumpScheduled && (active || gate != null || !debugPending.isEmpty())) { pumpScheduled = true; handler.postDelayed(pump, 16); }
     }
     private void emit(JSONObject event) {
         String type = event.optString("type");
+        if (type.equals("dev_tool_result")) {
+            CompletableFuture<JSONObject> pending = debugPending.remove(event.optString("requestId"));
+            if (pending != null) pending.complete(event.optJSONObject("result"));
+            return;
+        }
         if (type.equals("state")) {
             JSONObject state = event.optJSONObject("state");
             if (state != null) { store.save(state); active = state.optBoolean("active", state.optBoolean("busy")); }
@@ -88,7 +94,7 @@ public final class RuntimeHost implements AutoCloseable {
         else if (type.equals("gate")) {
             store.record(event);
             if (gate != null) { gate.complete(event); gate = null; }
-        } else if (type.equals("ready") || type.equals("error")) store.record(event);
+        } else if (type.equals("ready") || type.equals("error") || (BuildConfig.DEVELOPMENT_TOOLS && type.equals("log"))) store.record(event);
         listener.accept(event); schedulePump();
     }
     private void fail(String message, Throwable error) {
@@ -136,6 +142,37 @@ public final class RuntimeHost implements AutoCloseable {
             } catch (Exception error) { fail("Invalid runtime event", error); }
         }
     }
+    CompletableFuture<org.json.JSONArray> developmentToolList() {
+        CompletableFuture<org.json.JSONArray> future = new CompletableFuture<>();
+        handler.post(() -> {
+            if (!BuildConfig.DEVELOPMENT_TOOLS || closed || runtime == null) {
+                future.completeExceptionally(new IllegalStateException("Development bridge unavailable")); return;
+            }
+            try { future.complete(new org.json.JSONArray(runtime.getExecutor("JSON.stringify(PocketAgent.debugList())").executeString())); }
+            catch (Throwable error) { future.completeExceptionally(error); }
+        });
+        return future;
+    }
+    CompletableFuture<JSONObject> developmentToolCall(String name, JSONObject args) {
+        CompletableFuture<JSONObject> future = new CompletableFuture<>();
+        handler.post(() -> {
+            if (!BuildConfig.DEVELOPMENT_TOOLS || closed || runtime == null) {
+                future.completeExceptionally(new IllegalStateException("Development bridge unavailable")); return;
+            }
+            String id = java.util.UUID.randomUUID().toString();
+            debugPending.put(id, future);
+            try {
+                String command = "PocketAgent.debugCall(" + JSONObject.quote(id) + "," + JSONObject.quote(name) + "," + "JSON.parse(" + JSONObject.quote(args.toString()) + ")" + ")";
+                runtime.getExecutor(command).executeVoid();
+                runtime.await(V8AwaitMode.RunNoWait);
+                schedulePump();
+                handler.postDelayed(() -> {
+                    if (debugPending.remove(id) != null) future.completeExceptionally(new java.util.concurrent.TimeoutException("Tool execution outcome unknown; inspect state before retry"));
+                }, 35000);
+            } catch (Throwable error) { debugPending.remove(id); future.completeExceptionally(error); }
+        });
+        return future;
+    }
     /** Local instrumentation only: no exported Intent/broadcast/tool endpoint. */
     public CompletableFuture<JSONObject> runCompatibilityGate() {
         CompletableFuture<JSONObject> result = new CompletableFuture<>();
@@ -165,7 +202,7 @@ public final class RuntimeHost implements AutoCloseable {
                 if(tools!=null){tools.close();tools=null;}
                 store.markInterrupted();
             } catch (Throwable error) { fail("Runtime shutdown failed", error); }
-            finally { if (gate != null) gate.completeExceptionally(new IllegalStateException("Service stopped")); memory.close(); store.close(); thread.quitSafely(); }
+            finally { for (CompletableFuture<JSONObject> pending : debugPending.values()) pending.completeExceptionally(new IllegalStateException("Service stopped")); debugPending.clear(); if (gate != null) gate.completeExceptionally(new IllegalStateException("Service stopped")); memory.close(); store.close(); thread.quitSafely(); }
         });
     }
 }

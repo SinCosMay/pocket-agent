@@ -119,6 +119,7 @@ export class PocketRuntime {
       if(event.type==='message_end')this.coalesce();
       if(event.type==='agent_end')session.dropPriorImages();
       if(event.type==='tool_execution_start')this.emit({type:'log',owner,tool:event.toolName,message:'Tool started'});
+      if(event.type==='tool_execution_end')this.emit({type:'log',owner,tool:event.toolName,message:event.isError?'Tool failed':'Tool finished'});
       if(owner==='main' && this.speakingTurn && event.type==='message_update' && event.assistantMessageEvent.type==='text_delta') {
         this.emit({type:'voice_delta',sessionId:this.speakingTurn,text:event.assistantMessageEvent.delta});
       }
@@ -216,6 +217,28 @@ export class PocketRuntime {
       }
     } catch(e){this.reportError(e);}
     finally {this.deliveryTransaction=false;this.pumping=false;this.publish();}
+  }
+  private devTools?:any[];
+  debugToolList():any[] {
+    return this.main.agent.state.tools.map((tool:any)=>({
+      name:tool.name,description:tool.description,inputSchema:tool.parameters,
+    }));
+  }
+  debugToolCall(requestId:string,name:string,args:any):void {
+    const tools=this.devTools??(this.devTools=[...nativeTools(this,'dev-mcp'),...memoryTools(this,'main'),speakToUserTool(this,'main'),subagentTool(this)]);
+    const tool=tools.find((item:any)=>item.name===name);
+    if(!tool)throw Error('Unknown tool');
+    queueMicrotask(async()=>{
+      this.emit({type:'log',owner:'dev-mcp',tool:name,message:'Tool started'});
+      try {
+        const result=await tool.execute('dev-'+requestId,args);
+        this.emit({type:'log',owner:'dev-mcp',tool:name,message:result?.isError?'Tool failed':'Tool finished'});
+        this.emit({type:'dev_tool_result',requestId,result});
+      } catch(error) {
+        this.emit({type:'log',owner:'dev-mcp',tool:name,message:'Tool failed'});
+        this.emit({type:'dev_tool_result',requestId,result:{isError:true,content:[{type:'text',text:this.sanitize(String(error))}]}});
+      }
+    });
   }
   dispatch(commandJson:string):string {
     try {
