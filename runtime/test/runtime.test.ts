@@ -332,27 +332,30 @@ test('paused main with retained inbox can still apply provider and prompt settin
  assert.equal(runtime.state().mainPaused,true);assert.equal(internal.inbox.length,1,'settings must not discard paused queued work');
 });
 
-test('new main thread clears only main history and queued user work while retaining workers',async()=>{
- const bridge=new Bridge(),runtime=new PocketRuntime(bridge);
- command(runtime,{action:'send',text:'delegate fixture delay=10'});
- await until(()=>runtime.state().tasks[0]?.status==='completed'&&!runtime.state().active,8000);
- assert.ok(runtime.state().messages.length>0);
- const tasks=structuredClone(runtime.state().tasks),workerMessages=structuredClone(runtime.state().workerMessages);
- const anyRuntime=runtime as any;
- anyRuntime.mainPaused=true;
- anyRuntime.inbox=[{type:'user',text:'stale queued user turn'}];
+test('new main thread clears old main delivery but retains a resumable worker',async()=>{
+ const bridge=new Bridge(),runtime=new PocketRuntime(bridge),internal=runtime as any;
+ command(runtime,{action:'send',text:'delegate fixture delay=80'});
+ await until(()=>runtime.state().tasks[0]?.status==='running'&&!runtime.busy,4000);
+ const id=runtime.state().tasks[0].conversationId;
+ internal.mainPaused=true;
+ await until(()=>runtime.state().tasks[0]?.status==='completed',8000);
+ assert.ok(internal.inbox.some((item:any)=>item.type==='completion'),'worker completion should be pending for the old main thread');
+ assert.equal(runtime.runtime.conversation(id).generations.at(-1)!.receipts.model,false);
+ const workerMessages=structuredClone(runtime.state().workerMessages);
+ internal.inbox.push({type:'user',text:'stale queued user turn'});
  command(runtime,{action:'new_main'});
- assert.deepEqual(runtime.state().messages,[]);
- assert.equal(runtime.state().mainTurns,0);
- assert.deepEqual(runtime.state().tasks,tasks,'retained worker tasks must survive a main-thread reset');
- assert.deepEqual(runtime.state().workerMessages,workerMessages,'worker transcripts must survive a main-thread reset');
- assert.deepEqual(anyRuntime.inbox,[],'queued user work belongs to the old main thread');
- assert.equal(bridge.state.mainMessages.filter((m:any)=>m.role==='user'||m.role==='assistant').length,0,'durable main transcript is fresh');
- anyRuntime.busy=true;
+ assert.deepEqual(runtime.state().messages,[]);assert.equal(runtime.state().mainTurns,0);assert.deepEqual(internal.inbox,[]);
+ assert.equal(runtime.state().tasks[0].conversationId,id,'retained worker identity must survive a main-thread reset');
+ assert.deepEqual(runtime.state().workerMessages,workerMessages,'worker transcript must survive a main-thread reset');
+ assert.equal(runtime.runtime.conversation(id).generations.at(-1)!.receipts.model,true,'suppressed model completion must be acknowledged');
+ command(runtime,{action:'send',conversationId:id,text:'Follow up delay=10'});
+ await until(()=>runtime.state().tasks[0].generation===2&&runtime.state().tasks[0].status==='completed',8000);
+ assert.equal(runtime.state().tasks[0].conversationId,id,'worker must remain resumable after the main reset');
+ assert.equal(bridge.state.mainMessages.filter((m:any)=>m.role==='user'||m.role==='assistant').length,0,'durable main transcript remains fresh after direct worker follow-up');
+ internal.busy=true;
  const rejected=JSON.parse(runtime.dispatch(JSON.stringify({action:'new_main'})));
- anyRuntime.busy=false;
- assert.equal(rejected.ok,false);
- assert.match(rejected.error,/Stop active work/);
+ internal.busy=false;
+ assert.equal(rejected.ok,false);assert.match(rejected.error,/Stop active work/);
 });
 
 test('fresh-main startup intent discards persisted main work before automatic resume',()=>{

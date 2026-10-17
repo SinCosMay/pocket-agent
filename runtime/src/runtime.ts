@@ -213,7 +213,13 @@ export class PocketRuntime {
   private suppressCompletedMainDeliveries():void {
     for(const c of this.runtime.listConversations()) {
       const g=c.generations.at(-1)!;
-      if(!c.parentConversationId && g.status.kind==='done')this.delivered.add(generationKey({conversationId:c.conversationId,generation:g.generation}));
+      if(!c.parentConversationId && g.status.kind==='done') {
+        if(g.modelSubscribed) {
+          const completed=this.runtime.generationCaller({conversationId:c.conversationId,generation:g.generation});
+          completed.conversation.markCollected(completed.generation,'model');
+        }
+        this.delivered.add(generationKey({conversationId:c.conversationId,generation:g.generation}));
+      }
     }
   }
   private enqueueCompletion(conversationId:string,generation:number):void {
@@ -361,16 +367,18 @@ export class PocketRuntime {
         previousMain.dispose();
       } else if(cmd.action==='new_main') {
         if(this.busy||this.pumping||this.deliveryTransaction||this.observing||this.runtime.listConversations().some(c=>c.currentGeneration||c.isStopping))throw new Error('Stop active work before starting a new main thread');
-        this.suppressCompletedMainDeliveries();
-        this.inbox=[];
-        this.main.dispose();
-        this.main=this.createSession('main');
-        this.mainPaused=false;
-        this.mainInterrupted=false;
-        this.mainTurns=0;
-        this.lastError=null;
-        this.observationPending=[];
-        if(this.inbox.length)queueMicrotask(()=>void this.pump());
+        this.deliveryTransaction=true;
+        try {
+          this.suppressCompletedMainDeliveries();
+          this.inbox=[];
+          this.main.dispose();
+          this.main=this.createSession('main');
+          this.mainPaused=false;
+          this.mainInterrupted=false;
+          this.mainTurns=0;
+          this.lastError=null;
+          this.observationPending=[];
+        } finally { this.deliveryTransaction=false; }
       } else if(cmd.action!=='state')throw new Error(`Unknown action ${cmd.action}`);
       this.save();this.publish();return JSON.stringify({ok:true,accepted:true});
     } catch(e){return JSON.stringify({ok:false,error:this.sanitize(String((e as any)?.message??e))});}
