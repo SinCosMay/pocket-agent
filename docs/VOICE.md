@@ -5,10 +5,11 @@
 Pocket Agent remains the assistant and subagent host. Android's selected digital-assistant
 gesture activates a microphone-type Android foreground service with an ongoing
 notification, without leaving an overlay on screen. A live microphone stream always goes to Deepgram STT from its first sample. On Android 13+
-the same PCM is also injected into Android's default system speech recognizer without opening
-a second microphone. If speech ends strictly before three seconds, the system transcript wins;
-at three seconds or longer Deepgram wins. Android 12/12L use Deepgram for all transcription.
-The selected transcript is submitted as **one normal main-agent user message**. Only
+the same PCM is also injected into an available Android system speech recognizer without opening
+a second microphone. A successful system result can win only when speech ends strictly before
+three seconds; unavailable, failed, or stalled system recognition falls back to Deepgram. At three
+seconds or longer Deepgram is authoritative. Android 12/12L use Deepgram for all transcription.
+A nonempty selected transcript, after any wake-word prefix is removed, is submitted as **one normal main-agent user message**; wake-word-only turns are ignored. Only
 text deltas produced in that particular main response are sent to Deepgram streaming
 TTS. Subsequent Pi9 worker completion messages and ordinary text messages remain
 visible in chat without speech unless the model explicitly calls `speak_to_user`. The listening service ends after three seconds of idle silence, or immediately via
@@ -35,10 +36,11 @@ Pocket Agent instead uses directly documented Deepgram APIs:
 - STT: `wss://api.deepgram.com/v2/listen` using Flux `flux-general-en`, raw
   16 kHz signed PCM16 mono with 80 ms microphone packets (the Deepgram-recommended
   chunk size). Deepgram receives every utterance from the beginning even while the
-  Android system recognizer is eligible for a short-turn result. On Android 13+,
-  that same PCM16 stream is supplied through `RecognizerIntent.EXTRA_AUDIO_SOURCE`;
-  the system recognizer never owns the microphone. A deterministic arbiter accepts
-  the system result only when speech ends before 3000 ms, uses Deepgram at the
+  Android system recognizer is eligible for a short-turn result. On Android 13+ with
+  a compatible recognition service, that same PCM16 stream is supplied through
+  `RecognizerIntent.EXTRA_AUDIO_SOURCE`; the system recognizer never owns the microphone.
+  A deterministic arbiter accepts a successful system result only when speech ends before
+  3000 ms, uses Deepgram at the
   3000 ms boundary and beyond, suppresses duplicate finals, and falls back to
   Deepgram on system-recognizer failure. Flux provisional updates do not initiate
   model inference.

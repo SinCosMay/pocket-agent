@@ -217,6 +217,21 @@ public final class HybridSttDeviceTest {
         assertFalse(arbiter.matchingDeepgramWaitExpired(gen));
     }
 
+    @Test public void deepgramFinalAfterSystemFailureIsImmediateEvenForShortSpeech() {
+        HybridTranscriptArbiter arbiter = new HybridTranscriptArbiter(true);
+        long gen = arbiter.generation();
+        arbiter.speechStarted(gen, 1000L);
+        assertTrue(arbiter.systemSpeechEnded(gen, 1800L));
+        assertNull(arbiter.systemFailed(gen));
+
+        HybridTranscriptArbiter.Choice choice =
+            arbiter.deepgramFinal(gen, "Deepgram after system failure", 2200L);
+        assertNotNull(choice);
+        assertEquals(HybridTranscriptArbiter.Source.DEEPGRAM, choice.source);
+        assertEquals("Deepgram after system failure", choice.text);
+        assertTrue(arbiter.turnSettled());
+    }
+
     @Test public void unavailableSystemRecognizerMakesDeepgramAuthoritativeImmediately() {
         HybridTranscriptArbiter arbiter = new HybridTranscriptArbiter(false);
         long gen = arbiter.generation();

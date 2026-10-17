@@ -103,7 +103,7 @@ final class HybridTranscriptArbiter {
         boolean systemEndedShort = systemSpeechEndedAt >= 0L && speechStartedAt >= 0L
             && (systemSpeechEndedAt - speechStartedAt < SHORT_UTTERANCE_MS);
 
-        if (systemEndedShort) {
+        if (systemEndedShort && systemEnabled) {
             pendingDeepgram = text.trim();
             return null;
         }
