@@ -49,6 +49,7 @@ final class AndroidShortSpeechRecognizer implements AutoCloseable, DeepgramVoice
     private final Handler main = new Handler(Looper.getMainLooper());
     private final ThreadPoolExecutor writer;
     private final ArrayDeque<byte[]> preroll = new ArrayDeque<>();
+    private ArrayList<String> cachedBiases;
     private int prerollBytes;
     private long generation;
     private volatile boolean active;
@@ -135,17 +136,19 @@ final class AndroidShortSpeechRecognizer implements AutoCloseable, DeepgramVoice
     }
 
     private ArrayList<String> recognitionBiases() {
+        if (cachedBiases != null) return new ArrayList<>(cachedBiases);
         LinkedHashSet<String> names = new LinkedHashSet<>();
         if (context.checkSelfPermission(Manifest.permission.READ_CONTACTS)
-                != PackageManager.PERMISSION_GRANTED)
-            return new ArrayList<>();
-        appendContactNames(ContactsContract.Contacts.CONTENT_STREQUENT_URI, names, null);
-        if (names.size() < MAX_BIASING_STRINGS) {
-            appendContactNames(ContactsContract.Contacts.CONTENT_URI, names,
-                ContactsContract.Contacts.STARRED + " DESC, "
-                    + ContactsContract.Contacts.DISPLAY_NAME_PRIMARY + " COLLATE NOCASE ASC");
+                == PackageManager.PERMISSION_GRANTED) {
+            appendContactNames(ContactsContract.Contacts.CONTENT_STREQUENT_URI, names, null);
+            if (names.size() < MAX_BIASING_STRINGS) {
+                appendContactNames(ContactsContract.Contacts.CONTENT_URI, names,
+                    ContactsContract.Contacts.STARRED + " DESC, "
+                        + ContactsContract.Contacts.DISPLAY_NAME_PRIMARY + " COLLATE NOCASE ASC");
+            }
         }
-        return new ArrayList<>(names);
+        cachedBiases = new ArrayList<>(names);
+        return new ArrayList<>(cachedBiases);
     }
 
     private void appendContactNames(Uri uri, LinkedHashSet<String> names, String sortOrder) {
