@@ -42,6 +42,9 @@ public final class MainActivity extends Activity implements AgentService.Observe
     private JSONObject state = new JSONObject();
     private String viewedWorker;
     private String deferredUserMessage;
+    private Spinner modelPicker;
+    private String modelRequestId;
+    private String[] modelIds = {};
     private StateStore store;
     private static final int IMPORT_CODEX = 90;
     private final ExecutorService accountFiles = Executors.newSingleThreadExecutor();
@@ -111,6 +114,25 @@ public final class MainActivity extends Activity implements AgentService.Observe
     @Override public void onAgentEvent(JSONObject event) {
         String type = event.optString("type");
         if (type.equals("state")) { state = event.optJSONObject("state"); if (state == null) state = new JSONObject(); render(); }
+        else if (type.equals("models") && modelPicker != null && event.optString("requestId").equals(modelRequestId)) {
+            String failure = event.optString("error");
+            if (!failure.isEmpty()) { toast(failure); return; }
+            JSONArray models = event.optJSONArray("models");
+            if (models == null) { toast("Provider returned no model list"); return; }
+            String[] labels = new String[models.length() + 1];
+            modelIds = new String[models.length() + 1];
+            labels[0] = "Select discovered main model";
+            for (int i = 0; i < models.length(); i++) {
+                JSONObject entry = models.optJSONObject(i);
+                String id = entry == null ? "" : entry.optString("id");
+                modelIds[i + 1] = id;
+                String name = entry == null ? id : entry.optString("name", id);
+                labels[i + 1] = name.equals(id) ? id : name + " (" + id + ")";
+            }
+            modelPicker.setAdapter(new ArrayAdapter<>(this, android.R.layout.simple_spinner_dropdown_item, labels));
+            modelPicker.setSelection(0);
+            toast("Discovered " + models.length() + " models");
+        }
         else if (type.equals("error")) { status.setText("Error · " + event.optString("error", "Runtime unavailable")); }
         else if (type.equals("voice_delivery_error")) { status.setText("Voice error · " + event.optString("error", "Unable to start speech")); }
         else if (type.equals("stopped")) {
@@ -174,17 +196,51 @@ public final class MainActivity extends Activity implements AgentService.Observe
         try { saved = credentials.get(); } catch (Exception e) { toast("Unable to read protected credentials"); return; }
         LinearLayout panel = column(); panel.setPadding(dp(20), dp(4), dp(20), dp(8));
         panel.addView(text("Provider")); Spinner mode = new Spinner(this);
-        String[] names = {"Scripted model (local validation)", "API key (HTTPS)", "Codex emulator relay (development)", "Codex account (ChatGPT)"};
-        String[] modes = {"scripted", "openai", "codex", CredentialStore.CODEX_ACCOUNT};
+        String[] names = {"Scripted model (local validation)", "API key (HTTPS)", "OpenCode Free (Console key)", "Nebius Token Factory", "Codex emulator relay (development)", "Codex account (ChatGPT)"};
+        String[] modes = {"scripted", "openai", CredentialStore.OPENCODE, CredentialStore.NEBIUS, "codex", CredentialStore.CODEX_ACCOUNT};
         mode.setAdapter(new ArrayAdapter<>(this, android.R.layout.simple_spinner_dropdown_item, names));
         String auth = saved.optString("authMode");
-        int selected = auth.equals("scripted") ? 0 : auth.equals("openai") || auth.equals("api-key") ? 1 : auth.equals(CredentialStore.CODEX_ACCOUNT) ? 3 : 2;
+        int selected = auth.equals("scripted") ? 0 : auth.equals("openai") || auth.equals("api-key") ? 1
+                : auth.equals(CredentialStore.OPENCODE) ? 2 : auth.equals(CredentialStore.NEBIUS) ? 3
+                : auth.equals(CredentialStore.CODEX_ACCOUNT) ? 5 : 4;
         mode.setSelection(selected); panel.addView(mode);
         LinearLayout endpointPanel = column(); panel.addView(endpointPanel);
-        EditText endpoint = field(endpointPanel, "API endpoint", saved.optString("endpoint", "https://api.openai.com/v1")); endpoint.setInputType(InputType.TYPE_CLASS_TEXT | InputType.TYPE_TEXT_VARIATION_URI);
-        EditText model = field(panel, "Model", saved.optString("model", selected == 3 ? CredentialStore.CODEX_MODEL : "gpt-4.1-mini"));
+        String defaultEndpoint = selected == 2 ? CredentialStore.OPENCODE_ENDPOINT : selected == 3 ? CredentialStore.NEBIUS_ENDPOINT : "https://api.openai.com/v1";
+        EditText endpoint = field(endpointPanel, "API endpoint", saved.optString("endpoint", defaultEndpoint)); endpoint.setInputType(InputType.TYPE_CLASS_TEXT | InputType.TYPE_TEXT_VARIATION_URI);
+        String defaultModel = selected == 2 ? CredentialStore.OPENCODE_MODEL : selected == 3 ? CredentialStore.NEBIUS_MODEL : selected == 5 ? CredentialStore.CODEX_MODEL : "gpt-4.1-mini";
+        EditText model = field(panel, "Main chat model ID (editable fallback)", saved.optString("model", defaultModel));
+        Spinner picker = new Spinner(this);
+        modelPicker = picker;
+        picker.setAdapter(new ArrayAdapter<>(this, android.R.layout.simple_spinner_dropdown_item, new String[]{"Tap Discover models to choose"}));
+        picker.setOnItemSelectedListener(new AdapterView.OnItemSelectedListener() {
+            @Override public void onItemSelected(AdapterView<?> parent, View view, int position, long id) {
+                if (position > 0 && position < modelIds.length && modelIds[position] != null)
+                    model.setText(modelIds[position]);
+            }
+            @Override public void onNothingSelected(AdapterView<?> parent) { }
+        });
+        panel.addView(picker);
+        final EditText[] newKey = new EditText[1];
+        panel.addView(button("Discover models", () -> {
+            if (activeWork()) { toast("Finish active work before discovering models"); return; }
+            String selectedMode = modes[mode.getSelectedItemPosition()];
+            String savedMode = saved.optString("authMode");
+            boolean sameMode = selectedMode.equals(savedMode)
+                    || (selectedMode.equals("openai") && savedMode.equals("api-key"))
+                    || (selectedMode.equals("codex") && (savedMode.equals("codexRelay") || savedMode.equals("codex-relay")));
+            boolean fixedProvider = selectedMode.equals(CredentialStore.OPENCODE) || selectedMode.equals(CredentialStore.NEBIUS);
+            if (!sameMode
+                    || (!selectedMode.equals(CredentialStore.CODEX_ACCOUNT) && !fixedProvider && !endpoint.getText().toString().trim().equals(saved.optString("endpoint")))
+                    || (newKey[0] != null && newKey[0].getText().length() > 0)) {
+                toast("Save your provider connection, then reopen Settings to discover its models");
+                return;
+            }
+            modelRequestId = Long.toHexString(System.nanoTime());
+            command(json("action", "list_models", "requestId", modelRequestId));
+        }));
         LinearLayout secretPanel = column(); panel.addView(secretPanel);
         EditText secret = field(secretPanel, "API key / relay token (blank keeps saved value)", ""); secret.setInputType(InputType.TYPE_CLASS_TEXT | InputType.TYPE_TEXT_VARIATION_PASSWORD);
+        newKey[0] = secret;
         secret.setImportantForAutofill(View.IMPORTANT_FOR_AUTOFILL_NO_EXCLUDE_DESCENDANTS); secret.setSaveEnabled(false);
         LinearLayout accountPanel = column(); panel.addView(accountPanel);
         String accountStatus = "No account connected";
@@ -213,16 +269,47 @@ public final class MainActivity extends Activity implements AgentService.Observe
             try { credentials.signOutCodex(); invalidateAccountOperations(); if (AgentService.isRunning()) command(json("action", "configure")); settingsDialog[0].dismiss(); toast("Account signed out on this phone"); }
             catch (Exception error) { toast("Unable to clear the protected account"); }
         }));
-        TextView connectionHelp = text("Codex relay uses http://10.0.2.2:port/v1 on an emulator. Account mode connects directly and needs no API key or endpoint."); panel.addView(connectionHelp);
+        TextView connectionHelp = text("OpenCode Free uses OpenCode's fixed external inference API and requires a Console service-account key. Pocket Agent sends it only as Authorization: Bearer to opencode.ai; no OpenCode client identity headers are spoofed. Nebius Token Factory uses its fixed API endpoint and requires a Nebius key; its default GLM-5.3-Flash supports vision and tool use. Codex relay uses http://10.0.2.2:port/v1 on an emulator. Codex account mode needs no API key or endpoint."); panel.addView(connectionHelp);
+        java.util.function.IntConsumer renderProviderFields = position -> {
+            String selectedMode = modes[position];
+            boolean account = selectedMode.equals(CredentialStore.CODEX_ACCOUNT);
+            boolean openCode = selectedMode.equals(CredentialStore.OPENCODE);
+            boolean nebius = selectedMode.equals(CredentialStore.NEBIUS);
+            boolean fixedProvider = openCode || nebius;
+            boolean sameProvider = selectedMode.equals(auth)
+                    || (selectedMode.equals("openai") && auth.equals("api-key"))
+                    || (selectedMode.equals("codex") && (auth.equals("codexRelay") || auth.equals("codex-relay")));
+            endpointPanel.setVisibility(account || fixedProvider ? View.GONE : View.VISIBLE);
+            secretPanel.setVisibility(account ? View.GONE : View.VISIBLE);
+            accountPanel.setVisibility(account ? View.VISIBLE : View.GONE);
+            secret.setHint(openCode ? "OpenCode Console service-account key (required)" : nebius ? "Nebius API key (required)" : "API key / relay token (blank keeps saved value)");
+            if (sameProvider) {
+                if (!account) endpoint.setText(saved.optString("endpoint", endpoint.getText().toString()));
+                model.setText(saved.optString("model", model.getText().toString()));
+            } else if (account) model.setText(CredentialStore.CODEX_MODEL);
+            else if (openCode) { endpoint.setText(CredentialStore.OPENCODE_ENDPOINT); model.setText(CredentialStore.OPENCODE_MODEL); }
+            else if (nebius) { endpoint.setText(CredentialStore.NEBIUS_ENDPOINT); model.setText(CredentialStore.NEBIUS_MODEL); }
+            else if (selectedMode.equals("codex")) { endpoint.setText("http://10.0.2.2:8787/v1"); model.setText(CredentialStore.CODEX_MODEL); }
+            else if (selectedMode.equals("openai")) { endpoint.setText("https://api.openai.com/v1"); model.setText("gpt-4.1-mini"); }
+            else { endpoint.setText("https://api.openai.com/v1"); model.setText("scripted"); }
+        };
+        final int[] lastProvider = {selected};
         mode.setOnItemSelectedListener(new AdapterView.OnItemSelectedListener() {
             @Override public void onItemSelected(AdapterView<?> parent, View view, int position, long id) {
-                boolean account = position == 3;
-                endpointPanel.setVisibility(account ? View.GONE : View.VISIBLE); secretPanel.setVisibility(account ? View.GONE : View.VISIBLE);
-                accountPanel.setVisibility(account ? View.VISIBLE : View.GONE);
-                if (account && !auth.equals(CredentialStore.CODEX_ACCOUNT)) model.setText(CredentialStore.CODEX_MODEL);
+                if (position != lastProvider[0]) {
+                    secret.setText("");
+                    modelRequestId = null;
+                    modelIds = new String[0];
+                    picker.setAdapter(new ArrayAdapter<>(MainActivity.this, android.R.layout.simple_spinner_dropdown_item,
+                            new String[]{"Tap Discover models to choose"}));
+                    picker.setSelection(0);
+                }
+                lastProvider[0] = position;
+                renderProviderFields.accept(position);
             }
             @Override public void onNothingSelected(AdapterView<?> parent) { }
         });
+        renderProviderFields.accept(selected);
         if (BuildConfig.DEVELOPMENT_TOOLS) panel.addView(button("Development MCP and ngrok", () ->
             startActivity(new Intent().setClassName(this, "dev.pocket.agent.DevToolsActivity"))));
         panel.addView(button("Accessibility settings", () -> startActivity(new Intent(Settings.ACTION_ACCESSIBILITY_SETTINGS))));
@@ -303,13 +390,22 @@ public final class MainActivity extends Activity implements AgentService.Observe
                     JSONObject config = json("authMode", selectedMode, "model", model.getText().toString().trim());
                     if (!selectedMode.equals(CredentialStore.CODEX_ACCOUNT)) {
                         config.put("endpoint", endpoint.getText().toString().trim());
-                        // Never substitute an account token into the API-key field.
-                        config.put("apiKey", secret.getText().length() == 0 ? saved.optString("apiKey") : secret.getText().toString().trim());
+                        String savedMode = saved.optString("authMode");
+                        boolean sameProvider = selectedMode.equals(savedMode)
+                                || (selectedMode.equals("openai") && savedMode.equals("api-key"))
+                                || (selectedMode.equals("codex") && (savedMode.equals("codexRelay") || savedMode.equals("codex-relay")));
+                        // Never carry a credential from a different provider when switching modes.
+                        String entered = secret.getText().toString().trim();
+                        config.put("apiKey", entered.isEmpty() && sameProvider ? saved.optString("apiKey") : entered);
                     }
                     credentials.save(config); invalidateAccountOperations(); if (AgentService.isRunning()) command(json("action", "configure")); dialog.dismiss(); toast("Connection saved");
                 } catch (Exception error) { toast(error instanceof IllegalArgumentException ? error.getMessage() : "Could not save connection"); }
             });
-        }); dialog.show();
+        });
+        dialog.setOnDismissListener(ignored -> {
+            if (modelPicker == picker) { modelPicker = null; modelRequestId = null; modelIds = new String[0]; }
+        });
+        dialog.show();
     }
     private void voiceKeySettings() {
         EditText key = new EditText(this);

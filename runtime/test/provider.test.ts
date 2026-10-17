@@ -130,3 +130,116 @@ test('direct Codex bounds its streamed response and cancels an oversized body',a
  const result=await(await makeStream(accountConfig,credentials,'main')(modelFor(accountConfig,credentials),{messages:[]},{fetch:fetcher})).result();
  assert.equal(result.stopReason,'error');assert.equal(cancelled,true);
 });
+
+
+test('OpenCode and Nebius are fixed Chat Completions providers',()=>{
+ const open=modelFor({mode:'opencode',model:'big-pickle'},{authMode:'opencode',model:'big-pickle'});
+ assert.equal(open.api,'openai-completions');
+ assert.equal(open.provider,'opencode');
+ assert.equal(open.baseUrl,'https://opencode.ai/inference/openai/v1');
+ assert.deepEqual(open.input,['text']);
+ const openVision=modelFor({mode:'opencode',model:'nemotron-3.5-super-vl-free'},{authMode:'opencode',model:'nemotron-3.5-super-vl-free'});
+ assert.deepEqual(openVision.input,['text','image']);
+ const nebius=modelFor({mode:'nebius',model:'zai-org/GLM-5.3-Flash'},{authMode:'nebius',apiKey:'secret',model:'zai-org/GLM-5.3-Flash'});
+ assert.equal(nebius.api,'openai-completions');
+ assert.equal(nebius.provider,'nebius');
+ assert.equal(nebius.baseUrl,'https://api.tokenfactory.nebius.com/v1');
+ assert.deepEqual(nebius.input,['text','image']);
+ const textOnly=modelFor({mode:'nebius',model:'Qwen/Qwen3-30B-A3B-Instruct-2507'},{authMode:'nebius',apiKey:'secret',model:'Qwen/Qwen3-30B-A3B-Instruct-2507'});
+ assert.deepEqual(textOnly.input,['text']);
+ const vl=modelFor({mode:'nebius',model:'Qwen/Qwen3-VL-30B-A3B'},{authMode:'nebius',apiKey:'secret',model:'Qwen/Qwen3-VL-30B-A3B'});
+ assert.deepEqual(vl.input,['text','image']);
+ assert.throws(()=>modelFor({mode:'opencode',endpoint:'https://evil.test',model:'big-pickle'},{authMode:'opencode'}),/fixed API endpoint/);
+ assert.throws(()=>modelFor({mode:'nebius',endpoint:'https://evil.test',model:'zai-org/GLM-5.3-Flash'},{authMode:'nebius',apiKey:'secret'}),/fixed API endpoint/);
+});
+
+test('OpenCode refuses inference until an external Console key is configured',async()=>{
+ const config={mode:'opencode' as const,model:'big-pickle'};
+ const credentials={authMode:'opencode',apiKey:'',model:'big-pickle'};
+ let called=false;
+ const result=await(await makeStream(config,credentials,'main')(modelFor(config,credentials),{messages:[]},{fetch:async()=>{called=true;throw Error('unexpected');}})).result();
+ assert.equal(called,false);
+ assert.equal(result.stopReason,'error');
+ assert.match(result.errorMessage||'',/Console service-account key/);
+});
+
+test('keyed OpenCode and Nebius inference send the configured bearer credential',async()=>{
+ const cases=[
+   {config:{mode:'opencode' as const,model:'beam-free'},credentials:{authMode:'opencode',apiKey:'oc_sk_test_external',model:'beam-free'},url:'https://opencode.ai/inference/openai/v1/chat/completions',key:'oc_sk_test_external'},
+   {config:{mode:'nebius' as const,model:'zai-org/GLM-5.3-Flash'},credentials:{authMode:'nebius',apiKey:'nebius-secret',model:'zai-org/GLM-5.3-Flash'},url:'https://api.tokenfactory.nebius.com/v1/chat/completions',key:'nebius-secret'},
+ ];
+ for(const item of cases) {
+   let authorization:string|null=null;
+   const fetcher:typeof fetch=async(input,init)=>{
+     assert.equal(String(input),item.url);
+     assert.equal(init?.redirect,'error');
+     const headers=new Headers(init?.headers);
+     authorization=headers.get('authorization');
+     assert.match(headers.get('content-type')||'',/^application\/json/);
+     if(item.config.mode==='opencode')assert.equal(headers.get('x-opencode-org-id'),null);
+     const chunks=[
+       {id:'chatcmpl-keyed',object:'chat.completion.chunk',created:1,model:item.credentials.model,choices:[{index:0,delta:{role:'assistant',content:'OK'},finish_reason:null}]},
+       {id:'chatcmpl-keyed',object:'chat.completion.chunk',created:1,model:item.credentials.model,choices:[{index:0,delta:{},finish_reason:'stop'}]},
+     ];
+     return new Response(chunks.map(x=>'data: '+JSON.stringify(x)+'\n\n').join('')+'data: [DONE]\n\n',{headers:{'content-type':'text/event-stream'}});
+   };
+   const stream=makeStream(item.config,item.credentials,'main');
+   const result=await(await stream(modelFor(item.config,item.credentials),{messages:[{role:'user',content:[{type:'text',text:'Say OK'}],timestamp:Date.now()}]},{fetch:fetcher})).result();
+   assert.equal(authorization,'Bearer '+item.key);
+   assert.equal(result.stopReason,'stop');
+ }
+});
+
+
+test('fixed OpenCode timeout remains active while the SSE response body is stalled',{timeout:3000},async()=>{
+ const originalTimeout=AbortSignal.timeout;
+ const timeoutController=new AbortController();
+ let wireSignal:AbortSignal|undefined,bodyAborted=false;
+ let readyResolve!:()=>void;
+ const ready=new Promise<void>(resolve=>{readyResolve=resolve;});
+ (AbortSignal as any).timeout=(ms:number)=>{
+   assert.equal(ms,120000);
+   return timeoutController.signal;
+ };
+ try {
+   const config={mode:'opencode' as const,model:'beam-free'};
+   const credentials={authMode:'opencode',apiKey:'open-secret',model:'beam-free'};
+   const fetcher:typeof fetch=async(_input,init)=>{
+     wireSignal=init?.signal as AbortSignal|undefined;
+     assert.ok(wireSignal);
+     const body=new ReadableStream<Uint8Array>({
+       start(controller) {
+         controller.enqueue(new TextEncoder().encode('data: '+JSON.stringify({
+           id:'chatcmpl-stall',object:'chat.completion.chunk',created:1,model:'beam-free',
+           choices:[{index:0,delta:{role:'assistant',content:'partial'},finish_reason:null}],
+         })+'\n\n'));
+         wireSignal!.addEventListener('abort',()=>{
+           bodyAborted=true;
+           controller.error(new DOMException('timed out','AbortError'));
+         },{once:true});
+         readyResolve();
+       },
+     });
+     return new Response(body,{headers:{'content-type':'text/event-stream'}});
+   };
+   const stream=await makeStream(config,credentials,'main')(
+     modelFor(config,credentials),
+     {messages:[{role:'user',content:[{type:'text',text:'stall'}],timestamp:Date.now()}]},
+     {fetch:fetcher},
+   );
+   await Promise.race([
+     ready,
+     new Promise<never>((_,reject)=>setTimeout(()=>reject(new Error('provider fetch did not start')),1000)),
+   ]);
+   timeoutController.abort();
+   const result=await Promise.race([
+     stream.result(),
+     new Promise<never>((_,reject)=>setTimeout(()=>reject(new Error('provider stream did not stop after timeout')),1000)),
+   ]);
+   assert.equal(bodyAborted,true);
+   assert.equal(wireSignal?.aborted,true);
+   assert.equal(result.stopReason,'error');
+ } finally {
+   (AbortSignal as any).timeout=originalTimeout;
+ }
+});
