@@ -4,8 +4,11 @@
 
 Pocket Agent remains the assistant and subagent host. Android's selected digital-assistant
 gesture activates a microphone-type Android foreground service with an ongoing
-notification, without leaving an overlay on screen. A live microphone stream goes to Deepgram STT;
-a finalized utterance is submitted as **one normal main-agent user message**. Only
+notification, without leaving an overlay on screen. A live microphone stream always goes to Deepgram STT from its first sample. On Android 13+
+the same PCM is also injected into Android's default system speech recognizer without opening
+a second microphone. If speech ends strictly before three seconds, the system transcript wins;
+at three seconds or longer Deepgram wins. Android 12/12L use Deepgram for all transcription.
+The selected transcript is submitted as **one normal main-agent user message**. Only
 text deltas produced in that particular main response are sent to Deepgram streaming
 TTS. Subsequent Pi9 worker completion messages and ordinary text messages remain
 visible in chat without speech unless the model explicitly calls `speak_to_user`. The listening service ends after three seconds of idle silence, or immediately via
@@ -31,9 +34,14 @@ Pocket Agent instead uses directly documented Deepgram APIs:
 
 - STT: `wss://api.deepgram.com/v2/listen` using Flux `flux-general-en`, raw
   16 kHz signed PCM16 mono with 80 ms microphone packets (the Deepgram-recommended
-  chunk size). Only `TurnInfo` events with `event=EndOfTurn` submit a user turn;
-  interim updates do not initiate model inference. Default Flux turn detection
-  is used without speculative eager-generation to avoid unwanted API calls.
+  chunk size). Deepgram receives every utterance from the beginning even while the
+  Android system recognizer is eligible for a short-turn result. On Android 13+,
+  that same PCM16 stream is supplied through `RecognizerIntent.EXTRA_AUDIO_SOURCE`;
+  the system recognizer never owns the microphone. A deterministic arbiter accepts
+  the system result only when speech ends before 3000 ms, uses Deepgram at the
+  3000 ms boundary and beyond, suppresses duplicate finals, and falls back to
+  Deepgram on system-recognizer failure. Flux provisional updates do not initiate
+  model inference.
 - TTS: `wss://api.deepgram.com/v1/speak` with Aura-2 Thalia,
   24 kHz signed PCM16 mono. The outgoing Pi response is cut at punctuation
   or a long whitespace boundary, preserving incomplete word fragments.
@@ -156,7 +164,9 @@ Validation checklist:
    and foreground memory/battery with system tools. Never claim live voice
    latency was measured without a Deepgram-connected voice trial.
 
-Known limitations: Deepgram STT/TTS consumes network access and quota.
+Known limitations: Deepgram STT/TTS consumes network access and quota. Android short-turn
+recognition requires Android 13+ and an available system speech-recognition service; devices
+without one, and Android 12/12L, transparently use Deepgram for all turns.
 An OEM may not expose the power-button assistant gesture; it may invoke a
 different assistant despite the selected role. Android 12+ background service
 and microphone restrictions still apply.

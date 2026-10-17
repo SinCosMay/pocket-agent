@@ -39,6 +39,7 @@ run_test() {
 result=0
 for test_class in \
   dev.pocket.agent.InstantVoiceCaptureDeviceTest \
+  dev.pocket.agent.HybridSttDeviceTest \
   dev.pocket.agent.JarvisDetectorDeviceTest \
   dev.pocket.agent.JarvisWakeLifecycleDeviceTest \
   dev.pocket.agent.WakeWordSettingsDeviceTest; do
