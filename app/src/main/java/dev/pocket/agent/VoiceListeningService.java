@@ -136,7 +136,12 @@ public final class VoiceListeningService extends Service implements AgentService
         if (!AgentService.isRunning())
             startForegroundService(new Intent(this, AgentService.class).setAction(AgentService.ACTION_START));
         voice = new DeepgramVoice(this, key, new DeepgramVoice.Callback() {
-            @Override public void onUtterance(String text) { main.post(() -> deepgramUtterance(text)); }
+            @Override public void onUtterance(String text) {
+                main.post(() -> deepgramUtterance(text, -1L));
+            }
+            @Override public void onUtterance(String text, long spokenDurationMs) {
+                main.post(() -> deepgramUtterance(text, spokenDurationMs));
+            }
             @Override public void onSpeechStarted() { main.post(VoiceListeningService.this::deepgramSpeechStarted); }
             @Override public void onEmptyTurn() {
                 main.post(() -> {
@@ -348,7 +353,6 @@ public final class VoiceListeningService extends Service implements AgentService
 
     private void speechStarted() {
         if (!started) return;
-        markSpeechForArbitration();
         userSpeaking = true;
         main.removeCallbacks(idleStop);
         if (responding) {
@@ -393,22 +397,14 @@ public final class VoiceListeningService extends Service implements AgentService
     private void systemSpeechEnded() {
         if (!started || transcriptArbiter == null) return;
         long cycle = activeRecognitionCycle;
-        boolean shortTurn = transcriptArbiter.systemSpeechEnded(cycle, SystemClock.elapsedRealtime());
-        if (shortTurn) {
-            // If Deepgram already finalized, give Android a fresh bounded window to return
-            // its short-turn result. This avoids inheriting a nearly expired timer that was
-            // armed before Android's end-of-speech callback.
-            cancelSystemResultFallback();
-            if (transcriptArbiter.hasPendingDeepgramFinal())
-                scheduleSystemResultFallback(cycle);
-            return;
-        }
+        transcriptArbiter.systemSpeechEnded(cycle, SystemClock.elapsedRealtime());
 
-        // Android has now finished endpointing this utterance. Only at this point do we
-        // reject the system path for a long turn; any Deepgram final already received
-        // remains buffered and can be released immediately.
-        if (shortSpeech != null) shortSpeech.cancelCycle();
-        acceptTranscriptChoice(transcriptArbiter.systemFailed(cycle));
+        // Android's callback can include endpointing silence, so it is not authoritative for
+        // short/long classification. If Flux already finalized, wait only for Android's final
+        // text; otherwise the Flux word timings will make the duration decision when they arrive.
+        cancelSystemResultFallback();
+        if (transcriptArbiter.hasPendingDeepgramFinal())
+            scheduleSystemResultFallback(cycle);
     }
 
     private void systemUtterance(String text) {
@@ -420,8 +416,14 @@ public final class VoiceListeningService extends Service implements AgentService
             systemRecognitionFailed();
             return;
         }
-        acceptTranscriptChoice(transcriptArbiter.systemFinal(
-            activeRecognitionCycle, text, SystemClock.elapsedRealtime()));
+        HybridTranscriptArbiter.Choice choice = transcriptArbiter.systemFinal(
+            activeRecognitionCycle, text, SystemClock.elapsedRealtime());
+        if (choice == null && transcriptArbiter.systemEligible()) {
+            if (transcriptArbiter.hasPendingDeepgramFinal())
+                scheduleSystemResultFallback(activeRecognitionCycle);
+            else scheduleSystemEndpointFallback(activeRecognitionCycle);
+        }
+        acceptTranscriptChoice(choice);
     }
 
     private void systemRecognitionFailed() {
@@ -436,14 +438,14 @@ public final class VoiceListeningService extends Service implements AgentService
         }
     }
 
-    private void deepgramUtterance(String text) {
+    private void deepgramUtterance(String text, long spokenDurationMs) {
         if (!started) return;
         if (transcriptArbiter == null) {
             sendUtterance(text);
             return;
         }
-        HybridTranscriptArbiter.Choice choice =
-            transcriptArbiter.deepgramFinal(activeRecognitionCycle, text, SystemClock.elapsedRealtime());
+        HybridTranscriptArbiter.Choice choice = transcriptArbiter.deepgramFinal(
+            activeRecognitionCycle, text, SystemClock.elapsedRealtime(), spokenDurationMs);
         if (!transcriptArbiter.waitingForMatchingDeepgramFinal())
             cancelDeepgramDuplicateFallback();
         if (choice == null && transcriptArbiter.systemEligible()) {
@@ -456,7 +458,9 @@ public final class VoiceListeningService extends Service implements AgentService
 
     private void acceptTranscriptChoice(HybridTranscriptArbiter.Choice choice) {
         if (choice != null) {
-                cancelSystemResultFallback();
+            cancelSystemResultFallback();
+            if (choice.source == HybridTranscriptArbiter.Source.DEEPGRAM && shortSpeech != null)
+                shortSpeech.cancelCycle();
             Log.i("PocketVoice", "Transcript source=" +
                 (choice.source == HybridTranscriptArbiter.Source.SYSTEM ? "android-system" : "deepgram"));
             sendUtterance(choice.text);
