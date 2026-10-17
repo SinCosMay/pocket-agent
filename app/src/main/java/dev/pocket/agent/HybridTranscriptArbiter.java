@@ -185,6 +185,10 @@ final class HybridTranscriptArbiter {
         return deepgramTurnOpen;
     }
 
+    synchronized boolean hasPendingDeepgramFinal() {
+        return pendingDeepgram != null;
+    }
+
     synchronized boolean matchingDeepgramWaitExpired(long gen) {
         if (gen != generation || !resolved || !waitingForMatchingDeepgramFinal) return false;
         waitingForMatchingDeepgramFinal = false;
