@@ -3,12 +3,12 @@ package dev.pocket.agent;
 /**
  * Chooses exactly one transcript for a spoken turn.
  *
- * Android system recognition owns turns that end strictly before three seconds.
- * Deepgram owns turns that reach the three-second boundary, and remains the fallback
- * whenever system recognition is unavailable or fails.
+ * Android system recognition owns turns that end strictly before the configured short-turn
+ * threshold. Deepgram owns turns at or beyond the threshold, and remains the fallback whenever
+ * system recognition is unavailable, fails, or does not finish within a bounded grace period.
  */
 final class HybridTranscriptArbiter {
-    static final long SHORT_UTTERANCE_MS = 3000L;
+    static final long DEFAULT_SHORT_UTTERANCE_MS = 3000L;
 
     enum Source { SYSTEM, DEEPGRAM }
 
@@ -23,6 +23,7 @@ final class HybridTranscriptArbiter {
     }
 
     private long generation;
+    private long shortUtteranceMs;
     private boolean systemEnabled;
     private long speechStartedAt = -1L;
     private long systemSpeechEndedAt = -1L;
@@ -33,11 +34,22 @@ final class HybridTranscriptArbiter {
     private boolean waitingForMatchingDeepgramFinal;
 
     HybridTranscriptArbiter(boolean systemEnabled) {
-        reset(1L, systemEnabled);
+        this(systemEnabled, DEFAULT_SHORT_UTTERANCE_MS);
+    }
+
+    HybridTranscriptArbiter(boolean systemEnabled, long shortUtteranceMs) {
+        reset(1L, systemEnabled, shortUtteranceMs);
     }
 
     synchronized void reset(long generation, boolean enabled) {
+        reset(generation, enabled, shortUtteranceMs);
+    }
+
+    synchronized void reset(long generation, boolean enabled, long shortUtteranceMs) {
+        if (shortUtteranceMs <= 0L)
+            throw new IllegalArgumentException("Short utterance threshold must be positive");
         this.generation = generation;
+        this.shortUtteranceMs = shortUtteranceMs;
         systemEnabled = enabled;
         speechStartedAt = -1L;
         systemSpeechEndedAt = -1L;
@@ -55,7 +67,7 @@ final class HybridTranscriptArbiter {
     synchronized long speechStarted(long gen, long nowMs) {
         if (gen != generation || resolved) return -1L;
         if (speechStartedAt < 0L || nowMs < speechStartedAt) speechStartedAt = nowMs;
-        return Math.max(0L, SHORT_UTTERANCE_MS - (nowMs - speechStartedAt));
+        return Math.max(0L, shortUtteranceMs - (nowMs - speechStartedAt));
     }
 
     synchronized boolean systemSpeechEnded(long gen, long nowMs) {
@@ -65,7 +77,7 @@ final class HybridTranscriptArbiter {
             systemEnabled = false;
             return false;
         }
-        if (systemSpeechEndedAt - speechStartedAt >= SHORT_UTTERANCE_MS) {
+        if (systemSpeechEndedAt - speechStartedAt >= shortUtteranceMs) {
             systemEnabled = false;
             return false;
         }
@@ -75,7 +87,7 @@ final class HybridTranscriptArbiter {
     synchronized Choice systemFinal(long gen, String text, long nowMs) {
         if (gen != generation || resolved || !systemEnabled || text == null || text.trim().isEmpty()) return null;
         long effectiveEnd = systemSpeechEndedAt >= 0L ? systemSpeechEndedAt : nowMs;
-        if (speechStartedAt < 0L || effectiveEnd - speechStartedAt >= SHORT_UTTERANCE_MS) {
+        if (speechStartedAt < 0L || effectiveEnd - speechStartedAt >= shortUtteranceMs) {
             systemEnabled = false;
             return choosePendingDeepgram();
         }
@@ -101,29 +113,32 @@ final class HybridTranscriptArbiter {
         if (resolved) return null;
 
         boolean systemEndedShort = systemSpeechEndedAt >= 0L && speechStartedAt >= 0L
-            && (systemSpeechEndedAt - speechStartedAt < SHORT_UTTERANCE_MS);
+            && (systemSpeechEndedAt - speechStartedAt < shortUtteranceMs);
+        boolean systemEndedLong = systemSpeechEndedAt >= 0L && speechStartedAt >= 0L
+            && (systemSpeechEndedAt - speechStartedAt >= shortUtteranceMs);
 
-        if (systemEndedShort && systemEnabled) {
+        if (!systemEnabled || systemEndedLong) {
+            resolved = true;
+            return new Choice(text.trim(), Source.DEEPGRAM);
+        }
+
+        // Do not let Deepgram's wall-clock completion time preempt Android. Android and
+        // Deepgram are fed the same PCM concurrently; while Android is still evaluating the
+        // utterance, keep Deepgram's final buffered. A bounded grace timeout releases it if
+        // the Android recognizer stalls.
+        if (systemSpeechEndedAt < 0L || systemEndedShort) {
             pendingDeepgram = text.trim();
             return null;
         }
 
-        boolean longTurn = speechStartedAt >= 0L
-            && nowMs - speechStartedAt >= SHORT_UTTERANCE_MS;
-        boolean systemEndedLong = systemSpeechEndedAt >= 0L && speechStartedAt >= 0L
-            && systemSpeechEndedAt - speechStartedAt >= SHORT_UTTERANCE_MS;
-        if (!systemEnabled || longTurn || systemEndedLong) {
-            resolved = true;
-            return new Choice(text.trim(), Source.DEEPGRAM);
-        }
-        pendingDeepgram = text.trim();
-        return null;
+        resolved = true;
+        return new Choice(text.trim(), Source.DEEPGRAM);
     }
 
     synchronized Choice thresholdReached(long gen, long nowMs) {
         if (gen != generation || resolved || !systemEnabled || speechStartedAt < 0L
-                || nowMs - speechStartedAt < SHORT_UTTERANCE_MS) return null;
-        if (systemSpeechEndedAt >= 0L && systemSpeechEndedAt - speechStartedAt < SHORT_UTTERANCE_MS) {
+                || nowMs - speechStartedAt < shortUtteranceMs) return null;
+        if (systemSpeechEndedAt >= 0L && systemSpeechEndedAt - speechStartedAt < shortUtteranceMs) {
             return null;
         }
         systemEnabled = false;
