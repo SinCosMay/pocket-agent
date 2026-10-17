@@ -227,40 +227,96 @@ public final class MainActivity extends Activity implements AgentService.Observe
         panel.addView(button("Enable Shizuku virtual displays", this::enableVirtualDisplays));
         panel.addView(button("Notification access settings", () -> startActivity(new Intent(Settings.ACTION_NOTIFICATION_LISTENER_SETTINGS))));
         panel.addView(button("Choose phone permissions", this::permissions));
-        panel.addView(text("On Android 13+, Android short-turn recognition is best-effort: when an available system recognizer supports it, Android system recognition and Deepgram receive the same microphone PCM in parallel; otherwise, or if Android recognition fails, Deepgram is used. Flux word timestamps measure the spoken-word span so endpointing silence does not turn a short command into a long one. If that spoken duration is below the threshold and Android returns a result, Android's transcript wins; at or above the threshold Deepgram's transcript wins when available. When Flux timing is unavailable, Android's speech callbacks are used as a fallback. Older Android versions use Deepgram for all transcription. Speech synthesis uses Deepgram with the Pi main agent. Listening stops after three seconds of idle silence or when you tap Stop listening in the notification. Background workers continue."));
+        panel.addView(text("Speech-to-text mode"));
+        Spinner sttMode = new Spinner(this);
+        String[] sttModeNames = {
+            "Hybrid · threshold switching",
+            "Android default only",
+            "Deepgram only"
+        };
+        sttMode.setAdapter(new ArrayAdapter<>(this,
+            android.R.layout.simple_spinner_dropdown_item, sttModeNames));
+        VoiceSttSettings.Mode savedSttMode = VoiceSttSettings.mode(this);
+        sttMode.setSelection(savedSttMode == VoiceSttSettings.Mode.ANDROID_DEFAULT_ONLY ? 1
+            : savedSttMode == VoiceSttSettings.Mode.DEEPGRAM_ONLY ? 2 : 0);
+        panel.addView(sttMode);
+
+        TextView sttModeHelp = text("");
+        panel.addView(sttModeHelp);
         TextView shortThresholdLabel = text("");
         shortThresholdLabel.setTextSize(16);
         panel.addView(shortThresholdLabel);
         SeekBar shortThreshold = new SeekBar(this);
         shortThreshold.setMax(VoiceSttSettings.maxProgress());
-        shortThreshold.setProgress(VoiceSttSettings.progressForMs(VoiceSttSettings.shortUtteranceMs(this)));
+        shortThreshold.setProgress(VoiceSttSettings.progressForMs(
+            VoiceSttSettings.shortUtteranceMs(this)));
         panel.addView(shortThreshold);
+        Button thresholdReset = button("Reset switch threshold to 3.00 s", () -> {
+            VoiceSttSettings.setShortUtteranceMs(this,
+                VoiceSttSettings.DEFAULT_SHORT_UTTERANCE_MS);
+            shortThreshold.setProgress(VoiceSttSettings.progressForMs(
+                VoiceSttSettings.DEFAULT_SHORT_UTTERANCE_MS));
+            toast("Switch threshold reset to 3.00 s");
+        });
+        panel.addView(thresholdReset);
+
         java.util.function.IntConsumer updateShortThreshold = progress -> {
             int ms = VoiceSttSettings.msForProgress(progress);
-            shortThresholdLabel.setText("Android short-turn threshold: " +
-                String.format(java.util.Locale.US, "%.2f", ms / 1000f) + " s");
+            if (VoiceSttSettings.mode(MainActivity.this)
+                    == VoiceSttSettings.Mode.HYBRID_THRESHOLD) {
+                shortThresholdLabel.setText("Switch to Deepgram at: " +
+                    String.format(java.util.Locale.US, "%.2f", ms / 1000f) + " s");
+            } else {
+                shortThresholdLabel.setText("Switch threshold disabled in single-provider mode");
+            }
         };
-        updateShortThreshold.accept(shortThreshold.getProgress());
+        Runnable updateSttModeControls = () -> {
+            VoiceSttSettings.Mode selectedMode = VoiceSttSettings.mode(MainActivity.this);
+            boolean hybrid = selectedMode == VoiceSttSettings.Mode.HYBRID_THRESHOLD;
+            shortThreshold.setEnabled(hybrid);
+            thresholdReset.setEnabled(hybrid);
+            shortThreshold.setAlpha(hybrid ? 1.0f : 0.45f);
+            thresholdReset.setAlpha(hybrid ? 1.0f : 0.45f);
+            updateShortThreshold.accept(shortThreshold.getProgress());
+            if (selectedMode == VoiceSttSettings.Mode.ANDROID_DEFAULT_ONLY) {
+                sttModeHelp.setText("Android default only uses the phone's normal system SpeechRecognizer with its own microphone, matching the standalone test path. Deepgram STT and hybrid arbitration are disabled; Deepgram is still used for speech synthesis.");
+            } else if (selectedMode == VoiceSttSettings.Mode.DEEPGRAM_ONLY) {
+                sttModeHelp.setText("Deepgram only uses the existing streaming Deepgram STT path. Android recognition, parallel arbitration, and the switch threshold are disabled.");
+            } else {
+                sttModeHelp.setText("Hybrid runs Android and Deepgram in parallel. Android wins short turns below the selected threshold when available; Deepgram wins long turns. This is the only mode that uses threshold switching.");
+            }
+        };
+        updateSttModeControls.run();
+
+        sttMode.setOnItemSelectedListener(new AdapterView.OnItemSelectedListener() {
+            @Override public void onItemSelected(AdapterView<?> parent, View view,
+                    int position, long id) {
+                VoiceSttSettings.Mode selected = position == 1
+                    ? VoiceSttSettings.Mode.ANDROID_DEFAULT_ONLY
+                    : position == 2 ? VoiceSttSettings.Mode.DEEPGRAM_ONLY
+                    : VoiceSttSettings.Mode.HYBRID_THRESHOLD;
+                VoiceSttSettings.setMode(MainActivity.this, selected);
+                updateSttModeControls.run();
+            }
+            @Override public void onNothingSelected(AdapterView<?> parent) { }
+        });
         shortThreshold.setOnSeekBarChangeListener(new SeekBar.OnSeekBarChangeListener() {
             @Override public void onProgressChanged(SeekBar bar, int progress, boolean fromUser) {
                 updateShortThreshold.accept(progress);
-                if (fromUser) VoiceSttSettings.setShortUtteranceMs(MainActivity.this,
-                    VoiceSttSettings.msForProgress(progress));
+                if (fromUser && VoiceSttSettings.usesThreshold(MainActivity.this)) {
+                    VoiceSttSettings.setShortUtteranceMs(MainActivity.this,
+                        VoiceSttSettings.msForProgress(progress));
+                }
             }
             @Override public void onStartTrackingTouch(SeekBar bar) { }
             @Override public void onStopTrackingTouch(SeekBar bar) {
+                if (!VoiceSttSettings.usesThreshold(MainActivity.this)) return;
                 int ms = VoiceSttSettings.msForProgress(bar.getProgress());
-                toast("Short-turn threshold saved: " +
+                toast("Switch threshold saved: " +
                     String.format(java.util.Locale.US, "%.2f", ms / 1000f) + " s");
             }
         });
-        panel.addView(button("Reset short-turn threshold to 3.00 s", () -> {
-            VoiceSttSettings.setShortUtteranceMs(this, VoiceSttSettings.DEFAULT_SHORT_UTTERANCE_MS);
-            shortThreshold.setProgress(VoiceSttSettings.progressForMs(
-                VoiceSttSettings.DEFAULT_SHORT_UTTERANCE_MS));
-            toast("Short-turn threshold reset to 3.00 s");
-        }));
-        panel.addView(text("For better proper-name recognition, Android's quality formatting and device-context hints are requested. When Contacts permission is granted, up to 128 contact display names are also supplied to the Android recognizer as bias strings for short turns."));
+        panel.addView(text("For better proper-name recognition, Hybrid mode requests Android quality formatting and device-context/contact hints. Android default only deliberately uses the normal system recognizer microphone path instead of Pocket Agent PCM injection. STT mode changes apply to the next voice session."));
         panel.addView(button("Deepgram voice key", this::voiceKeySettings));
         panel.addView(text("Hey Jarvis runs locally at 16 kHz. The wake-word sensitivity below is saved across restarts and applies immediately to an active listener."));
         TextView wakeConfidenceLabel = text("");
