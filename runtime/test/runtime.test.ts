@@ -347,6 +347,16 @@ test('new main thread clears only main history and queued user work while retain
  assert.match(rejected.error,/Stop active work/);
 });
 
+test('fresh-main startup intent discards persisted main work before automatic resume',()=>{
+ const bridge=new Bridge();
+ bridge.state={freshMainRequested:true,mainSystemPrompt:'Persisted custom prompt',mainMessages:[{role:'user',content:[{type:'text',text:'old main request'}],timestamp:1}],inbox:[{type:'user',text:'old queued request'}],mainTurns:9,mainPaused:true,busy:true,lastError:'old failure',observationPending:['old observation']};
+ const runtime=new PocketRuntime(bridge),state=runtime.state();
+ assert.deepEqual(state.messages,[]);assert.equal(state.mainTurns,0);assert.equal(state.mainPaused,false);assert.equal(state.mainInterrupted,false);assert.equal(state.lastError,null);
+ assert.equal(state.mainSystemPrompt,'Persisted custom prompt');assert.deepEqual((runtime as any).inbox,[]);assert.deepEqual((runtime as any).observationPending,[]);
+ assert.equal(bridge.state.freshMainRequested,undefined,'startup intent is consumed by the first durable checkpoint');
+ assert.deepEqual(bridge.state.mainMessages.filter((m:any)=>m.role==='user'||m.role==='assistant'),[]);
+});
+
 test('account credentials stay redacted from durable state and events after provider changes',async()=>{
  const bridge=new Bridge();
  Object.assign(bridge.credentials,{accessToken:'synthetic-access-token',refreshToken:'synthetic-refresh-token',idToken:'synthetic-id-token',accountId:'synthetic-account-id'});

@@ -61,6 +61,7 @@ export class PocketRuntime {
     this.reloadCredentials();
     this.runtime=new SubagentRuntime(this.registry,limits.maxExecuting,this.execute as any,limits.maxConversations);
     const saved=this.call('store.load',{}) ?? {};
+    const freshMainRequested=saved.freshMainRequested===true;
     if(typeof saved.mainSystemPrompt==='string' && saved.mainSystemPrompt.trim() && saved.mainSystemPrompt.length<=50_000)
       this.mainSystemPrompt=saved.mainSystemPrompt;
     this.config={...this.config,...saved.config};
@@ -70,13 +71,15 @@ export class PocketRuntime {
     if(this.credentials.model) this.config.model=this.credentials.model;
     if(this.config.mode==='codex-account')delete this.config.endpoint;
     this.context={cwd:'.',model:modelFor(this.config,this.credentials),modelRegistry:{}};
-    this.inbox=saved.inbox??[];this.delivered=new Set(saved.delivered??[]);this.mainTurns=saved.mainTurns??0;
-    this.mainInterrupted=Boolean(saved.busy);
-    this.mainPaused=Boolean(saved.mainPaused);
+    const savedInbox=Array.isArray(saved.inbox)?saved.inbox:[];
+    this.inbox=freshMainRequested?[]:savedInbox;
+    this.delivered=new Set(saved.delivered??[]);this.mainTurns=freshMainRequested?0:(saved.mainTurns??0);
+    this.mainInterrupted=freshMainRequested?false:Boolean(saved.busy);
+    this.mainPaused=freshMainRequested?false:Boolean(saved.mainPaused);
     this.totalStarts=saved.totalStarts??0;
-    this.observationPending=Array.isArray(saved.observationPending)?saved.observationPending.filter((x:any)=>typeof x==='string').slice(0,6):[];
-    this.lastError=saved.lastError?this.sanitize(String(saved.lastError)):null;
-    this.main=this.createSession('main',undefined,saved.mainMessages??[]);
+    this.observationPending=freshMainRequested?[]:(Array.isArray(saved.observationPending)?saved.observationPending.filter((x:any)=>typeof x==='string').slice(0,6):[]);
+    this.lastError=freshMainRequested?null:(saved.lastError?this.sanitize(String(saved.lastError)):null);
+    this.main=this.createSession('main',undefined,freshMainRequested?[]:(saved.mainMessages??[]));
     const savedProviderMatches=typeof saved.providerRevision==='string' && saved.providerRevision===this.credentials.providerRevision;
     for(const stored of saved.workers??[]) {
       const snapshot:any=savedProviderMatches?stored:{...stored,requestedConfig:{...(stored.requestedConfig??{})}};
@@ -97,6 +100,7 @@ export class PocketRuntime {
       if(kind==='status'||kind==='collection'||kind==='removed') {this.save();this.publish();}
       else this.coalesce();
     });
+    if(freshMainRequested)this.suppressCompletedMainDeliveries();
     this.restoring=false;
     // Repair completion inbox if death happened between terminal checkpoint and enqueue.
     for(const c of this.runtime.listConversations()) {
@@ -205,6 +209,12 @@ export class PocketRuntime {
     this.nativeDisplays.delete(owner);
     try{this.call('tool',{name:'phone_screen',args:{action:'release'},owner});}catch{/* Service shutdown also releases leases. */}
     finally{this.displayPool.release(owner);}
+  }
+  private suppressCompletedMainDeliveries():void {
+    for(const c of this.runtime.listConversations()) {
+      const g=c.generations.at(-1)!;
+      if(!c.parentConversationId && g.status.kind==='done')this.delivered.add(generationKey({conversationId:c.conversationId,generation:g.generation}));
+    }
   }
   private enqueueCompletion(conversationId:string,generation:number):void {
     const key=generationKey({conversationId:conversationId as any,generation});
@@ -351,7 +361,8 @@ export class PocketRuntime {
         previousMain.dispose();
       } else if(cmd.action==='new_main') {
         if(this.busy||this.pumping||this.deliveryTransaction||this.observing||this.runtime.listConversations().some(c=>c.currentGeneration||c.isStopping))throw new Error('Stop active work before starting a new main thread');
-        this.inbox=this.inbox.filter(item=>item.type==='completion');
+        this.suppressCompletedMainDeliveries();
+        this.inbox=[];
         this.main.dispose();
         this.main=this.createSession('main');
         this.mainPaused=false;

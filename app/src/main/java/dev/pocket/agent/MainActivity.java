@@ -200,7 +200,10 @@ public final class MainActivity extends Activity implements AgentService.Observe
         if (activeWork()) { toast("Finish active work before starting a new main thread"); return; }
         new AlertDialog.Builder(this).setTitle("Start a new main thread?")
             .setMessage("The main chat will start fresh. Saved worker tasks and their histories stay available for debugging and follow-up.")
-            .setNegativeButton("Cancel", null).setPositiveButton("Start new thread", (dialog, which) -> command(json("action", "new_main"))).show();
+            .setNegativeButton("Cancel", null).setPositiveButton("Start new thread", (dialog, which) -> {
+                if (AgentService.isRunning()) command(json("action", "new_main"));
+                else { state = store.requestFreshMain(); render(); toast("New main thread ready"); }
+            }).show();
     }
     private void copyHistory() {
         ClipboardManager clipboard = getSystemService(ClipboardManager.class);
@@ -257,9 +260,8 @@ public final class MainActivity extends Activity implements AgentService.Observe
         mainPrompt.setMinLines(5); mainPrompt.setMaxLines(12); mainPrompt.setGravity(Gravity.TOP | Gravity.START);
         mainPrompt.setInputType(InputType.TYPE_CLASS_TEXT | InputType.TYPE_TEXT_FLAG_MULTI_LINE | InputType.TYPE_TEXT_FLAG_CAP_SENTENCES); panel.addView(mainPrompt);
         panel.addView(text("This controls the main agent only. Worker prompts stay unchanged."));
-        panel.addView(button("Reset main system prompt", () -> {
-            mainPrompt.setText(state.optString("defaultMainSystemPrompt"));
-            if (mainPrompt.getText().length() == 0) mainPrompt.setHint("Built-in default selected; tap Save");
+        panel.addView(button("Reset to built-in default", () -> {
+            mainPrompt.setText(""); mainPrompt.setHint("Built-in default selected; tap Save");
         }));
         panel.addView(text("Provider")); Spinner mode = new Spinner(this);
         String[] names = {"Scripted model (local validation)", "API key (HTTPS)", "OpenCode Free (Console key)", "Nebius Token Factory", "Codex emulator relay (development)", "Codex account (ChatGPT)"};
@@ -467,9 +469,14 @@ public final class MainActivity extends Activity implements AgentService.Observe
                     String prompt = mainPrompt.getText().toString().trim();
                     if (prompt.length() > 50000) { toast("Main system prompt must be 50000 characters or fewer"); return; }
                     credentials.save(config); invalidateAccountOperations();
-                    JSONObject configure = json("action", "configure");
-                    if (prompt.isEmpty()) configure.put("resetSystemPrompt", true); else configure.put("systemPrompt", prompt);
-                    command(configure); dialog.dismiss(); toast("Settings saved");
+                    if (AgentService.isRunning()) {
+                        JSONObject configure = json("action", "configure");
+                        if (prompt.isEmpty()) configure.put("resetSystemPrompt", true); else configure.put("systemPrompt", prompt);
+                        command(configure);
+                    } else {
+                        store.saveMainSystemPrompt(prompt); state = store.load(); render();
+                    }
+                    dialog.dismiss(); toast("Settings saved");
                 } catch (Exception error) { toast(error instanceof IllegalArgumentException ? error.getMessage() : "Could not save connection"); }
             });
         });
