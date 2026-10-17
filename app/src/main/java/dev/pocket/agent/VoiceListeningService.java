@@ -52,7 +52,7 @@ public final class VoiceListeningService extends Service implements AgentService
             stopSelf();
         }
     };
-    private Runnable shortSpeechCutoff, systemResultFallback, deepgramDuplicateFallback;
+    private Runnable systemResultFallback, deepgramDuplicateFallback;
 
     @Override public void onCreate() {
         super.onCreate();
@@ -210,7 +210,7 @@ public final class VoiceListeningService extends Service implements AgentService
                 });
             }
         });
-        transcriptArbiter = new HybridTranscriptArbiter(false);
+        transcriptArbiter = new HybridTranscriptArbiter(false, VoiceSttSettings.shortUtteranceMs(this));
         if (AndroidShortSpeechRecognizer.supported(this)) {
             shortSpeech = new AndroidShortSpeechRecognizer(this, new AndroidShortSpeechRecognizer.Callback() {
                 @Override public void onSpeechStarted() { systemSpeechStarted(); }
@@ -291,27 +291,6 @@ public final class VoiceListeningService extends Service implements AgentService
         if (started) getSystemService(NotificationManager.class).notify(NOTIFICATION_ID, notification(status));
     }
 
-    private void cancelShortSpeechCutoff() {
-        if (shortSpeechCutoff != null) {
-            main.removeCallbacks(shortSpeechCutoff);
-            shortSpeechCutoff = null;
-        }
-    }
-
-    private void scheduleShortSpeechCutoff(long cycle, long delayMs) {
-        cancelShortSpeechCutoff();
-        Runnable task = () -> {
-            if (!started || transcriptArbiter == null || cycle != activeRecognitionCycle) return;
-            HybridTranscriptArbiter.Choice choice =
-                transcriptArbiter.thresholdReached(cycle, SystemClock.elapsedRealtime());
-            if (!transcriptArbiter.systemEligible() && shortSpeech != null) shortSpeech.cancelCycle();
-            acceptTranscriptChoice(choice);
-        };
-        shortSpeechCutoff = task;
-        if (delayMs <= 0L) main.post(task);
-        else main.postDelayed(task, delayMs);
-    }
-
     private void cancelSystemResultFallback() {
         if (systemResultFallback != null) {
             main.removeCallbacks(systemResultFallback);
@@ -379,9 +358,7 @@ public final class VoiceListeningService extends Service implements AgentService
 
     private void markSpeechForArbitration() {
         if (transcriptArbiter == null || !transcriptArbiter.systemEligible()) return;
-        long cycle = activeRecognitionCycle;
-        long remaining = transcriptArbiter.speechStarted(cycle, SystemClock.elapsedRealtime());
-        if (remaining >= 0L) scheduleShortSpeechCutoff(cycle, remaining);
+        transcriptArbiter.speechStarted(activeRecognitionCycle, SystemClock.elapsedRealtime());
     }
 
     private void deepgramSpeechStarted() {
@@ -406,14 +383,19 @@ public final class VoiceListeningService extends Service implements AgentService
 
     private void systemSpeechEnded() {
         if (!started || transcriptArbiter == null) return;
-        boolean shortTurn = transcriptArbiter.systemSpeechEnded(activeRecognitionCycle, SystemClock.elapsedRealtime());
-        if (shortTurn) cancelShortSpeechCutoff();
-        else if (shortSpeech != null) shortSpeech.cancelCycle();
+        long cycle = activeRecognitionCycle;
+        boolean shortTurn = transcriptArbiter.systemSpeechEnded(cycle, SystemClock.elapsedRealtime());
+        if (shortTurn) return;
+
+        // Android has now finished endpointing this utterance. Only at this point do we
+        // reject the system path for a long turn; any Deepgram final already received
+        // remains buffered and can be released immediately.
+        if (shortSpeech != null) shortSpeech.cancelCycle();
+        acceptTranscriptChoice(transcriptArbiter.systemFailed(cycle));
     }
 
     private void systemUtterance(String text) {
         if (!started || transcriptArbiter == null) return;
-        cancelShortSpeechCutoff();
         cancelSystemResultFallback();
         if (wakeStarted && text != null
                 && text.replaceFirst("(?i)^\\s*hey[,]?\\s+jarvis[,!?.\\s]*", "").trim().isEmpty()) {
@@ -427,7 +409,6 @@ public final class VoiceListeningService extends Service implements AgentService
 
     private void systemRecognitionFailed() {
         if (!started || transcriptArbiter == null) return;
-        cancelShortSpeechCutoff();
         cancelSystemResultFallback();
         HybridTranscriptArbiter.Choice choice =
             transcriptArbiter.systemFailed(activeRecognitionCycle);
@@ -455,8 +436,7 @@ public final class VoiceListeningService extends Service implements AgentService
 
     private void acceptTranscriptChoice(HybridTranscriptArbiter.Choice choice) {
         if (choice != null) {
-            cancelShortSpeechCutoff();
-            cancelSystemResultFallback();
+                cancelSystemResultFallback();
             Log.i("PocketVoice", "Transcript source=" +
                 (choice.source == HybridTranscriptArbiter.Source.SYSTEM ? "android-system" : "deepgram"));
             sendUtterance(choice.text);
@@ -472,13 +452,12 @@ public final class VoiceListeningService extends Service implements AgentService
     }
 
     private void prepareNextRecognitionTurn() {
-        cancelShortSpeechCutoff();
         cancelSystemResultFallback();
         cancelDeepgramDuplicateFallback();
         if (!started || !microphoneEnabled || transcriptArbiter == null) return;
         long cycle = ++activeRecognitionCycle;
         boolean systemReady = shortSpeech != null && shortSpeech.startCycle();
-        transcriptArbiter.reset(cycle, systemReady);
+        transcriptArbiter.reset(cycle, systemReady, VoiceSttSettings.shortUtteranceMs(this));
     }
 
     private void sendUtterance(String text) {
@@ -545,7 +524,6 @@ public final class VoiceListeningService extends Service implements AgentService
         streamingReady = false;
         wakeStarted = false;
         main.removeCallbacks(idleStop);
-        cancelShortSpeechCutoff();
         cancelSystemResultFallback();
         cancelDeepgramDuplicateFallback();
         AgentService.unobserve(this);
