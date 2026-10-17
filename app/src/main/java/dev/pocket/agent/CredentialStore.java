@@ -111,9 +111,14 @@ public final class CredentialStore {
             if (CODEX_ACCOUNT.equals(current.optString("authMode"))) write(new JSONObject().put("authMode", "scripted").put("model", "scripted").put("endpoint", "https://api.openai.com/v1").put("providerRevision", UUID.randomUUID().toString()));
         }
     }
+    private static String canonicalMode(String mode) {
+        if ("api-key".equals(mode)) return "openai";
+        if ("codexRelay".equals(mode) || "codex-relay".equals(mode)) return "codex";
+        return mode;
+    }
     private static boolean sameProviderIdentity(JSONObject left, JSONObject right) {
-        String mode = left.optString("authMode");
-        if (!mode.equals(right.optString("authMode"))) return false;
+        String mode = canonicalMode(left.optString("authMode"));
+        if (!mode.equals(canonicalMode(right.optString("authMode")))) return false;
         if (CODEX_ACCOUNT.equals(mode)) {
             String accountId = left.optString("accountId");
             return !accountId.isEmpty() && accountId.equals(right.optString("accountId"));

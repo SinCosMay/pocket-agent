@@ -4,6 +4,13 @@ import {MOBILE_SESSION_BUDGET,MobileSession} from '../src/session.js';
 
 const session=()=>new MobileSession('test-operator',{mode:'scripted'},{},[]);
 
+test('provider-qualified current-model aliases are canonicalized before inference',()=>{
+  const s=new MobileSession('test-operator',
+    {mode:'openai',endpoint:'https://api.example.test/v1',model:'main-large'},
+    {authMode:'openai',endpoint:'https://api.example.test/v1',model:'main-large',apiKey:'test-key'},[],[], '', 'openai/main-large');
+  assert.equal(s.agent.state.model.id,'main-large');
+});
+
 test('long workflows exceed former turn cap and stop at the new generation cap',()=>{
   const s=session(),finish=(s.agent as any).finishTurn;
   assert.equal(MOBILE_SESSION_BUDGET.turnsPerGeneration,200);
