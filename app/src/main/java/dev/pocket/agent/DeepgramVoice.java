@@ -35,6 +35,7 @@ final class DeepgramVoice implements AutoCloseable {
 
     interface Callback {
         void onUtterance(String text);
+        default void onUtterance(String text, long spokenDurationMs) { onUtterance(text); }
         void onSpeechStarted();
         void onEmptyTurn();
         void onInterim(String text);
@@ -283,7 +284,7 @@ final class DeepgramVoice implements AutoCloseable {
                         JSONObject packet = new JSONObject(text);
                         String finalText = VoiceTranscript.completedTurn(packet);
                         if (finalText != null) {
-                            callback.onUtterance(finalText);
+                            callback.onUtterance(finalText, VoiceTranscript.spokenDurationMs(packet));
                         } else if (VoiceTranscript.startedTurn(packet)) {
                             callback.onSpeechStarted();
                         } else if (VoiceTranscript.emptyCompletedTurn(packet)) {
