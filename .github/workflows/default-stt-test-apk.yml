@@ -16,7 +16,7 @@ on:
   workflow_dispatch:
 
 permissions:
-  contents: read
+  contents: write
 
 jobs:
   build:
@@ -43,9 +43,23 @@ jobs:
           grep -q "SpeechRecognizer.createSpeechRecognizer(this)" tools/android-default-stt-test/app/src/main/java/dev/pocket/stttest/MainActivity.java
           test -f tools/android-default-stt-test/app/build/outputs/apk/debug/app-debug.apk
 
-      - name: Upload APK
+      - name: Upload Actions artifact
         uses: actions/upload-artifact@v4
         with:
           name: android-default-stt-test-apk
           path: tools/android-default-stt-test/app/build/outputs/apk/debug/app-debug.apk
           if-no-files-found: error
+
+      - name: Publish stable APK on utility branch
+        if: github.event_name == 'push'
+        run: |
+          mkdir -p artifacts
+          cp tools/android-default-stt-test/app/build/outputs/apk/debug/app-debug.apk artifacts/android-default-stt-test.apk
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add artifacts/android-default-stt-test.apk
+          if git diff --cached --quiet; then
+            exit 0
+          fi
+          git commit -m "Publish default STT test APK"
+          git push origin "HEAD:${GITHUB_REF_NAME}"
