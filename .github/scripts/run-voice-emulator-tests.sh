@@ -43,7 +43,10 @@ run_test() {
     "-Pandroid.testInstrumentationRunnerArguments.class=${test_class}" || status=$?
   mkdir -p "$evidence_root/$test_name"
   if [[ -d "$connected_results" ]]; then
-    cp -a "$connected_results/." "$evidence_root/$test_name/"
+    cp -a "$connected_results/." "$evidence_root/$test_name/" || status=1
+  else
+    echo "Missing connected test results for $test_class" >&2
+    status=1
   fi
   return "$status"
 }
