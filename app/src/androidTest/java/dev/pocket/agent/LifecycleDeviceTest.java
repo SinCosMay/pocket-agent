@@ -75,7 +75,8 @@ public class LifecycleDeviceTest {
         return null;
     }
     private View findDescription(View root, String value) {
-        if (value.contentEquals(root.getContentDescription())) return root;
+        CharSequence description = root.getContentDescription();
+        if (description != null && value.contentEquals(description)) return root;
         if (root instanceof ViewGroup) {
             ViewGroup group = (ViewGroup) root;
             for (int i = 0; i < group.getChildCount(); i++) { View found = findDescription(group.getChildAt(i), value); if (found != null) return found; }

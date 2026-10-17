@@ -320,7 +320,7 @@ export class PocketRuntime {
         void this.refreshModels(true).then(models=>this.emit({type:'models',requestId,models}))
           .catch(error=>this.emit({type:'models',requestId,error:this.sanitize(String(error?.message??error))}));
       } else if(cmd.action==='configure') {
-        if(this.busy||this.pumping||this.deliveryTransaction||this.observing||this.inbox.length||this.runtime.listConversations().some(c=>c.currentGeneration||c.isStopping))throw new Error('Stop active work before changing providers');
+        if(this.busy||this.pumping||this.deliveryTransaction||this.observing||(this.inbox.length&&!this.mainPaused)||this.runtime.listConversations().some(c=>c.currentGeneration||c.isStopping))throw new Error('Stop active work before changing providers');
         let nextMainSystemPrompt=this.mainSystemPrompt;
         if(cmd.resetSystemPrompt===true)nextMainSystemPrompt=DEFAULT_MAIN_PROMPT;
         else if(cmd.systemPrompt!==undefined) {
@@ -350,7 +350,7 @@ export class PocketRuntime {
           session.agent.state.model=modelFor(this.config,this.credentials,requested);
         }
       } else if(cmd.action==='set_system_prompt') {
-        if(this.busy||this.pumping||this.deliveryTransaction||this.observing||this.inbox.length||this.runtime.listConversations().some(c=>c.currentGeneration||c.isStopping))throw new Error('Stop active work before changing the main system prompt');
+        if(this.busy||this.pumping||this.deliveryTransaction||this.observing||(this.inbox.length&&!this.mainPaused)||this.runtime.listConversations().some(c=>c.currentGeneration||c.isStopping))throw new Error('Stop active work before changing the main system prompt');
         if(cmd.reset===true)this.mainSystemPrompt=DEFAULT_MAIN_PROMPT;
         else {
           if(typeof cmd.text!=='string'||!cmd.text.trim()||cmd.text.length>50_000)throw new Error('Main system prompt must contain 1..50000 characters');

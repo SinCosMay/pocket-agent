@@ -324,6 +324,14 @@ test('custom main system prompt persists through turns, restart and provider rec
  assert.equal(bridge.state.mainSystemPrompt,DEFAULT_MAIN_PROMPT,'reset persists the built-in default');
 });
 
+test('paused main with retained inbox can still apply provider and prompt settings',()=>{
+ const bridge=new Bridge(),runtime=new PocketRuntime(bridge),internal=runtime as any;
+ internal.mainPaused=true;internal.inbox=[{type:'user',text:'retained while context is full'}];
+ command(runtime,{action:'configure',systemPrompt:'Prompt updated while paused'});
+ assert.equal(runtime.state().mainSystemPrompt,'Prompt updated while paused');
+ assert.equal(runtime.state().mainPaused,true);assert.equal(internal.inbox.length,1,'settings must not discard paused queued work');
+});
+
 test('new main thread clears only main history and queued user work while retaining workers',async()=>{
  const bridge=new Bridge(),runtime=new PocketRuntime(bridge);
  command(runtime,{action:'send',text:'delegate fixture delay=10'});
