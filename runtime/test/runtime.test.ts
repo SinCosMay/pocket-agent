@@ -405,7 +405,7 @@ test('a discovered worker model is pinned across execution and restore without c
    if(String(input).endsWith('/models'))return Response.json({data:[{id:'worker/fast'},{id:'worker/strong'}]});
    const request=JSON.parse(String(init?.body));wireModels.push(request.model);
    const event={type:'response.completed',response:{id:'resp_worker',status:'completed',output:[],usage:{input_tokens:1,output_tokens:0,total_tokens:1,input_tokens_details:{cached_tokens:0}}}};
-   return new Response('event: response.completed\\ndata: '+JSON.stringify(event)+'\\n\\n',{headers:{'content-type':'text/event-stream'}});
+   return new Response('event: response.completed\ndata: '+JSON.stringify(event)+'\n\n',{headers:{'content-type':'text/event-stream'}});
  }) as typeof fetch;
  try {
    const runtime=new PocketRuntime(bridge);

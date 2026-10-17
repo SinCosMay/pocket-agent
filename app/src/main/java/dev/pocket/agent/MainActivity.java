@@ -296,7 +296,14 @@ public final class MainActivity extends Activity implements AgentService.Observe
         final int[] lastProvider = {selected};
         mode.setOnItemSelectedListener(new AdapterView.OnItemSelectedListener() {
             @Override public void onItemSelected(AdapterView<?> parent, View view, int position, long id) {
-                if (position != lastProvider[0]) secret.setText("");
+                if (position != lastProvider[0]) {
+                    secret.setText("");
+                    modelRequestId = null;
+                    modelIds = new String[0];
+                    picker.setAdapter(new ArrayAdapter<>(MainActivity.this, android.R.layout.simple_spinner_dropdown_item,
+                            new String[]{"Tap Discover models to choose"}));
+                    picker.setSelection(0);
+                }
                 lastProvider[0] = position;
                 renderProviderFields.accept(position);
             }
