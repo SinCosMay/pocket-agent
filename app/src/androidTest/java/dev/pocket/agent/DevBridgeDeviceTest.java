@@ -104,10 +104,11 @@ public class DevBridgeDeviceTest {
             wire.write("0\r\n\r\n".getBytes(StandardCharsets.US_ASCII));
             socket.getOutputStream().write(wire.toByteArray());
             socket.getOutputStream().flush();
-            byte[] response=new byte[512];
-            int count=socket.getInputStream().read(response);
-            assertTrue("Expected bounded chunk framing rejection",count>0 &&
-                new String(response,0,count,StandardCharsets.US_ASCII).startsWith("HTTP/1.1 400"));
+            String statusLine=new java.io.BufferedReader(new java.io.InputStreamReader(
+                socket.getInputStream(),StandardCharsets.US_ASCII)).readLine();
+            assertNotNull("No HTTP response",statusLine);
+            assertTrue("Expected bounded chunk framing rejection: "+statusLine,
+                statusLine.startsWith("HTTP/1.1 400"));
         } finally {bridge.getClass().getMethod("stop").invoke(bridge);}
     }
     @Test public void localLogSearchAndPaginationRejectInvalidBounds() throws Exception {
