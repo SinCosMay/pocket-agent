@@ -2,6 +2,8 @@ package dev.pocket.agent;
 
 import org.json.JSONArray;
 import org.json.JSONObject;
+import java.util.ArrayList;
+import java.util.Comparator;
 import java.util.Locale;
 
 final class DevHistory {
@@ -13,36 +15,46 @@ final class DevHistory {
         if (query.length() > 250 || owner.length() > 160) throw new IllegalArgumentException("Invalid filter");
         int limit = request.optInt("limit", 25), offset = request.optInt("offset", 0);
         if (limit < 1 || limit > 100 || offset < 0 || offset > 100000) throw new IllegalArgumentException("Invalid page");
-        JSONObject checkpoint = store.loadDurable();
-        JSONArray matches = new JSONArray();
-        int[] skipped = {0};
-        boolean[] hasMore = {false};
+        return queryCheckpoint(store.loadDurable(),request);
+    }
+
+    static JSONObject queryCheckpoint(JSONObject checkpoint, JSONObject request) throws Exception {
+        String query = request.optString("query", "").trim().toLowerCase(Locale.ROOT);
+        String owner = request.optString("conversationId", "");
+        if (query.length() > 250 || owner.length() > 160) throw new IllegalArgumentException("Invalid filter");
+        int limit = request.optInt("limit", 25), offset = request.optInt("offset", 0);
+        if (limit < 1 || limit > 100 || offset < 0 || offset > 100000) throw new IllegalArgumentException("Invalid page");
+        ArrayList<JSONObject> candidates = new ArrayList<>();
         if (owner.isEmpty() || owner.equals("main"))
-            collect(matches, checkpoint.optJSONArray("mainMessages"), "main", query, limit, offset, skipped, hasMore);
+            collect(candidates, checkpoint.optJSONArray("mainMessages"), "main", query);
         JSONObject workers = checkpoint.optJSONObject("workerMessages");
         if (workers != null) {
             java.util.Iterator<String> iterator = workers.keys();
             while (iterator.hasNext()) {
                 String id = iterator.next();
                 if (owner.isEmpty() || owner.equals(id))
-                    collect(matches, workers.optJSONArray(id), id, query, limit, offset, skipped, hasMore);
+                    collect(candidates, workers.optJSONArray(id), id, query);
             }
         }
-        return new JSONObject().put("messages", matches).put("nextOffset", hasMore[0] ? offset + matches.length() : JSONObject.NULL)
+        // Both main and worker conversations have their own append order. Page globally
+        // by time, rather than exhausting the main conversation before newer workers.
+        candidates.sort(Comparator.comparingLong((JSONObject m)->m.optLong("timestamp",0)).reversed());
+        JSONArray matches = new JSONArray();
+        for (int i=offset; i<candidates.size() && i<(long)offset+limit; i++)
+            matches.put(candidates.get(i));
+        boolean hasMore = (long)offset+matches.length()<candidates.size();
+        return new JSONObject().put("messages", matches).put("nextOffset", hasMore ? offset + matches.length() : JSONObject.NULL)
             .put("limit", limit).put("persisted", true);
     }
 
-    private static void collect(JSONArray output, JSONArray messages, String owner, String query,
-                                int limit, int offset, int[] skipped, boolean[] hasMore) throws Exception {
+    private static void collect(ArrayList<JSONObject> output, JSONArray messages, String owner, String query) throws Exception {
         if (messages == null) return;
-        for (int i = messages.length()-1; i >= 0; i--) {
+        for (int i=messages.length()-1; i >= 0; i--) {
             JSONObject message = messages.optJSONObject(i);
             if (message == null) continue;
             String raw = message.toString();
             if (!query.isEmpty() && !raw.toLowerCase(Locale.ROOT).contains(query)) continue;
-            if (skipped[0]++ < offset) continue;
-            if (output.length() >= limit) { hasMore[0] = true; return; }
-            output.put(new JSONObject().put("conversationId", owner).put("index", i)
+            output.add(new JSONObject().put("conversationId", owner).put("index", i)
                 .put("role", message.optString("role", "unknown"))
                 .put("timestamp", message.optLong("timestamp", 0))
                 .put("data", raw.substring(0, Math.min(raw.length(), 12000)))

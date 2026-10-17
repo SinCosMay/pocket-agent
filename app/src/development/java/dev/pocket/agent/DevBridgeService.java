@@ -50,7 +50,11 @@ public final class DevBridgeService extends Service {
         String action=intent==null?"":intent.getAction();
         if(STOP.equals(action)) {stopSelf();return START_NOT_STICKY;}
         if(!START_LOCAL.equals(action)&&!START_PUBLIC.equals(action))return START_NOT_STICKY;
-        if(starter!=null)return START_NOT_STICKY;
+        if(starter!=null) {
+            diagnostic="Bridge already active. Stop the existing bridge before switching between USB and wireless.";
+            notifyState("Bridge already active; stop before switching modes");
+            return START_NOT_STICKY;
+        }
         if(android.os.Build.VERSION.SDK_INT>=34)startForeground(52,notification("Starting authenticated local server"),ServiceInfo.FOREGROUND_SERVICE_TYPE_SPECIAL_USE);
         else startForeground(52,notification("Starting authenticated local server"));
         stopped=false;stage="starting";diagnostic="";publicUrl="";
@@ -65,7 +69,7 @@ public final class DevBridgeService extends Service {
             DevSecrets secrets=new DevSecrets(this);
             String bearer=secrets.bearer();
             String authtoken=remote?secrets.ngrok():"";
-            if(remote&&authtoken.isBlank())throw new IllegalArgumentException("ngrok token missing");
+            if(remote&&authtoken.trim().isEmpty())throw new IllegalArgumentException("ngrok token missing");
             if(remote&&!new java.io.File(getApplicationInfo().nativeLibraryDir,"libngrok_java.so").exists())
                 throw new IllegalStateException("Wireless tunnel is supported only on ARM64 in this build");
             DevMcpServer ready=new DevMcpServer(this,bearer);

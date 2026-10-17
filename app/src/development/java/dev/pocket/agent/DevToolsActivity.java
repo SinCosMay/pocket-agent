@@ -45,23 +45,34 @@ public final class DevToolsActivity extends Activity {
             catch(Exception error){message("Unable to save token");}
         });
         add(panel,"Start wireless ngrok bridge",()->{
-            try {if(secrets.ngrok().isBlank()){message("Save ngrok token first");return;}}
+            try {if(secrets.ngrok().trim().isEmpty()){message("Save ngrok token first");return;}}
             catch(Exception error){message("Token unavailable");return;}
             start(DevBridgeService.START_PUBLIC);
         });
         add(panel,"Copy MCP bearer token",()->{
             try {
                 String token=secrets.bearer();
-                getSystemService(ClipboardManager.class).setPrimaryClip(ClipData.newPlainText("Development MCP bearer",token));
+                ClipData clip=ClipData.newPlainText("Development MCP bearer",token);
+                android.os.PersistableBundle sensitivity=new android.os.PersistableBundle();
+                sensitivity.putBoolean("android.content.extra.IS_SENSITIVE",true);
+                clip.getDescription().setExtras(sensitivity);
+                getSystemService(ClipboardManager.class).setPrimaryClip(clip);
                 message("MCP bearer copied; do not share it or save it in logs");
             }catch(Exception error){message("Unable to copy token");}
+        });
+        add(panel,"Rotate MCP bearer (bridge must be stopped)",()->{
+            if(!DevBridgeService.status().optString("stage").equals("stopped")){
+                message("Stop the bridge before rotating the bearer");return;
+            }
+            try {secrets.rotateBearer();message("Bearer rotated; previous token revoked. Chat history preserved.");}
+            catch(Exception error){message("Unable to rotate bearer");}
         });
         add(panel,"Stop development bridge",()->{
             startService(new Intent(this,DevBridgeService.class).setAction(DevBridgeService.STOP));
             status.postDelayed(this::refresh,300);
         });
         TextView instructions=new TextView(this);
-        instructions.setText("USB setup on PC: adb forward tcp:8767 tcp:8767\nMCP URL: http://127.0.0.1:8767/mcp\nAuthorization: Bearer <copied MCP bearer>\nFor ngrok, use the HTTPS URL shown above with that same MCP bearer. ngrok token and MCP bearer are different. The agent must be running to list/call native tools; history remains available after agent stops.");
+        instructions.setText("USB setup on PC: adb -s <serial> forward tcp:8767 tcp:8767\nMCP URL: http://127.0.0.1:8767/mcp\nAuthorization: Bearer <copied MCP bearer>\nFor ngrok, use the HTTPS URL shown above with that same MCP bearer. ngrok token and MCP bearer are different. The agent must be running to list/call native tools; history remains available after agent stops.");
         instructions.setTextIsSelectable(true);instructions.setPadding(0,20,0,0);panel.addView(instructions);
         setContentView(scroll);refresh();
     }

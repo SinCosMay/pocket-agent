@@ -225,14 +225,17 @@ export class PocketRuntime {
     }));
   }
   debugToolCall(requestId:string,name:string,args:any):void {
-    const tools=this.devTools??(this.devTools=[...nativeTools(this,'dev-mcp'),...memoryTools(this,'main'),subagentTool(this)]);
+    const tools=this.devTools??(this.devTools=[...nativeTools(this,'dev-mcp'),...memoryTools(this,'main'),speakToUserTool(this,'main'),subagentTool(this)]);
     const tool=tools.find((item:any)=>item.name===name);
     if(!tool)throw Error('Unknown tool');
     queueMicrotask(async()=>{
+      this.emit({type:'log',owner:'dev-mcp',tool:name,message:'Tool started'});
       try {
         const result=await tool.execute('dev-'+requestId,args);
+        this.emit({type:'log',owner:'dev-mcp',tool:name,message:result?.isError?'Tool failed':'Tool finished'});
         this.emit({type:'dev_tool_result',requestId,result});
       } catch(error) {
+        this.emit({type:'log',owner:'dev-mcp',tool:name,message:'Tool failed'});
         this.emit({type:'dev_tool_result',requestId,result:{isError:true,content:[{type:'text',text:this.sanitize(String(error))}]}});
       }
     });

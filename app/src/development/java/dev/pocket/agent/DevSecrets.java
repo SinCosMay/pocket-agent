@@ -14,9 +14,13 @@ import javax.crypto.spec.GCMParameterSpec;
 
 /** Credentials encrypted with a non-exportable Android Keystore key. No cloud backup. */
 final class DevSecrets {
+    private static final Object KEY_LOCK = new Object();
     private final android.content.SharedPreferences prefs;
     DevSecrets(Context c) {prefs=c.getSharedPreferences("development-bridge-secrets",Context.MODE_PRIVATE);}
-    private synchronized SecretKey key() throws Exception {
+    private SecretKey key() throws Exception {
+        synchronized (KEY_LOCK) { return loadKey(); }
+    }
+    private SecretKey loadKey() throws Exception {
         KeyStore store=KeyStore.getInstance("AndroidKeyStore");store.load(null);
         if(!store.containsAlias("pocket-agent-dev-bridge")) {
             KeyGenerator generator=KeyGenerator.getInstance(KeyProperties.KEY_ALGORITHM_AES,"AndroidKeyStore");
@@ -37,9 +41,16 @@ final class DevSecrets {
         if(!prefs.edit().putString(name,encrypted).commit()) throw new IllegalStateException("Credential storage failed");
     }
     synchronized String bearer() throws Exception {
-        String token=read("bearer");if(!token.isEmpty()) return token;
-        byte[] entropy=new byte[32];new SecureRandom().nextBytes(entropy);
-        token=Base64.encodeToString(entropy,Base64.URL_SAFE|Base64.NO_WRAP|Base64.NO_PADDING);write("bearer",token);return token;
+        synchronized (KEY_LOCK) {
+            String token=read("bearer");if(!token.isEmpty()) return token;
+            byte[] entropy=new byte[32];new SecureRandom().nextBytes(entropy);
+            token=Base64.encodeToString(entropy,Base64.URL_SAFE|Base64.NO_WRAP|Base64.NO_PADDING);write("bearer",token);return token;
+        }
+    }
+    void rotateBearer() {
+        synchronized (KEY_LOCK) {
+            if (!prefs.edit().remove("bearer").commit()) throw new IllegalStateException("Bearer reset failed");
+        }
     }
     String ngrok() throws Exception {return read("ngrok");}
     boolean enabled() {return prefs.getBoolean("enabled",false);}
