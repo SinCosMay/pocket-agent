@@ -227,7 +227,40 @@ public final class MainActivity extends Activity implements AgentService.Observe
         panel.addView(button("Enable Shizuku virtual displays", this::enableVirtualDisplays));
         panel.addView(button("Notification access settings", () -> startActivity(new Intent(Settings.ACTION_NOTIFICATION_LISTENER_SETTINGS))));
         panel.addView(button("Choose phone permissions", this::permissions));
-        panel.addView(text("On Android 13+, short spoken turns under three seconds may use Android's system speech recognition when an available recognizer succeeds; otherwise Pocket Agent falls back to Deepgram. The same microphone audio is streamed to Deepgram from the first sample for longer turns and fallback. At three seconds or longer Deepgram is authoritative. Older Android versions use Deepgram for all transcription. Speech synthesis uses Deepgram with the Pi main agent. Listening stops after three seconds of idle silence or when you tap Stop listening in the notification. Background workers continue."));
+        panel.addView(text("On Android 13+, Android system recognition and Deepgram receive the same microphone PCM in parallel. Pocket Agent waits for Android's end-of-speech decision instead of cancelling it at the threshold. If the detected speech duration is shorter than the threshold and Android returns a result, Android wins; otherwise the buffered Deepgram result wins. Older Android versions use Deepgram for all transcription. Speech synthesis uses Deepgram with the Pi main agent. Listening stops after three seconds of idle silence or when you tap Stop listening in the notification. Background workers continue."));
+        TextView shortThresholdLabel = text("");
+        shortThresholdLabel.setTextSize(16);
+        panel.addView(shortThresholdLabel);
+        SeekBar shortThreshold = new SeekBar(this);
+        shortThreshold.setMax(VoiceSttSettings.maxProgress());
+        shortThreshold.setProgress(VoiceSttSettings.progressForMs(VoiceSttSettings.shortUtteranceMs(this)));
+        panel.addView(shortThreshold);
+        java.util.function.IntConsumer updateShortThreshold = progress -> {
+            int ms = VoiceSttSettings.msForProgress(progress);
+            shortThresholdLabel.setText("Android short-turn threshold: " +
+                String.format(java.util.Locale.US, "%.2f", ms / 1000f) + " s");
+        };
+        updateShortThreshold.accept(shortThreshold.getProgress());
+        shortThreshold.setOnSeekBarChangeListener(new SeekBar.OnSeekBarChangeListener() {
+            @Override public void onProgressChanged(SeekBar bar, int progress, boolean fromUser) {
+                updateShortThreshold.accept(progress);
+                if (fromUser) VoiceSttSettings.setShortUtteranceMs(MainActivity.this,
+                    VoiceSttSettings.msForProgress(progress));
+            }
+            @Override public void onStartTrackingTouch(SeekBar bar) { }
+            @Override public void onStopTrackingTouch(SeekBar bar) {
+                int ms = VoiceSttSettings.msForProgress(bar.getProgress());
+                toast("Short-turn threshold saved: " +
+                    String.format(java.util.Locale.US, "%.2f", ms / 1000f) + " s");
+            }
+        });
+        panel.addView(button("Reset short-turn threshold to 3.00 s", () -> {
+            VoiceSttSettings.setShortUtteranceMs(this, VoiceSttSettings.DEFAULT_SHORT_UTTERANCE_MS);
+            shortThreshold.setProgress(VoiceSttSettings.progressForMs(
+                VoiceSttSettings.DEFAULT_SHORT_UTTERANCE_MS));
+            toast("Short-turn threshold reset to 3.00 s");
+        }));
+        panel.addView(text("For better proper-name recognition, Android's quality formatting and device-context hints are requested. When Contacts permission is granted, up to 128 contact display names are also supplied to the Android recognizer as bias strings for short turns."));
         panel.addView(button("Deepgram voice key", this::voiceKeySettings));
         panel.addView(text("Hey Jarvis runs locally at 16 kHz. The wake-word sensitivity below is saved across restarts and applies immediately to an active listener."));
         TextView wakeConfidenceLabel = text("");
