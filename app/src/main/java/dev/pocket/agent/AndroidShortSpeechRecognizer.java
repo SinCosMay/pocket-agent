@@ -26,6 +26,8 @@ import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.LinkedHashSet;
 import java.util.concurrent.ArrayBlockingQueue;
+import java.util.concurrent.ExecutorService;
+import java.util.concurrent.Executors;
 import java.util.concurrent.RejectedExecutionException;
 import java.util.concurrent.ThreadPoolExecutor;
 import java.util.concurrent.TimeUnit;
@@ -48,8 +50,13 @@ final class AndroidShortSpeechRecognizer implements AutoCloseable, DeepgramVoice
     private final Callback callback;
     private final Handler main = new Handler(Looper.getMainLooper());
     private final ThreadPoolExecutor writer;
+    private final ExecutorService biasLoader;
+    private final Object biasLock = new Object();
     private final ArrayDeque<byte[]> preroll = new ArrayDeque<>();
-    private ArrayList<String> cachedBiases;
+    private ArrayList<String> cachedBiases = new ArrayList<>();
+    private boolean biasPermissionGranted;
+    private boolean biasCacheReady;
+    private boolean biasRefreshInFlight;
     private int prerollBytes;
     private long generation;
     private volatile boolean active;
@@ -67,6 +74,12 @@ final class AndroidShortSpeechRecognizer implements AutoCloseable, DeepgramVoice
                 thread.setDaemon(true);
                 return thread;
             });
+        biasLoader = Executors.newSingleThreadExecutor(runnable -> {
+            Thread thread = new Thread(runnable, "PocketSystemSpeechBias");
+            thread.setDaemon(true);
+            return thread;
+        });
+        recognitionBiases();
     }
 
     static boolean supported(Context context) {
@@ -136,19 +149,55 @@ final class AndroidShortSpeechRecognizer implements AutoCloseable, DeepgramVoice
     }
 
     private ArrayList<String> recognitionBiases() {
-        if (cachedBiases != null) return new ArrayList<>(cachedBiases);
-        LinkedHashSet<String> names = new LinkedHashSet<>();
-        if (context.checkSelfPermission(Manifest.permission.READ_CONTACTS)
-                == PackageManager.PERMISSION_GRANTED) {
-            appendContactNames(ContactsContract.Contacts.CONTENT_STREQUENT_URI, names, null);
-            if (names.size() < MAX_BIASING_STRINGS) {
-                appendContactNames(ContactsContract.Contacts.CONTENT_URI, names,
-                    ContactsContract.Contacts.STARRED + " DESC, "
-                        + ContactsContract.Contacts.DISPLAY_NAME_PRIMARY + " COLLATE NOCASE ASC");
+        boolean granted = context.checkSelfPermission(Manifest.permission.READ_CONTACTS)
+            == PackageManager.PERMISSION_GRANTED;
+        boolean startRefresh = false;
+        ArrayList<String> snapshot;
+        synchronized (biasLock) {
+            if (!biasCacheReady || biasPermissionGranted != granted) {
+                biasPermissionGranted = granted;
+                cachedBiases = new ArrayList<>();
+                biasCacheReady = !granted;
+                if (granted && !biasRefreshInFlight) {
+                    biasRefreshInFlight = true;
+                    startRefresh = true;
+                }
+            }
+            snapshot = new ArrayList<>(cachedBiases);
+        }
+        if (startRefresh) refreshRecognitionBiasesAsync();
+        return snapshot;
+    }
+
+    private void refreshRecognitionBiasesAsync() {
+        try {
+            biasLoader.execute(() -> {
+                LinkedHashSet<String> names = new LinkedHashSet<>();
+                boolean granted = context.checkSelfPermission(Manifest.permission.READ_CONTACTS)
+                    == PackageManager.PERMISSION_GRANTED;
+                if (granted) {
+                    appendContactNames(ContactsContract.Contacts.CONTENT_STREQUENT_URI, names, null);
+                    if (names.size() < MAX_BIASING_STRINGS) {
+                        appendContactNames(ContactsContract.Contacts.CONTENT_URI, names,
+                            ContactsContract.Contacts.STARRED + " DESC, "
+                                + ContactsContract.Contacts.DISPLAY_NAME_PRIMARY
+                                + " COLLATE NOCASE ASC");
+                    }
+                }
+                boolean stillGranted = context.checkSelfPermission(Manifest.permission.READ_CONTACTS)
+                    == PackageManager.PERMISSION_GRANTED;
+                synchronized (biasLock) {
+                    biasPermissionGranted = stillGranted;
+                    cachedBiases = stillGranted ? new ArrayList<>(names) : new ArrayList<>();
+                    biasCacheReady = true;
+                    biasRefreshInFlight = false;
+                }
+            });
+        } catch (RejectedExecutionException stopped) {
+            synchronized (biasLock) {
+                biasRefreshInFlight = false;
             }
         }
-        cachedBiases = new ArrayList<>(names);
-        return new ArrayList<>(cachedBiases);
     }
 
     private void appendContactNames(Uri uri, LinkedHashSet<String> names, String sortOrder) {
@@ -254,6 +303,7 @@ final class AndroidShortSpeechRecognizer implements AutoCloseable, DeepgramVoice
         prerollBytes = 0;
         writer.getQueue().clear();
         writer.shutdownNow();
+        biasLoader.shutdownNow();
     }
 
     private final class Listener implements RecognitionListener {
