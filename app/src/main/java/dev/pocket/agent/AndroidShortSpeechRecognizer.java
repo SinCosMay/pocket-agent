@@ -25,6 +25,7 @@ import java.util.ArrayDeque;
 import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.LinkedHashSet;
+import java.util.Locale;
 import java.util.concurrent.ArrayBlockingQueue;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
@@ -217,6 +218,38 @@ final class AndroidShortSpeechRecognizer implements AutoCloseable, DeepgramVoice
         } catch (RuntimeException ignored) { }
     }
 
+    static String chooseRecognitionResult(ArrayList<String> options, ArrayList<String> biases) {
+        if (options == null || options.isEmpty()) return "";
+        String first = options.get(0) == null ? "" : options.get(0).trim();
+        if (first.isEmpty() || !looksLikeContactCommand(first) || biases == null || biases.isEmpty())
+            return first;
+        for (String option : options) {
+            if (option == null || option.trim().isEmpty()) continue;
+            String normalizedOption = " " + normalizeWords(option) + " ";
+            for (String name : biases) {
+                String normalizedName = normalizeWords(name);
+                if (!normalizedName.isEmpty()
+                        && normalizedOption.contains(" " + normalizedName + " "))
+                    return option.trim();
+            }
+        }
+        return first;
+    }
+
+    private static boolean looksLikeContactCommand(String text) {
+        String normalized = normalizeWords(text);
+        return normalized.startsWith("call ") || normalized.startsWith("dial ")
+            || normalized.startsWith("phone ") || normalized.startsWith("text ")
+            || normalized.startsWith("message ") || normalized.startsWith("whatsapp ")
+            || normalized.startsWith("send ") || normalized.startsWith("please call ")
+            || normalized.startsWith("please text ") || normalized.startsWith("please message ");
+    }
+
+    private static String normalizeWords(String text) {
+        if (text == null) return "";
+        return text.toLowerCase(Locale.ROOT).replaceAll("[^\\p{L}\\p{N}]+", " ").trim();
+    }
+
     @Override public void onPcm(byte[] samples, int length) {
         if (!active || samples == null || length <= 0) return;
         enqueue(samples, length, generation);
@@ -331,10 +364,10 @@ final class AndroidShortSpeechRecognizer implements AutoCloseable, DeepgramVoice
             if (!current()) return;
             ArrayList<String> options = results == null ? null
                 : results.getStringArrayList(SpeechRecognizer.RESULTS_RECOGNITION);
-            String text = options == null || options.isEmpty() ? "" : options.get(0);
+            String text = chooseRecognitionResult(options, recognitionBiases());
             endCycle(false);
-            if (text == null || text.trim().isEmpty()) callback.onError();
-            else callback.onResult(text.trim());
+            if (text.isEmpty()) callback.onError();
+            else callback.onResult(text);
         }
         @Override public void onPartialResults(Bundle partialResults) { }
         @Override public void onEvent(int eventType, Bundle params) { }
