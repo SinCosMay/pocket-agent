@@ -236,12 +236,15 @@ public final class HybridSttDeviceTest {
         HybridTranscriptArbiter arbiter = new HybridTranscriptArbiter(true);
         long gen = arbiter.generation();
         arbiter.speechStarted(gen, 1000L);
+        assertFalse(arbiter.systemEndpointObserved());
 
         assertNull(arbiter.deepgramFinal(gen, "Buffered Deepgram", 4500L));
         assertTrue(arbiter.systemEligible());
+        assertFalse(arbiter.systemEndpointObserved());
         assertFalse(arbiter.turnSettled());
 
         assertFalse(arbiter.systemSpeechEnded(gen, 4600L));
+        assertTrue(arbiter.systemEndpointObserved());
         HybridTranscriptArbiter.Choice choice = arbiter.systemFailed(gen);
         assertNotNull(choice);
         assertEquals(HybridTranscriptArbiter.Source.DEEPGRAM, choice.source);
