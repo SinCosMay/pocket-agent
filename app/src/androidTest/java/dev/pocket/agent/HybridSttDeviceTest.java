@@ -205,6 +205,26 @@ public final class HybridSttDeviceTest {
         assertTrue(arbiter.turnSettled());
     }
 
+    @Test public void longAndroidResultDoesNotPreemptOpenDeepgramTurnAtGraceTimeout() {
+        HybridTranscriptArbiter arbiter = new HybridTranscriptArbiter(true);
+        long gen = arbiter.generation();
+        arbiter.speechStarted(gen, 1000L);
+        arbiter.deepgramSpeechStarted(gen);
+        assertFalse(arbiter.systemSpeechEnded(gen, 4500L));
+        assertNull(arbiter.systemFinal(gen, "Android long candidate", 4600L));
+
+        assertNull(arbiter.systemWaitExpired(gen));
+        assertTrue(arbiter.systemEligible());
+        assertFalse(arbiter.turnSettled());
+
+        HybridTranscriptArbiter.Choice choice =
+            arbiter.deepgramFinal(gen, "Deepgram long winner", 5000L, 3400L);
+        assertNotNull(choice);
+        assertEquals(HybridTranscriptArbiter.Source.DEEPGRAM, choice.source);
+        assertEquals("Deepgram long winner", choice.text);
+        assertTrue(arbiter.turnSettled());
+    }
+
     @Test public void matchingDeepgramWaitHasBoundedEscape() {
         HybridTranscriptArbiter arbiter = new HybridTranscriptArbiter(true);
         long gen = arbiter.generation();
