@@ -1,14 +1,19 @@
 package dev.pocket.agent;
 
+import android.Manifest;
 import android.annotation.TargetApi;
 import android.content.Context;
 import android.content.Intent;
+import android.content.pm.PackageManager;
+import android.database.Cursor;
 import android.media.AudioFormat;
+import android.net.Uri;
 import android.os.Build;
 import android.os.Bundle;
 import android.os.Handler;
 import android.os.Looper;
 import android.os.ParcelFileDescriptor;
+import android.provider.ContactsContract;
 import android.speech.RecognitionListener;
 import android.speech.RecognitionSupport;
 import android.speech.RecognitionSupportCallback;
@@ -19,6 +24,7 @@ import java.io.OutputStream;
 import java.util.ArrayDeque;
 import java.util.ArrayList;
 import java.util.Arrays;
+import java.util.LinkedHashSet;
 import java.util.concurrent.ArrayBlockingQueue;
 import java.util.concurrent.RejectedExecutionException;
 import java.util.concurrent.ThreadPoolExecutor;
@@ -37,6 +43,7 @@ final class AndroidShortSpeechRecognizer implements AutoCloseable, DeepgramVoice
     }
 
     private static final int MAX_PREROLL_BYTES = 32000;
+    private static final int MAX_BIASING_STRINGS = 128;
     private final Context context;
     private final Callback callback;
     private final Handler main = new Handler(Looper.getMainLooper());
@@ -94,11 +101,17 @@ final class AndroidShortSpeechRecognizer implements AutoCloseable, DeepgramVoice
             Intent request = new Intent(RecognizerIntent.ACTION_RECOGNIZE_SPEECH)
                 .putExtra(RecognizerIntent.EXTRA_LANGUAGE_MODEL, RecognizerIntent.LANGUAGE_MODEL_FREE_FORM)
                 .putExtra(RecognizerIntent.EXTRA_PARTIAL_RESULTS, true)
-                .putExtra(RecognizerIntent.EXTRA_MAX_RESULTS, 3)
+                .putExtra(RecognizerIntent.EXTRA_MAX_RESULTS, 5)
+                .putExtra(RecognizerIntent.EXTRA_ENABLE_FORMATTING,
+                    RecognizerIntent.FORMATTING_OPTIMIZE_QUALITY)
+                .putExtra(RecognizerIntent.EXTRA_ENABLE_BIASING_DEVICE_CONTEXT, true)
                 .putExtra(RecognizerIntent.EXTRA_AUDIO_SOURCE, readPipe)
                 .putExtra(RecognizerIntent.EXTRA_AUDIO_SOURCE_SAMPLING_RATE, 16000)
                 .putExtra(RecognizerIntent.EXTRA_AUDIO_SOURCE_CHANNEL_COUNT, 1)
                 .putExtra(RecognizerIntent.EXTRA_AUDIO_SOURCE_ENCODING, AudioFormat.ENCODING_PCM_16BIT);
+            ArrayList<String> biases = recognitionBiases();
+            if (!biases.isEmpty())
+                request.putStringArrayListExtra(RecognizerIntent.EXTRA_BIASING_STRINGS, biases);
             active = true;
             recognizer.checkRecognitionSupport(request, context.getMainExecutor(),
                 new RecognitionSupportCallback() {
@@ -119,6 +132,37 @@ final class AndroidShortSpeechRecognizer implements AutoCloseable, DeepgramVoice
             endCycle(false);
             return false;
         }
+    }
+
+    private ArrayList<String> recognitionBiases() {
+        LinkedHashSet<String> names = new LinkedHashSet<>();
+        if (context.checkSelfPermission(Manifest.permission.READ_CONTACTS)
+                != PackageManager.PERMISSION_GRANTED)
+            return new ArrayList<>();
+        appendContactNames(ContactsContract.Contacts.CONTENT_STREQUENT_URI, names, null);
+        if (names.size() < MAX_BIASING_STRINGS) {
+            appendContactNames(ContactsContract.Contacts.CONTENT_URI, names,
+                ContactsContract.Contacts.STARRED + " DESC, "
+                    + ContactsContract.Contacts.DISPLAY_NAME_PRIMARY + " COLLATE NOCASE ASC");
+        }
+        return new ArrayList<>(names);
+    }
+
+    private void appendContactNames(Uri uri, LinkedHashSet<String> names, String sortOrder) {
+        if (names.size() >= MAX_BIASING_STRINGS) return;
+        try (Cursor cursor = context.getContentResolver().query(uri,
+                new String[]{ContactsContract.Contacts.DISPLAY_NAME_PRIMARY},
+                null, null, sortOrder)) {
+            if (cursor == null) return;
+            int column = cursor.getColumnIndex(ContactsContract.Contacts.DISPLAY_NAME_PRIMARY);
+            if (column < 0) return;
+            while (cursor.moveToNext() && names.size() < MAX_BIASING_STRINGS) {
+                String name = cursor.getString(column);
+                if (name == null) continue;
+                name = name.trim();
+                if (!name.isEmpty() && name.length() <= 80) names.add(name);
+            }
+        } catch (RuntimeException ignored) { }
     }
 
     @Override public void onPcm(byte[] samples, int length) {
