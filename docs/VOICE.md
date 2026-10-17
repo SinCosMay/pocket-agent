@@ -6,9 +6,12 @@ Pocket Agent remains the assistant and subagent host. Android's selected digital
 gesture activates a microphone-type Android foreground service with an ongoing
 notification, without leaving an overlay on screen. A live microphone stream always goes to Deepgram STT from its first sample. On Android 13+
 the same PCM is also injected into an available Android system speech recognizer without opening
-a second microphone. A successful system result can win only when speech ends strictly before
-three seconds; unavailable, failed, or stalled system recognition falls back to Deepgram. At three
-seconds or longer Deepgram is authoritative. Android 12/12L use Deepgram for all transcription.
+a second microphone. The short-turn threshold is configurable in Settings and defaults to three
+seconds. Pocket Agent does not cancel Android merely because wall-clock time reaches the threshold:
+it waits for Android end-of-speech, then accepts a successful system result only when the detected
+speech interval is shorter than the configured threshold. Deepgram's final can be buffered while
+Android finishes endpointing, and a bounded grace timeout releases Deepgram if Android stalls.
+Android 12/12L use Deepgram for all transcription.
 A nonempty selected transcript, after any wake-word prefix is removed, is submitted as **one normal main-agent user message**; wake-word-only turns are ignored. Only
 text deltas produced in that particular main response are sent to Deepgram streaming
 TTS. Subsequent Pi9 worker completion messages and ordinary text messages remain
@@ -39,11 +42,14 @@ Pocket Agent instead uses directly documented Deepgram APIs:
   Android system recognizer is eligible for a short-turn result. On Android 13+ with
   a compatible recognition service, that same PCM16 stream is supplied through
   `RecognizerIntent.EXTRA_AUDIO_SOURCE`; the system recognizer never owns the microphone.
-  A deterministic arbiter accepts a successful system result only when speech ends before
-  3000 ms, uses Deepgram at the
-  3000 ms boundary and beyond, suppresses duplicate finals, and falls back to
-  Deepgram on system-recognizer failure. Flux provisional updates do not initiate
-  model inference.
+  A deterministic arbiter accepts a successful system result only when Android's
+  begin/end-of-speech interval is shorter than the user-configured threshold (3000 ms by default).
+  Deepgram receives the same utterance concurrently and its final is buffered rather than winning
+  simply because its completion arrives after the threshold. At the threshold and beyond, or if
+  Android fails/stalls, Deepgram wins. Duplicate finals are suppressed. On Android 13+, Pocket
+  Agent also requests quality formatting and recognition biasing; when Contacts permission is
+  granted, up to 128 contact display names are supplied as explicit bias strings to improve
+  proper-name recognition. Flux provisional updates do not initiate model inference.
 - TTS: `wss://api.deepgram.com/v1/speak` with Aura-2 Thalia,
   24 kHz signed PCM16 mono. The outgoing Pi response is cut at punctuation
   or a long whitespace boundary, preserving incomplete word fragments.
@@ -168,7 +174,10 @@ Validation checklist:
 
 Known limitations: Deepgram STT/TTS consumes network access and quota. Android short-turn
 recognition requires Android 13+ and an available system speech-recognition service; devices
-without one, and Android 12/12L, transparently use Deepgram for all turns.
+without one, and Android 12/12L, transparently use Deepgram for all turns. This uses the public
+Android SpeechRecognizer API, not Gboard's private advanced voice-typing pipeline, so Gboard's
+learned/personalized behavior cannot be guaranteed. The threshold can be tuned from 0.50 to
+8.00 seconds in Settings and applies from the next recognition cycle.
 An OEM may not expose the power-button assistant gesture; it may invoke a
 different assistant despite the selected role. Android 12+ background service
 and microphone restrictions still apply.
