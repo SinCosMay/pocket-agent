@@ -88,6 +88,12 @@ public class VoicePipelineDeviceTest {
 
         assertEquals(-1L, VoiceTranscript.spokenDurationMs(new JSONObject()
             .put("type", "TurnInfo").put("event", "EndOfTurn").put("words", new JSONArray())));
+
+        assertEquals(-1L, VoiceTranscript.spokenDurationMs(new JSONObject()
+            .put("type", "TurnInfo").put("event", "EndOfTurn")
+            .put("words", new JSONArray()
+                .put(new JSONObject().put("word", "call").put("start", 1.10).put("end", 1.32))
+                .put(new JSONObject().put("word", "Tanmay").put("start", 1.40)))));
     }
 
     @Test public void emptyConfirmedTurnReleasesSpeechStateWithoutDispatch() throws Exception {
