@@ -13,7 +13,9 @@ on:
       - 'app/src/main/java/dev/pocket/agent/PcmCaptureQueue.java'
       - 'app/src/main/java/dev/pocket/agent/VoiceListeningService.java'
       - 'app/src/main/java/dev/pocket/agent/AndroidShortSpeechRecognizer.java'
+      - 'app/src/main/java/dev/pocket/agent/AndroidDefaultSpeechRecognizer.java'
       - 'app/src/main/java/dev/pocket/agent/HybridTranscriptArbiter.java'
+      - 'app/src/main/java/dev/pocket/agent/VoiceSttSettings.java'
       - 'app/src/main/java/dev/pocket/agent/JarvisDetector.java'
       - 'app/src/main/java/dev/pocket/agent/JarvisProfile.java'
       - 'app/src/main/java/dev/pocket/agent/WakeWordService.java'
@@ -30,6 +32,7 @@ on:
       - 'app/build.gradle.kts'
       - 'app/src/androidTest/java/dev/pocket/agent/InstantVoiceCaptureDeviceTest.java'
       - 'app/src/androidTest/java/dev/pocket/agent/HybridSttDeviceTest.java'
+      - 'app/src/androidTest/java/dev/pocket/agent/VoiceSttSettingsDeviceTest.java'
   workflow_dispatch:
 permissions:
   contents: read
