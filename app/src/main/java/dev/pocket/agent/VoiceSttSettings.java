@@ -15,6 +15,18 @@ final class VoiceSttSettings {
         Mode(String storedValue) {
             this.storedValue = storedValue;
         }
+
+        boolean usesHybridArbitration() {
+            return this == HYBRID_THRESHOLD;
+        }
+
+        boolean usesDirectAndroidRecognizer() {
+            return this == ANDROID_DEFAULT_ONLY;
+        }
+
+        boolean usesDeepgramStt() {
+            return this != ANDROID_DEFAULT_ONLY;
+        }
     }
 
     static final int DEFAULT_SHORT_UTTERANCE_MS = 3000;
@@ -38,7 +50,11 @@ final class VoiceSttSettings {
     }
 
     static boolean usesThreshold(Context context) {
-        return mode(context) == Mode.HYBRID_THRESHOLD;
+        return thresholdEnabled(mode(context));
+    }
+
+    static boolean thresholdEnabled(Mode mode) {
+        return mode != null && mode.usesHybridArbitration();
     }
 
     static int shortUtteranceMs(Context context) {

@@ -330,4 +330,67 @@ public final class HybridSttDeviceTest {
         assertNotNull(choice);
         assertEquals(HybridTranscriptArbiter.Source.DEEPGRAM, choice.source);
     }
+
+    @Test public void exactMinimumThresholdMakesDeepgramAuthoritative() {
+        HybridTranscriptArbiter arbiter = new HybridTranscriptArbiter(
+            true, VoiceSttSettings.MIN_SHORT_UTTERANCE_MS);
+        long gen = arbiter.generation();
+        arbiter.speechStarted(gen, 1000L);
+        assertTrue(arbiter.systemSpeechEnded(gen, 1300L));
+        assertNull(arbiter.systemFinal(gen, "Android candidate", 1350L));
+
+        HybridTranscriptArbiter.Choice choice =
+            arbiter.deepgramFinal(gen, "Deepgram boundary", 1400L,
+                VoiceSttSettings.MIN_SHORT_UTTERANCE_MS);
+        assertNotNull(choice);
+        assertEquals(HybridTranscriptArbiter.Source.DEEPGRAM, choice.source);
+        assertEquals("Deepgram boundary", choice.text);
+    }
+
+    @Test public void justBelowMinimumThresholdLetsAndroidWin() {
+        HybridTranscriptArbiter arbiter = new HybridTranscriptArbiter(
+            true, VoiceSttSettings.MIN_SHORT_UTTERANCE_MS);
+        long gen = arbiter.generation();
+        arbiter.speechStarted(gen, 1000L);
+        assertTrue(arbiter.systemSpeechEnded(gen, 1300L));
+        assertNull(arbiter.systemFinal(gen, "Android short", 1350L));
+
+        HybridTranscriptArbiter.Choice choice =
+            arbiter.deepgramFinal(gen, "Deepgram short", 1400L,
+                VoiceSttSettings.MIN_SHORT_UTTERANCE_MS - 1L);
+        assertNotNull(choice);
+        assertEquals(HybridTranscriptArbiter.Source.SYSTEM, choice.source);
+        assertEquals("Android short", choice.text);
+    }
+
+    @Test public void exactMaximumThresholdMakesDeepgramAuthoritative() {
+        HybridTranscriptArbiter arbiter = new HybridTranscriptArbiter(
+            true, VoiceSttSettings.MAX_SHORT_UTTERANCE_MS);
+        long gen = arbiter.generation();
+        arbiter.speechStarted(gen, 1000L);
+        assertTrue(arbiter.systemSpeechEnded(gen, 1800L));
+        assertNull(arbiter.systemFinal(gen, "Android candidate", 1900L));
+
+        HybridTranscriptArbiter.Choice choice =
+            arbiter.deepgramFinal(gen, "Deepgram max boundary", 2000L,
+                VoiceSttSettings.MAX_SHORT_UTTERANCE_MS);
+        assertNotNull(choice);
+        assertEquals(HybridTranscriptArbiter.Source.DEEPGRAM, choice.source);
+    }
+
+    @Test public void justBelowMaximumThresholdLetsAndroidWin() {
+        HybridTranscriptArbiter arbiter = new HybridTranscriptArbiter(
+            true, VoiceSttSettings.MAX_SHORT_UTTERANCE_MS);
+        long gen = arbiter.generation();
+        arbiter.speechStarted(gen, 1000L);
+        assertTrue(arbiter.systemSpeechEnded(gen, 1800L));
+        assertNull(arbiter.systemFinal(gen, "Android max-short", 1900L));
+
+        HybridTranscriptArbiter.Choice choice =
+            arbiter.deepgramFinal(gen, "Deepgram candidate", 2000L,
+                VoiceSttSettings.MAX_SHORT_UTTERANCE_MS - 1L);
+        assertNotNull(choice);
+        assertEquals(HybridTranscriptArbiter.Source.SYSTEM, choice.source);
+        assertEquals("Android max-short", choice.text);
+    }
 }

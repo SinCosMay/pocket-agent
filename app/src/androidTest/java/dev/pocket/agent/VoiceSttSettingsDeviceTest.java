@@ -34,6 +34,46 @@ public final class VoiceSttSettingsDeviceTest {
         }
     }
 
+    @Test public void modePolicyRoutesExactlyTheRequestedSttProviders() {
+        VoiceSttSettings.Mode hybrid = VoiceSttSettings.Mode.HYBRID_THRESHOLD;
+        assertTrue(hybrid.usesHybridArbitration());
+        assertFalse(hybrid.usesDirectAndroidRecognizer());
+        assertTrue(hybrid.usesDeepgramStt());
+        assertTrue(VoiceSttSettings.thresholdEnabled(hybrid));
+
+        VoiceSttSettings.Mode android = VoiceSttSettings.Mode.ANDROID_DEFAULT_ONLY;
+        assertFalse(android.usesHybridArbitration());
+        assertTrue(android.usesDirectAndroidRecognizer());
+        assertFalse(android.usesDeepgramStt());
+        assertFalse(VoiceSttSettings.thresholdEnabled(android));
+
+        VoiceSttSettings.Mode deepgram = VoiceSttSettings.Mode.DEEPGRAM_ONLY;
+        assertFalse(deepgram.usesHybridArbitration());
+        assertFalse(deepgram.usesDirectAndroidRecognizer());
+        assertTrue(deepgram.usesDeepgramStt());
+        assertFalse(VoiceSttSettings.thresholdEnabled(deepgram));
+    }
+
+    @Test public void changingSavedModeIsObservedByTheNextSettingsRead() {
+        Context context = InstrumentationRegistry.getInstrumentation().getTargetContext();
+        SharedPreferences prefs = context.getSharedPreferences("voice_stt", Context.MODE_PRIVATE);
+        Object previous = prefs.getAll().get("mode");
+        try {
+            VoiceSttSettings.setMode(context, VoiceSttSettings.Mode.ANDROID_DEFAULT_ONLY);
+            assertEquals(VoiceSttSettings.Mode.ANDROID_DEFAULT_ONLY, VoiceSttSettings.mode(context));
+
+            VoiceSttSettings.setMode(context, VoiceSttSettings.Mode.DEEPGRAM_ONLY);
+            assertEquals(VoiceSttSettings.Mode.DEEPGRAM_ONLY, VoiceSttSettings.mode(context));
+
+            VoiceSttSettings.setMode(context, VoiceSttSettings.Mode.HYBRID_THRESHOLD);
+            assertEquals(VoiceSttSettings.Mode.HYBRID_THRESHOLD, VoiceSttSettings.mode(context));
+        } finally {
+            SharedPreferences.Editor restore = prefs.edit().remove("mode");
+            if (previous instanceof String) restore.putString("mode", (String) previous);
+            restore.commit();
+        }
+    }
+
     @Test public void thresholdRemainsConfigurableForHybridMode() {
         Context context = InstrumentationRegistry.getInstrumentation().getTargetContext();
         SharedPreferences prefs = context.getSharedPreferences("voice_stt", Context.MODE_PRIVATE);
@@ -51,6 +91,37 @@ public final class VoiceSttSettingsDeviceTest {
                 restore.putString("mode", (String) previousMode);
             if (previousThreshold instanceof Integer)
                 restore.putInt("short_utterance_ms", (Integer) previousThreshold);
+            restore.commit();
+        }
+    }
+
+    @Test public void thresholdHonorsMinimumMaximumAndQuarterSecondSnapping() {
+        Context context = InstrumentationRegistry.getInstrumentation().getTargetContext();
+        SharedPreferences prefs = context.getSharedPreferences("voice_stt", Context.MODE_PRIVATE);
+        Object previous = prefs.getAll().get("short_utterance_ms");
+        try {
+            VoiceSttSettings.setShortUtteranceMs(context, VoiceSttSettings.MIN_SHORT_UTTERANCE_MS);
+            assertEquals(500, VoiceSttSettings.shortUtteranceMs(context));
+
+            VoiceSttSettings.setShortUtteranceMs(context, VoiceSttSettings.MAX_SHORT_UTTERANCE_MS);
+            assertEquals(8000, VoiceSttSettings.shortUtteranceMs(context));
+
+            VoiceSttSettings.setShortUtteranceMs(context, 626);
+            assertEquals(750, VoiceSttSettings.shortUtteranceMs(context));
+
+            try {
+                VoiceSttSettings.setShortUtteranceMs(context, 499);
+                fail("Threshold below minimum should be rejected");
+            } catch (IllegalArgumentException expected) { }
+
+            try {
+                VoiceSttSettings.setShortUtteranceMs(context, 8001);
+                fail("Threshold above maximum should be rejected");
+            } catch (IllegalArgumentException expected) { }
+        } finally {
+            SharedPreferences.Editor restore = prefs.edit().remove("short_utterance_ms");
+            if (previous instanceof Integer)
+                restore.putInt("short_utterance_ms", (Integer) previous);
             restore.commit();
         }
     }
