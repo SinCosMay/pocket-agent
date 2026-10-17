@@ -189,6 +189,10 @@ final class HybridTranscriptArbiter {
         return pendingDeepgram != null;
     }
 
+    synchronized boolean systemEndpointObserved() {
+        return systemSpeechEndedAt >= 0L;
+    }
+
     synchronized boolean matchingDeepgramWaitExpired(long gen) {
         if (gen != generation || !resolved || !waitingForMatchingDeepgramFinal) return false;
         waitingForMatchingDeepgramFinal = false;
