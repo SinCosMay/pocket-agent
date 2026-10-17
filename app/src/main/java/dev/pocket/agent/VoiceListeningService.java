@@ -9,6 +9,8 @@ import android.app.Service;
 import android.content.Intent;
 import android.content.pm.PackageManager;
 import android.content.pm.ServiceInfo;
+import android.media.AudioManager;
+import android.media.ToneGenerator;
 import android.os.Build;
 import android.os.Handler;
 import android.os.IBinder;
@@ -45,6 +47,7 @@ public final class VoiceListeningService extends Service implements AgentService
     private VoiceAnnouncement currentAnnouncement;
     private String activeTurn;
     private boolean responding, userSpeaking, started, keepListening, microphoneEnabled, streamingReady, wakeStarted;
+    private boolean systemWakeReadyCuePending;
     private long utteranceAt, firstTokenAt;
     private final Runnable idleStop = () -> {
         if (started && microphoneEnabled && streamingReady && !responding && !userSpeaking && pendingAnnouncements.isEmpty()) {
@@ -102,8 +105,14 @@ public final class VoiceListeningService extends Service implements AgentService
             if (wakePreroll != null && wakePreroll.length > 0 && !microphoneEnabled) {
                 wakeStarted = true;
                 try {
-                    if (sttEngine == VoiceSttSettings.Engine.DEEPGRAM)
+                    if (sttEngine == VoiceSttSettings.Engine.DEEPGRAM) {
                         voice.primeWakePcm(wakePreroll);
+                    } else {
+                        // SpeechRecognizer owns its microphone and cannot accept the wake PCM.
+                        // Cue the user once the system recognizer is actually ready instead of
+                        // silently losing words spoken during the microphone handoff.
+                        systemWakeReadyCuePending = true;
+                    }
                 } catch (RuntimeException invalid) {
                     Log.w("PocketVoice", "Invalid wake audio preroll", invalid);
                 } finally { Arrays.fill(wakePreroll, (byte) 0); }
@@ -263,14 +272,19 @@ public final class VoiceListeningService extends Service implements AgentService
                 voice.listen();
                 return true;
             }
-            if (systemSpeech == null || !AndroidDefaultSpeechRecognizer.supported(this))
+            if (systemSpeech == null || !AndroidDefaultSpeechRecognizer.supported(this)) {
+                microphoneEnabled = false;
+                active = false;
                 return false;
+            }
             if (startSystemRecognition()) return true;
             microphoneEnabled = false;
             active = false;
             return false;
         } catch (RuntimeException denied) {
             Log.w("PocketVoice", "Android denied microphone reactivation", denied);
+            microphoneEnabled = false;
+            active = false;
             return false;
         }
     }
@@ -330,7 +344,21 @@ public final class VoiceListeningService extends Service implements AgentService
         streamingReady = true;
         if (!userSpeaking) {
             showStatus("Listening · Android default");
+            if (systemWakeReadyCuePending) {
+                systemWakeReadyCuePending = false;
+                playSystemReadyCue();
+            }
             resetIdle();
+        }
+    }
+
+    private void playSystemReadyCue() {
+        try {
+            ToneGenerator tone = new ToneGenerator(AudioManager.STREAM_NOTIFICATION, 80);
+            tone.startTone(ToneGenerator.TONE_PROP_BEEP, 120);
+            main.postDelayed(tone::release, 300L);
+        } catch (RuntimeException unavailable) {
+            Log.w("PocketVoice", "Could not play Android STT ready cue", unavailable);
         }
     }
 
@@ -499,6 +527,7 @@ public final class VoiceListeningService extends Service implements AgentService
         active = false;
         streamingReady = false;
         wakeStarted = false;
+        systemWakeReadyCuePending = false;
         main.removeCallbacks(idleStop);
         main.removeCallbacks(restartSystemSpeech);
         main.removeCallbacks(systemFinalTimeout);

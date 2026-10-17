@@ -327,7 +327,7 @@ public final class MainActivity extends Activity implements AgentService.Observe
         panel.addView(sttHelp);
         java.util.function.Consumer<VoiceSttSettings.Engine> updateSttHelp = engine ->
             sttHelp.setText(engine == VoiceSttSettings.Engine.ANDROID_DEFAULT
-                ? "Android default uses the phone's system SpeechRecognizer with its own microphone, matching the standalone test APK path. A fresh recognition cycle starts after each spoken reply. Deepgram is still used for speech synthesis."
+                ? "Android default uses the phone's system SpeechRecognizer with its own microphone, matching the standalone test APK path. After Hey Jarvis, speak after the ready beep so the system recognizer owns the microphone. A fresh recognition cycle starts after each spoken reply. Deepgram is still used for speech synthesis."
                 : "Deepgram uses the current streaming speech-recognition path and supports listening for interruptions while the agent speaks. Deepgram is the default.");
         updateSttHelp.accept(savedSttEngine);
         sttEngine.setOnItemSelectedListener(new AdapterView.OnItemSelectedListener() {
