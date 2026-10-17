@@ -181,11 +181,19 @@ final class HybridTranscriptArbiter {
 
     synchronized Choice systemWaitExpired(long gen) {
         if (gen != generation || resolved) return null;
-        systemEnabled = false;
         if (pendingDeepgram != null) {
+            systemEnabled = false;
             pendingSystem = null;
             return choosePendingDeepgram();
         }
+        long duration = effectiveSpokenDurationMs(0L);
+        if (pendingSystem != null && deepgramTurnOpen && !deepgramEnded
+                && duration >= shortUtteranceMs) {
+            // The turn is known to be long, so Android cannot win while Deepgram is still
+            // finalizing. Keep Android only as the fallback if Deepgram later ends empty.
+            return null;
+        }
+        systemEnabled = false;
         if (pendingSystem != null) return choosePendingSystem();
         if (deepgramEnded) resolved = true;
         return null;
