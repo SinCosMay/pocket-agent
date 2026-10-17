@@ -25,6 +25,17 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
+      - name: Mark utility build started
+        if: github.event_name == 'push'
+        run: |
+          mkdir -p artifacts
+          printf 'started %s\n' "$GITHUB_SHA" > artifacts/build-status.txt
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add artifacts/build-status.txt
+          git commit -m "Mark default STT APK build started"
+          git push origin "HEAD:${GITHUB_REF_NAME}"
+
       - uses: actions/setup-java@v4
         with:
           distribution: temurin
@@ -53,13 +64,8 @@ jobs:
       - name: Publish stable APK on utility branch
         if: github.event_name == 'push'
         run: |
-          mkdir -p artifacts
           cp tools/android-default-stt-test/app/build/outputs/apk/debug/app-debug.apk artifacts/android-default-stt-test.apk
-          git config user.name "github-actions[bot]"
-          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-          git add artifacts/android-default-stt-test.apk
-          if git diff --cached --quiet; then
-            exit 0
-          fi
+          printf 'success %s\n' "$GITHUB_SHA" > artifacts/build-status.txt
+          git add artifacts/android-default-stt-test.apk artifacts/build-status.txt
           git commit -m "Publish default STT test APK"
           git push origin "HEAD:${GITHUB_REF_NAME}"
