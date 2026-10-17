@@ -18,8 +18,13 @@
     <uses-feature android:name="android.hardware.telephony" android:required="false" />
     <queries>
         <package android:name="moe.shizuku.privileged.api" />
-        <intent><action android:name="android.intent.action.MAIN" /><category android:name="android.intent.category.LAUNCHER" /></intent>
-        <intent><action android:name="android.speech.RecognitionService" /></intent>
+        <intent>
+            <action android:name="android.intent.action.MAIN" />
+            <category android:name="android.intent.category.LAUNCHER" />
+        </intent>
+        <intent>
+            <action android:name="android.speech.RecognitionService" />
+        </intent>
     </queries>
     <application android:allowBackup="false" android:fullBackupContent="false" android:dataExtractionRules="@xml/data_extraction_rules"
         android:label="Pocket Agent" android:theme="@android:style/Theme.Material.Light.NoActionBar"

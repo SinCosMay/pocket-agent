@@ -9,6 +9,8 @@ import android.app.Service;
 import android.content.Intent;
 import android.content.pm.PackageManager;
 import android.content.pm.ServiceInfo;
+import android.media.AudioManager;
+import android.media.ToneGenerator;
 import android.os.Build;
 import android.os.Handler;
 import android.os.IBinder;
@@ -50,6 +52,7 @@ public final class VoiceListeningService extends Service implements AgentService
     private VoiceAnnouncement currentAnnouncement;
     private String activeTurn;
     private boolean responding, userSpeaking, started, keepListening, microphoneEnabled, streamingReady, wakeStarted;
+    private boolean systemWakeReadyCuePending;
     private long utteranceAt, firstTokenAt;
     private final Runnable idleStop = () -> {
         if (started && microphoneEnabled && streamingReady && !responding && !userSpeaking && pendingAnnouncements.isEmpty()) {
@@ -108,10 +111,15 @@ public final class VoiceListeningService extends Service implements AgentService
             if (wakePreroll != null && wakePreroll.length > 0 && !microphoneEnabled) {
                 wakeStarted = true;
                 try {
-                    if (sttMode != VoiceSttSettings.Mode.ANDROID_DEFAULT_ONLY)
+                    if (sttMode != VoiceSttSettings.Mode.ANDROID_DEFAULT_ONLY) {
                         voice.primeWakePcm(wakePreroll);
-                    if (sttMode == VoiceSttSettings.Mode.HYBRID_THRESHOLD && shortSpeech != null)
-                        shortSpeech.primePcm(wakePreroll);
+                        if (sttMode == VoiceSttSettings.Mode.HYBRID_THRESHOLD && shortSpeech != null)
+                            shortSpeech.primePcm(wakePreroll);
+                    } else {
+                        // The direct system recognizer cannot consume wake preroll. Cue the user
+                        // when it actually owns the microphone so the first command word is not lost.
+                        systemWakeReadyCuePending = true;
+                    }
                 }
                 catch (RuntimeException invalid) { Log.w("PocketVoice", "Invalid wake audio preroll", invalid); }
                 finally { Arrays.fill(wakePreroll, (byte) 0); }
@@ -317,6 +325,8 @@ public final class VoiceListeningService extends Service implements AgentService
             return true;
         } catch (RuntimeException denied) {
             Log.w("PocketVoice", "Android denied microphone reactivation", denied);
+            microphoneEnabled = false;
+            active = false;
             return false;
         }
     }
@@ -380,7 +390,21 @@ public final class VoiceListeningService extends Service implements AgentService
         streamingReady = true;
         if (!userSpeaking) {
             showStatus("Listening · Android default only");
+            if (systemWakeReadyCuePending) {
+                systemWakeReadyCuePending = false;
+                playSystemReadyCue();
+            }
             resetIdle();
+        }
+    }
+
+    private void playSystemReadyCue() {
+        try {
+            ToneGenerator tone = new ToneGenerator(AudioManager.STREAM_NOTIFICATION, 80);
+            tone.startTone(ToneGenerator.TONE_PROP_BEEP, 120);
+            main.postDelayed(tone::release, 300L);
+        } catch (RuntimeException unavailable) {
+            Log.w("PocketVoice", "Could not play Android STT ready cue", unavailable);
         }
     }
 
@@ -720,6 +744,7 @@ public final class VoiceListeningService extends Service implements AgentService
         active = false;
         streamingReady = false;
         wakeStarted = false;
+        systemWakeReadyCuePending = false;
         main.removeCallbacks(idleStop);
         main.removeCallbacks(restartDefaultSpeech);
         main.removeCallbacks(defaultSpeechFinalTimeout);

@@ -48,14 +48,16 @@ jobs:
           path.chmod(0o600)
           PY
       - uses: gradle/actions/setup-gradle@v4
-      - name: Build release and local-emulator tests (no emulator in CI)
-        run: ./gradlew --no-daemon :app:assembleRelease :app:assembleReleaseAndroidTest :app:lintRelease :fixture:assembleDebug
+      - name: Build release, development and local-emulator test APKs
+        run: |
+          ./gradlew --no-daemon :app:assembleRelease :app:assembleDevelopment :app:assembleReleaseAndroidTest :app:lintRelease :fixture:assembleDebug
+          ./gradlew --no-daemon -PdevEmulatorTest :app:assembleDevelopmentAndroidTest
       - name: Enable KVM hardware acceleration for emulator
         run: |
           test -c /dev/kvm
           sudo chmod 666 /dev/kvm
           test -r /dev/kvm && test -w /dev/kvm
-      - name: Exercise voice contract on Android emulator
+      - name: Exercise voice and development MCP contracts on Android emulator
         uses: reactivecircus/android-emulator-runner@v2
         with:
           api-level: 35
@@ -63,12 +65,16 @@ jobs:
           target: google_apis
           disable-animations: true
           emulator-options: -no-window -gpu swiftshader_indirect -no-snapshot -noaudio -no-boot-anim
-          script: ./gradlew --no-daemon :app:connectedReleaseAndroidTest -Pandroid.testInstrumentationRunnerArguments.class=dev.pocket.agent.VoicePipelineDeviceTest && ./gradlew --no-daemon :app:connectedReleaseAndroidTest -Pandroid.testInstrumentationRunnerArguments.class=dev.pocket.agent.VoiceAssistantDeviceTest
-      - name: Upload voice emulator test report
+          script: |
+            set -e
+            ./gradlew --no-daemon :app:connectedReleaseAndroidTest -Pandroid.testInstrumentationRunnerArguments.class=dev.pocket.agent.VoicePipelineDeviceTest
+            ./gradlew --no-daemon :app:connectedReleaseAndroidTest -Pandroid.testInstrumentationRunnerArguments.class=dev.pocket.agent.VoiceAssistantDeviceTest
+            ./gradlew --no-daemon -PdevEmulatorTest :app:connectedDevelopmentAndroidTest -Pandroid.testInstrumentationRunnerArguments.class=dev.pocket.agent.DevBridgeDeviceTest
+      - name: Upload emulator test report
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: voice-emulator-test-report
+          name: emulator-test-report
           path: app/build/outputs/androidTest-results/connected/
           if-no-files-found: ignore
       - name: Collect provenance and signed APKs
@@ -77,10 +83,24 @@ jobs:
           cp app/build/outputs/apk/release/app-arm64-v8a-release.apk artifacts/Pocket-Agent-arm64.apk
           cp app/build/outputs/apk/release/app-x86_64-release.apk artifacts/Pocket-Agent-x86_64.apk
           cp app/build/outputs/apk/release/app-universal-release.apk artifacts/Pocket-Agent-universal.apk
+          cp app/build/outputs/apk/development/app-arm64-v8a-development.apk artifacts/Pocket-Agent-development-arm64.apk
+          cp app/build/outputs/apk/development/app-x86_64-development.apk artifacts/Pocket-Agent-development-x86_64.apk
+          cp app/build/outputs/apk/development/app-universal-development.apk artifacts/Pocket-Agent-development-universal.apk
+          python3 - <<'PY'
+          from zipfile import ZipFile
+          for path, present in [('artifacts/Pocket-Agent-arm64.apk',False),('artifacts/Pocket-Agent-development-arm64.apk',True),('artifacts/Pocket-Agent-development-universal.apk',True)]:
+              with ZipFile(path) as archive:
+                  actual='lib/arm64-v8a/libngrok_java.so' in archive.namelist()
+                  assert actual is present,(path,actual)
+          print('Development-only ARM64 ngrok JNI packaging verified')
+          PY
           cp app/build/outputs/apk/androidTest/release/*.apk artifacts/Pocket-Agent-tests.apk
+          cp app/build/outputs/apk/androidTest/development/*.apk artifacts/Pocket-Agent-development-tests.apk
           cp fixture/build/outputs/apk/debug/*.apk artifacts/Pocket-Agent-fixture.apk
           cp app/build/reports/lint-results-release.txt artifacts/lint.txt
           "$ANDROID_HOME/build-tools/36.0.0/apksigner" verify --verbose --print-certs artifacts/Pocket-Agent-arm64.apk > artifacts/signature.txt
+          "$ANDROID_HOME/build-tools/36.0.0/apksigner" verify --verbose --print-certs artifacts/Pocket-Agent-development-arm64.apk > artifacts/development-signature.txt
+          grep -F "$(sed -n 's/Signer #1 certificate SHA-256 digest: //p' artifacts/signature.txt | head -1)" artifacts/development-signature.txt
           git rev-parse HEAD > artifacts/source-commit.txt
           cp app/src/main/assets/runtime-manifest.json artifacts/runtime-manifest.json
           python3 scripts/native_footprint.py > artifacts/native-stripping.json
@@ -91,6 +111,15 @@ jobs:
           name: pocket-agent-release
           path: artifacts/
           retention-days: 90
+          if-no-files-found: error
+      - uses: actions/upload-artifact@v4
+        with:
+          name: pocket-agent-development
+          path: |
+            artifacts/Pocket-Agent-development-*.apk
+            artifacts/development-signature.txt
+            artifacts/SHA256SUMS.txt
+          retention-days: 30
           if-no-files-found: error
       - uses: actions/upload-artifact@v4
         if: always()
