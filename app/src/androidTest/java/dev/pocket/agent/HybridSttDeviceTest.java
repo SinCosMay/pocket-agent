@@ -43,7 +43,7 @@ public final class HybridSttDeviceTest {
         long gen = arbiter.generation();
         arbiter.speechStarted(gen, 1000L);
         assertFalse(arbiter.systemSpeechEnded(gen, 4000L));
-        assertFalse(arbiter.systemEligible());
+        assertTrue(arbiter.systemEligible());
 
         HybridTranscriptArbiter.Choice choice =
             arbiter.deepgramFinal(gen, "Boundary transcript", 4200L);
@@ -65,22 +65,21 @@ public final class HybridSttDeviceTest {
         assertTrue(arbiter.turnSettled());
     }
 
-    @Test public void systemWinSuppressesMatchingDeepgramDuplicate() {
+    @Test public void systemResultWaitsForFluxTimingAndWinsShortTurn() {
         HybridTranscriptArbiter arbiter = new HybridTranscriptArbiter(true);
         long gen = arbiter.generation();
         arbiter.speechStarted(gen, 1000L);
         arbiter.deepgramSpeechStarted(gen);
         assertTrue(arbiter.systemSpeechEnded(gen, 2000L));
 
+        assertNull(arbiter.systemFinal(gen, "System winner", 2300L));
         HybridTranscriptArbiter.Choice winner =
-            arbiter.systemFinal(gen, "System winner", 2300L);
+            arbiter.deepgramFinal(gen, "Deepgram candidate", 2500L, 900L);
         assertNotNull(winner);
         assertEquals(HybridTranscriptArbiter.Source.SYSTEM, winner.source);
-        assertFalse(arbiter.turnSettled());
-
-        assertNull(arbiter.deepgramFinal(gen, "Duplicate Deepgram", 2500L));
+        assertEquals("System winner", winner.text);
         assertTrue(arbiter.turnSettled());
-        assertNull(arbiter.systemFinal(gen, "Duplicate system", 2600L));
+        assertNull(arbiter.deepgramFinal(gen, "Duplicate Deepgram", 2600L, 900L));
     }
 
     @Test public void shortEndStillAllowsLateSystemResultPastThreshold() {
@@ -154,9 +153,11 @@ public final class HybridSttDeviceTest {
         long currentGen = arbiter.generation();
         arbiter.speechStarted(currentGen, 2000L);
         assertTrue(arbiter.systemSpeechEnded(currentGen, 2500L));
+        assertNull(arbiter.systemFinal(currentGen, "Current system", 2600L));
         HybridTranscriptArbiter.Choice current =
-            arbiter.systemFinal(currentGen, "Current system", 2600L);
+            arbiter.deepgramFinal(currentGen, "Current Deepgram", 2700L, 450L);
         assertNotNull(current);
+        assertEquals(HybridTranscriptArbiter.Source.SYSTEM, current.source);
         assertEquals("Current system", current.text);
     }
 
@@ -172,30 +173,32 @@ public final class HybridSttDeviceTest {
         assertEquals(HybridTranscriptArbiter.Source.DEEPGRAM, choice.source);
     }
 
-    @Test public void systemWinnerMarksMatchingDeepgramFinalAsPending() {
+    @Test public void timedOutSystemFallbackSuppressesMatchingDeepgramFinal() {
         HybridTranscriptArbiter arbiter = new HybridTranscriptArbiter(true);
         long gen = arbiter.generation();
         arbiter.speechStarted(gen, 1000L);
         arbiter.deepgramSpeechStarted(gen);
         assertTrue(arbiter.systemSpeechEnded(gen, 1800L));
-        HybridTranscriptArbiter.Choice choice =
-            arbiter.systemFinal(gen, "System winner", 2000L);
+        assertNull(arbiter.systemFinal(gen, "System winner", 2000L));
+
+        HybridTranscriptArbiter.Choice choice = arbiter.systemWaitExpired(gen);
         assertNotNull(choice);
+        assertEquals(HybridTranscriptArbiter.Source.SYSTEM, choice.source);
         assertTrue(arbiter.waitingForMatchingDeepgramFinal());
 
-        assertNull(arbiter.deepgramFinal(gen, "Matching Deepgram final", 2200L));
+        assertNull(arbiter.deepgramFinal(gen, "Matching Deepgram final", 2200L, 800L));
         assertFalse(arbiter.waitingForMatchingDeepgramFinal());
         assertTrue(arbiter.turnSettled());
     }
 
-    @Test public void systemWinnerDoesNotWaitWhenDeepgramNeverOpenedTurn() {
+    @Test public void systemTimeoutDoesNotWaitWhenDeepgramNeverOpenedTurn() {
         HybridTranscriptArbiter arbiter = new HybridTranscriptArbiter(true);
         long gen = arbiter.generation();
         arbiter.speechStarted(gen, 1000L);
         assertTrue(arbiter.systemSpeechEnded(gen, 1800L));
+        assertNull(arbiter.systemFinal(gen, "System only", 2000L));
 
-        HybridTranscriptArbiter.Choice choice =
-            arbiter.systemFinal(gen, "System only", 2000L);
+        HybridTranscriptArbiter.Choice choice = arbiter.systemWaitExpired(gen);
         assertNotNull(choice);
         assertEquals(HybridTranscriptArbiter.Source.SYSTEM, choice.source);
         assertFalse(arbiter.waitingForMatchingDeepgramFinal());
@@ -208,7 +211,8 @@ public final class HybridSttDeviceTest {
         arbiter.speechStarted(gen, 1000L);
         arbiter.deepgramSpeechStarted(gen);
         assertTrue(arbiter.systemSpeechEnded(gen, 1800L));
-        assertNotNull(arbiter.systemFinal(gen, "System winner", 2000L));
+        assertNull(arbiter.systemFinal(gen, "System winner", 2000L));
+        assertNotNull(arbiter.systemWaitExpired(gen));
         assertTrue(arbiter.waitingForMatchingDeepgramFinal());
 
         assertTrue(arbiter.matchingDeepgramWaitExpired(gen));
@@ -264,6 +268,36 @@ public final class HybridSttDeviceTest {
         assertNotNull(choice);
         assertEquals(HybridTranscriptArbiter.Source.SYSTEM, choice.source);
         assertEquals("System candidate", choice.text);
+    }
+
+    @Test public void delayedAndroidEndpointStillUsesSystemWhenFluxWordsAreShort() {
+        HybridTranscriptArbiter arbiter = new HybridTranscriptArbiter(true);
+        long gen = arbiter.generation();
+        arbiter.speechStarted(gen, 1000L);
+
+        assertFalse(arbiter.systemSpeechEnded(gen, 5200L));
+        assertTrue(arbiter.systemEligible());
+        assertNull(arbiter.systemFinal(gen, "Call Tanmay", 5300L));
+
+        HybridTranscriptArbiter.Choice choice =
+            arbiter.deepgramFinal(gen, "Call ten may", 5400L, 850L);
+        assertNotNull(choice);
+        assertEquals(HybridTranscriptArbiter.Source.SYSTEM, choice.source);
+        assertEquals("Call Tanmay", choice.text);
+    }
+
+    @Test public void fluxWordDurationCanMakeDeepgramAuthoritative() {
+        HybridTranscriptArbiter arbiter = new HybridTranscriptArbiter(true);
+        long gen = arbiter.generation();
+        arbiter.speechStarted(gen, 1000L);
+        assertTrue(arbiter.systemSpeechEnded(gen, 2000L));
+        assertNull(arbiter.systemFinal(gen, "System candidate", 2100L));
+
+        HybridTranscriptArbiter.Choice choice =
+            arbiter.deepgramFinal(gen, "Long Deepgram turn", 2200L, 3200L);
+        assertNotNull(choice);
+        assertEquals(HybridTranscriptArbiter.Source.DEEPGRAM, choice.source);
+        assertEquals("Long Deepgram turn", choice.text);
     }
 
     @Test public void unavailableSystemRecognizerMakesDeepgramAuthoritativeImmediately() {
