@@ -35,7 +35,12 @@ test('catalog discovers arbitrary OpenAI-compatible model IDs and rejects hidden
 });
 
 test('provider discovery rejects unauthorized, malformed, oversized and unsafe catalogs without leaking secrets',async()=>{
- const failure=await assert.rejects(()=>discoverProviderModels(base,credentials,async()=>new Response('private-api-key',{status:401})),/HTTP 401/);
+ await assert.rejects(()=>discoverProviderModels(base,credentials,async()=>new Response('private-api-key',{status:401})),(error:any)=>{
+   const message=String(error?.message??error);
+   assert.match(message,/HTTP 401/);
+   assert.doesNotMatch(message,/private-api-key/);
+   return true;
+ });
  for(const body of [{other:[]},{data:'wrong'},{data:[]}]){
    await assert.rejects(()=>discoverProviderModels(base,credentials,async()=>json(body)),/catalog|identifiers/);
  }
