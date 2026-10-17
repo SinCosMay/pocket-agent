@@ -7,11 +7,12 @@ gesture activates a microphone-type Android foreground service with an ongoing
 notification, without leaving an overlay on screen. A live microphone stream always goes to Deepgram STT from its first sample. On Android 13+
 the same PCM is also injected into an available Android system speech recognizer without opening
 a second microphone. The short-turn threshold is configurable in Settings and defaults to three
-seconds. Pocket Agent does not cancel Android merely because wall-clock time reaches the threshold:
-it waits for Android end-of-speech, then accepts a successful system result only when the detected
-speech interval is shorter than the configured threshold. Deepgram's final can be buffered while
-Android finishes endpointing, and a bounded grace timeout releases Deepgram if Android stalls.
-Android 12/12L use Deepgram for all transcription.
+seconds. Flux EndOfTurn messages include word-level start/end timestamps; Pocket Agent uses the
+first-to-last recognized-word span as its preferred duration measurement, so Android or Deepgram
+endpointing silence does not turn a one-second command into a long turn. Below the threshold an
+available Android transcript wins; at or above it Deepgram wins. Android begin/end callbacks are
+only the duration fallback when Flux omits word timing, and bounded timeouts prevent either
+recognizer from holding a turn forever. Android 12/12L use Deepgram for all transcription.
 A nonempty selected transcript, after any wake-word prefix is removed, is submitted as **one normal main-agent user message**; wake-word-only turns are ignored. Only
 text deltas produced in that particular main response are sent to Deepgram streaming
 TTS. Subsequent Pi9 worker completion messages and ordinary text messages remain
@@ -42,14 +43,15 @@ Pocket Agent instead uses directly documented Deepgram APIs:
   Android system recognizer is eligible for a short-turn result. On Android 13+ with
   a compatible recognition service, that same PCM16 stream is supplied through
   `RecognizerIntent.EXTRA_AUDIO_SOURCE`; the system recognizer never owns the microphone.
-  A deterministic arbiter accepts a successful system result only when Android's
-  begin/end-of-speech interval is shorter than the user-configured threshold (3000 ms by default).
-  Deepgram receives the same utterance concurrently and its final is buffered rather than winning
-  simply because its completion arrives after the threshold. At the threshold and beyond, or if
-  Android fails/stalls, Deepgram wins. Duplicate finals are suppressed. On Android 13+, Pocket
-  Agent also requests quality formatting and recognition biasing; when Contacts permission is
-  granted, up to 128 contact display names are supplied as explicit bias strings to improve
-  proper-name recognition. Flux provisional updates do not initiate model inference.
+  The deterministic arbiter prefers the first-to-last Flux word-timestamp span for
+  short/long classification (3000 ms by default) rather than callback arrival time or the full
+  audio window. This excludes endpointing silence while preserving pauses between recognized
+  words. Android's transcript wins below the configured threshold when available; at or above it,
+  or if Android fails/stalls, Deepgram wins. Android begin/end-of-speech timing is only a fallback
+  if Flux omits word timestamps. Duplicate finals are suppressed. On Android 13+, Pocket Agent
+  also requests quality formatting and recognition biasing; when Contacts permission is granted,
+  up to 128 contact display names are supplied as explicit bias strings to improve proper-name
+  recognition. Flux provisional updates do not initiate model inference.
 - TTS: `wss://api.deepgram.com/v1/speak` with Aura-2 Thalia,
   24 kHz signed PCM16 mono. The outgoing Pi response is cut at punctuation
   or a long whitespace boundary, preserving incomplete word fragments.
