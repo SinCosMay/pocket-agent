@@ -21,11 +21,12 @@ import static org.junit.Assert.*;
 public class DevBridgeDeviceTest {
     private Context context() {return InstrumentationRegistry.getInstrumentation().getTargetContext();}
 
-    private Object server() throws Exception {
+    private Object server() throws Exception {return server("");}
+    private Object server(String token) throws Exception {
         Class<?> type=Class.forName("dev.pocket.agent.DevMcpServer");
         Constructor<?> constructor=type.getDeclaredConstructor(Context.class,String.class);
         constructor.setAccessible(true);
-        Object result=constructor.newInstance(context(),"instrumentation-test-token");
+        Object result=constructor.newInstance(context(),token);
         type.getMethod("start",int.class,boolean.class).invoke(result,5000,false);
         return result;
     }
@@ -48,8 +49,9 @@ public class DevBridgeDeviceTest {
         byte[] bytes=body.toString().getBytes(StandardCharsets.UTF_8);
         try(Socket socket=new Socket("127.0.0.1",8767)) {
             socket.setSoTimeout(9000);
-            String headers="POST /mcp HTTP/1.1\r\nHost: localhost\r\nContent-Type: application/json\r\nAccept: application/json\r\nAuthorization: Bearer "+token+
-                "\r\n"+(chunked?"Transfer-Encoding: chunked\r\n":"Content-Length: "+bytes.length+"\r\n")+"Connection: close\r\n"+(origin==null?"":"Origin: https://untrusted.example\r\n")+"\r\n";
+            String auth=token==null||token.isEmpty()?"":"Authorization: Bearer "+token+"\r\n";
+            String headers="POST /mcp HTTP/1.1\r\nHost: localhost\r\nContent-Type: application/json\r\nAccept: application/json\r\n"+auth+
+                (chunked?"Transfer-Encoding: chunked\r\n":"Content-Length: "+bytes.length+"\r\n")+"Connection: close\r\n"+(origin==null?"":"Origin: https://untrusted.example\r\n")+"\r\n";
             socket.getOutputStream().write(headers.getBytes(StandardCharsets.UTF_8));
             if(chunked)socket.getOutputStream().write((Integer.toHexString(bytes.length)+"\r\n").getBytes(StandardCharsets.US_ASCII));
             socket.getOutputStream().write(bytes);
@@ -74,20 +76,29 @@ public class DevBridgeDeviceTest {
         }
         throw new AssertionError("Development tools did not start");
     }
-    @Test public void authenticatedMcpListsSameModelToolsAndBlocksUntrustedOrigin() throws Exception {
+    @Test public void localMcpNeedsNoBearerListsSameModelToolsAndBlocksUntrustedOrigin() throws Exception {
         Assume.assumeTrue(BuildConfig.DEVELOPMENT_TOOLS);
         startAgent();
         Object bridge=server();
         try {
-            assertTrue(request("wrong","ping",null).startsWith("HTTP/1.1 401"));
-            assertTrue(request("instrumentation-test-token","ping","https://untrusted.example").startsWith("HTTP/1.1 403"));
-            assertTrue(request("instrumentation-test-token","initialize",null).contains("pocket-agent-development"));
-            assertTrue(request("instrumentation-test-token","ping",null,true).contains("\"result\":{}"));
-            String tools=request("instrumentation-test-token","tools/list",null);
+            assertTrue(request(null,"ping","https://untrusted.example").startsWith("HTTP/1.1 403"));
+            assertTrue(request(null,"initialize",null).contains("pocket-agent-development"));
+            assertTrue(request(null,"ping",null,true).contains("\"result\":{}"));
+            String tools=request(null,"tools/list",null);
             assertTrue(tools,tools.contains("phone_capabilities"));
             assertTrue(tools,tools.contains("memory_search"));
             assertTrue(tools,tools.contains("subagent"));
             assertTrue(tools,tools.contains("debug_history"));
+        } finally {bridge.getClass().getMethod("stop").invoke(bridge);}
+    }
+    @Test public void bearerModeStillProtectsWirelessBridge() throws Exception {
+        Assume.assumeTrue(BuildConfig.DEVELOPMENT_TOOLS);
+        Object bridge=server("instrumentation-test-token");
+        try {
+            assertTrue(request(null,"ping",null).startsWith("HTTP/1.1 401"));
+            assertTrue(request("wrong","ping",null).startsWith("HTTP/1.1 401"));
+            assertTrue(request("instrumentation-test-token","ping",null).contains("\"result\":{}"));
+            assertTrue(request("instrumentation-test-token","ping","https://untrusted.example").startsWith("HTTP/1.1 403"));
         } finally {bridge.getClass().getMethod("stop").invoke(bridge);}
     }
     @Test public void chunkFramingBudgetRejectsExcessiveTinyChunks() throws Exception {
@@ -97,7 +108,7 @@ public class DevBridgeDeviceTest {
             socket.setSoTimeout(9000);
             java.io.ByteArrayOutputStream wire=new java.io.ByteArrayOutputStream();
             wire.write(("POST /mcp HTTP/1.1\r\nHost: localhost\r\nContent-Type: application/json\r\n"+
-                "Authorization: Bearer instrumentation-test-token\r\nTransfer-Encoding: chunked\r\nConnection: close\r\n\r\n").getBytes(StandardCharsets.US_ASCII));
+                "Transfer-Encoding: chunked\r\nConnection: close\r\n\r\n").getBytes(StandardCharsets.US_ASCII));
             // The decoded body is only 4 KiB, but thousands of chunks waste CPU
             // and framing bytes unless a separate chunk-count limit is enforced.
             for(int i=0;i<4200;i++)wire.write("1\r\n \r\n".getBytes(StandardCharsets.US_ASCII));

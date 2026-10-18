@@ -29,12 +29,12 @@ public final class DevToolsActivity extends Activity {
         TextView title=new TextView(this);title.setText("Development MCP bridge");title.setTextSize(24);
         panel.addView(title);
         TextView warning=new TextView(this);
-        warning.setText("WARNING: this server exposes every phone agent tool and stored chat/tool history. Anyone holding its bearer token can control the phone. Start only for trusted testing, and stop when finished. The production APK has no bridge.");
+        warning.setText("WARNING: this server exposes every phone agent tool and stored chat/tool history. USB/localhost access has no MCP bearer, so any process that can reach the forwarded local port can control the phone. Wireless/ngrok access still requires the MCP bearer. Start only for trusted testing, and stop when finished. The production APK has no bridge.");
         warning.setPadding(0,16,0,16);panel.addView(warning);
         status=new TextView(this);panel.addView(status);
         add(panel,"Refresh status",this::refresh);
         add(panel,"Start USB / localhost server",()->start(DevBridgeService.START_LOCAL));
-        ngrok=new EditText(this);ngrok.setHint("ngrok authtoken (not the MCP bearer)");
+        ngrok=new EditText(this);ngrok.setHint("ngrok authtoken");
         ngrok.setInputType(InputType.TYPE_CLASS_TEXT|InputType.TYPE_TEXT_VARIATION_PASSWORD);
         ngrok.setImportantForAutofill(View.IMPORTANT_FOR_AUTOFILL_NO_EXCLUDE_DESCENDANTS);
         ngrok.setSaveEnabled(false);panel.addView(ngrok);
@@ -49,7 +49,7 @@ public final class DevToolsActivity extends Activity {
             catch(Exception error){message("Token unavailable");return;}
             start(DevBridgeService.START_PUBLIC);
         });
-        add(panel,"Copy MCP bearer token",()->{
+        add(panel,"Copy wireless MCP bearer token",()->{
             try {
                 String token=secrets.bearer();
                 ClipData clip=ClipData.newPlainText("Development MCP bearer",token);
@@ -60,7 +60,7 @@ public final class DevToolsActivity extends Activity {
                 message("MCP bearer copied; do not share it or save it in logs");
             }catch(Exception error){message("Unable to copy token");}
         });
-        add(panel,"Rotate MCP bearer (bridge must be stopped)",()->{
+        add(panel,"Rotate wireless MCP bearer (bridge must be stopped)",()->{
             if(!DevBridgeService.status().optString("stage").equals("stopped")){
                 message("Stop the bridge before rotating the bearer");return;
             }
@@ -72,7 +72,7 @@ public final class DevToolsActivity extends Activity {
             status.postDelayed(this::refresh,300);
         });
         TextView instructions=new TextView(this);
-        instructions.setText("USB setup on PC: adb -s <serial> forward tcp:8767 tcp:8767\nMCP URL: http://127.0.0.1:8767/mcp\nAuthorization: Bearer <copied MCP bearer>\nFor ngrok, use the HTTPS URL shown above with that same MCP bearer. ngrok token and MCP bearer are different. The agent must be running to list/call native tools; history remains available after agent stops.");
+        instructions.setText("USB setup on PC: adb -s <serial> forward tcp:8767 tcp:8767\nMCP URL: http://127.0.0.1:8767/mcp\nAuthorization: none for USB/localhost.\nFor ngrok, use the HTTPS URL shown above with Authorization: Bearer <copied wireless MCP bearer>. The ngrok token and MCP bearer are different. The agent must be running to list/call native tools; history remains available after agent stops.");
         instructions.setTextIsSelectable(true);instructions.setPadding(0,20,0,0);panel.addView(instructions);
         setContentView(scroll);refresh();
     }

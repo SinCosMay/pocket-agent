@@ -22,7 +22,9 @@ final class DevMcpServer extends NanoHTTPD {
     DevMcpServer(android.content.Context context, String token) {
         super("127.0.0.1", 8767);
         this.context = context.getApplicationContext();
-        this.auth = ("Bearer " + token).getBytes(StandardCharsets.UTF_8);
+        this.auth = token == null || token.isEmpty()
+            ? null
+            : ("Bearer " + token).getBytes(StandardCharsets.UTF_8);
     }
 
     private Response respond(Response.IStatus status, String body) {
@@ -149,7 +151,7 @@ final class DevMcpServer extends NanoHTTPD {
     }
     @Override public Response serve(IHTTPSession request) {
         String authorization=request.getHeaders().get("authorization");
-        if(authorization==null || !MessageDigest.isEqual(auth,authorization.getBytes(StandardCharsets.UTF_8)))
+        if(auth!=null && (authorization==null || !MessageDigest.isEqual(auth,authorization.getBytes(StandardCharsets.UTF_8))))
             return error(Response.Status.UNAUTHORIZED,-32001,"Bearer authorization required",null);
         if(request.getHeaders().containsKey("origin"))
             return error(Response.Status.FORBIDDEN,-32002,"Browser access disabled",null);
