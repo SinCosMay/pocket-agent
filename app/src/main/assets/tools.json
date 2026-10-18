@@ -47,7 +47,7 @@
   },
   {
     "name": "phone_act",
-    "description": "Perform an Android screen action using a recent snapshot_id, except Home, which recovers an empty virtual display without a snapshot. Prefer exact unique semantic selectors for click/type/scroll. Enter uses real IME action. Input acceptance is not task completion. Reuse operation_id and identical arguments after network loss. operation_id must be phone_capabilities.operation_prefix + underscore + a unique 8..48 character nonce; reuse identical IDs and arguments after uncertain results.",
+    "description": "Perform an Android screen action using a recent snapshot_id, except Home, which recovers an empty virtual display without a snapshot. Prefer exact unique semantic selectors for click/type/scroll. For coordinate actions, x/y and end_x/end_y are always in the full coordinate_width/coordinate_height returned by that observation; image_width/image_height may be resized and must never be used directly without scaling. Enter uses real IME action. Input acceptance is not task completion. Reuse operation_id and identical arguments after network loss. operation_id must be phone_capabilities.operation_prefix + underscore + a unique 8..48 character nonce; reuse identical IDs and arguments after uncertain results.",
     "inputSchema": {
       "type": "object",
       "properties": {

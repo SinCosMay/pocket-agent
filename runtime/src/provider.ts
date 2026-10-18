@@ -99,17 +99,46 @@ function fixedCompletionsFetch(mode: string, fetcher: typeof fetch, requestSigna
   }) as typeof fetch;
 }
 
-function fixedCodexFetch(fetcher: typeof fetch, requestSignal?: AbortSignal): typeof fetch {
+const CODEX_TRANSIENT_HTTP=new Set([408,429,502,503,504]);
+function codexRetryDelayMs(response:Response):number {
+  const value=response.headers.get('retry-after');
+  if(value!==null) {
+    const seconds=Number(value);
+    if(Number.isFinite(seconds)&&seconds>=0)return Math.min(5000,Math.round(seconds*1000));
+  }
+  return 350;
+}
+async function waitForRetry(delay:number,signal:AbortSignal):Promise<void> {
+  if(delay<=0)return;
+  await new Promise<void>((resolve,reject)=>{
+    const timer=setTimeout(()=>{cleanup();resolve();},delay);
+    const abort=()=>{clearTimeout(timer);cleanup();reject(new DOMException('aborted','AbortError'));};
+    const cleanup=()=>signal.removeEventListener('abort',abort);
+    if(signal.aborted){abort();return;}
+    signal.addEventListener('abort',abort,{once:true});
+  });
+}
+interface CodexFetchState {status?:number;retried?:boolean}
+function fixedCodexFetch(fetcher: typeof fetch, requestSignal?: AbortSignal, state:CodexFetchState={}): typeof fetch {
   return (async(input: any, init?: RequestInit)=>{
     if (String(input) !== CODEX_RESPONSES_URL) throw new Error('Unexpected Codex inference destination.');
     const timeout = AbortSignal.timeout(120000);
     // Pi releases its header-only combined signal after fetch resolves. Keep
     // the original conversation signal attached for the entire response body.
     const signal = AbortSignal.any([timeout,...(init?.signal?[init.signal]:[]),...(requestSignal?[requestSignal]:[])]);
-    const response = await fetcher(CODEX_RESPONSES_URL,{...init,redirect:'error',signal});
-    if (!response.ok) {
+    let response=await fetcher(CODEX_RESPONSES_URL,{...init,redirect:'error',signal});
+    if(!response.ok&&CODEX_TRANSIENT_HTTP.has(response.status)) {
+      state.retried=true;
+      const delay=codexRetryDelayMs(response);
       await response.body?.cancel();
-      return new Response(JSON.stringify({error:{message:`Codex inference rejected the request (HTTP ${response.status}); no retry was attempted.`}}),{status:response.status,headers:{'content-type':'application/json'}});
+      await waitForRetry(delay,signal);
+      response=await fetcher(CODEX_RESPONSES_URL,{...init,redirect:'error',signal});
+    }
+    if (!response.ok) {
+      state.status=response.status;
+      await response.body?.cancel();
+      const suffix=state.retried?'one transient retry was attempted':'no retry was attempted';
+      return new Response(JSON.stringify({error:{message:'Codex inference rejected the request (HTTP '+response.status+'); '+suffix+'.'}}),{status:response.status,headers:{'content-type':'application/json'}});
     }
     if (!response.body) throw new Error('Codex returned no event stream.');
     const reader = response.body.getReader();let bytes = 0;
@@ -145,9 +174,10 @@ export function makeStream(config: ProviderConfig, credentials: ProviderCredenti
       else if (!apiKey?.trim()) return failure(model,'Configure a provider credential before sending.');
       if (options?.signal?.aborted) return failure(model,'Request cancelled.',true);
       const shared = {...options,apiKey,transport:'sse' as const,maxRetries:0,timeoutMs:120000,reasoning:'low' as const};
+      const codexState:CodexFetchState={};
       const source = model.api === 'openai-codex-responses'
         ? codexStreamSimple(model,context,{
-            ...shared,fetch:fixedCodexFetch(options?.fetch ?? globalThis.fetch,options?.signal),
+            ...shared,fetch:fixedCodexFetch(options?.fetch ?? globalThis.fetch,options?.signal,codexState),
             onPayload:async(raw,selected)=>{
               const replacement = await options?.onPayload?.(raw,selected);
               const body = (replacement ?? raw) as any;
@@ -167,8 +197,18 @@ export function makeStream(config: ProviderConfig, credentials: ProviderCredenti
           for await (const event of source) {
             if (event.type === 'error') {
               if (account) {
-                // Do not persist raw provider diagnostics or remote failure bodies.
-                event.error = {...event.error,errorMessage:options?.signal?.aborted?'Request cancelled.':'Codex inference failed; check account sign-in and availability. No retry was attempted.'};
+                // Keep only locally generated status classification; never persist
+                // remote failure bodies or diagnostics.
+                const raw=String(event.error.errorMessage??'');
+                const code=codexState.status;
+                let message=options?.signal?.aborted?'Request cancelled.':'Codex inference failed before a usable response; no retry was attempted.';
+                if(!options?.signal?.aborted&&code!==undefined) {
+                  if(code===401||code===403)message='Codex inference authorization failed (HTTP '+code+'); sign in again.';
+                  else if(CODEX_TRANSIENT_HTTP.has(code)&&codexState.retried)message='Codex inference remained temporarily unavailable (HTTP '+code+') after one retry.';
+                  else if(code>=500)message='Codex service rejected inference (HTTP '+code+'); no retry was attempted.';
+                  else message='Codex inference was rejected (HTTP '+code+'); no retry was attempted.';
+                } else if(!options?.signal?.aborted&&/event stream ended unexpectedly/i.test(raw)) message='Codex response stream ended unexpectedly; no retry was attempted.';
+                event.error = {...event.error,errorMessage:message};
                 delete event.error.diagnostics;
               } else event.error.errorMessage = redactProviderSecrets(event.error.errorMessage || 'Provider request failed.',credentials).slice(0,512);
             }

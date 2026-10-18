@@ -29,6 +29,22 @@ public class VirtualScreenDeviceTest {
     private static JSONObject observe(NativeTools tools,String owner,boolean image) throws Exception {
         return call(tools,"phone_observe",new JSONObject().put("include_image",image),owner);
     }
+    @Test public void acquireRequiresAccessibilityBeforeAllocatingDisplay() throws Exception {
+        DeviceTestAccess.ensureAccessibility();
+        AgentAccessibility observer=AgentAccessibility.connected;
+        assertNotNull(observer);
+        AgentAccessibility.connected=null;
+        try(NativeTools tools=new NativeTools(context)) {
+            String owner="virtual-no-accessibility";
+            JSONObject result=call(tools,"phone_screen",args("action","acquire"),owner);
+            assertTrue(result.toString(),result.optBoolean("isError"));
+            assertEquals(result.toString(),"PERMISSION_REQUIRED",result.optString("code"));
+            JSONObject caps=call(tools,"phone_capabilities",new JSONObject(),owner);
+            assertEquals(caps.toString(),0,caps.getJSONObject("virtual_displays").getInt("active"));
+        } finally {
+            AgentAccessibility.connected=observer;
+        }
+    }
     @Test public void coldDisplayHasWorkspaceWithoutOpenApp() throws Exception {
         DeviceTestAccess.ensureAccessibility();
         try(NativeTools tools=new NativeTools(context)) {

@@ -100,13 +100,36 @@ test('direct Codex never infers before refreshed credentials are durably saved',
  assert.equal(calls,1,'uncertain rotation/persistence failure must not be retried');
 });
 
-test('direct Codex discards remote error details without retrying or leaking credentials',async()=>{
+test('direct Codex retries an explicit 429 once while discarding remote error details',async()=>{
  const credentials=accountCredential();let calls=0;
- const fetcher:typeof fetch=async()=>{calls++;return new Response(('private remote body '+credentials.refreshToken+' '+credentials.idToken+' ').repeat(20000),{status:429});};
+ const fetcher:typeof fetch=async()=>{calls++;return new Response(('private remote body '+credentials.refreshToken+' '+credentials.idToken+' ').repeat(20000),{status:429,headers:{'retry-after':'0'}});};
  const result=await(await makeStream(accountConfig,credentials,'main')(modelFor(accountConfig,credentials),{messages:[]},{fetch:fetcher})).result();
- assert.equal(calls,1);assert.equal(result.stopReason,'error');
+ assert.equal(calls,2);assert.equal(result.stopReason,'error');
+ assert.match(result.errorMessage||'',/HTTP 429/);
+ assert.match(result.errorMessage||'',/after one retry/);
  assert.ok((result.errorMessage?.length||0)<512);
  for(const secret of ['private remote body',credentials.refreshToken,credentials.idToken,credentials.accessToken,credentials.accountId])assert.ok(!JSON.stringify(result).includes(secret));
+});
+
+test('direct Codex does not retry authentication rejection',async()=>{
+ const credentials=accountCredential();let calls=0;
+ const fetcher:typeof fetch=async()=>{calls++;return new Response('private unauthorized body',{status:401});};
+ const result=await(await makeStream(accountConfig,credentials,'main')(modelFor(accountConfig,credentials),{messages:[]},{fetch:fetcher})).result();
+ assert.equal(calls,1);assert.equal(result.stopReason,'error');
+ assert.match(result.errorMessage||'',/authorization failed \(HTTP 401\)/);
+ assert.doesNotMatch(JSON.stringify(result),/private unauthorized body/);
+});
+
+test('direct Codex recovers from one explicit transient 503 before streaming starts',async()=>{
+ const credentials=accountCredential();let calls=0;
+ const fetcher:typeof fetch=async()=>{
+   calls++;
+   if(calls===1)return new Response('temporary',{status:503,headers:{'retry-after':'0'}});
+   return codexResponse([{type:'message',id:'msg_retry',role:'assistant',status:'completed',content:[{type:'output_text',text:'Recovered.',annotations:[]}]}]);
+ };
+ const result=await(await makeStream(accountConfig,credentials,'main')(modelFor(accountConfig,credentials),{messages:[]},{fetch:fetcher})).result();
+ assert.equal(calls,2);assert.equal(result.stopReason,'stop');
+ assert.equal(result.content[0].type,'text');
 });
 
 test('direct Codex streaming abort propagates to the fixed-origin fetch body', {timeout:3000},async()=>{
@@ -119,7 +142,8 @@ test('direct Codex streaming abort propagates to the fixed-origin fetch body', {
  }),{headers:{'content-type':'text/event-stream'}});
  const stream=await makeStream(accountConfig,credentials,'main')(modelFor(accountConfig,credentials),{messages:[]},{fetch:fetcher,signal:abort.signal});
  for await(const event of stream)if(event.type==='start')abort.abort();
- assert.equal((await stream.result()).stopReason,'aborted');assert.equal(upstreamAborted,true);
+ const result=await stream.result();
+ assert.equal(result.stopReason,'aborted');assert.equal(result.errorMessage,'Request cancelled.');assert.equal(upstreamAborted,true);
 });
 
 test('direct Codex bounds its streamed response and cancels an oversized body',async()=>{

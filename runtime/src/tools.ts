@@ -60,9 +60,11 @@ export function nativeTools(host:any,owner:string,grant?:readonly string[]):any[
       if(signal?.aborted)throw new Error('Cancelled before native dispatch');
       if(s.name==='phone_observe'||(s.name==='phone_batch'&&args.calls?.some((x:any)=>x.name==='phone_observe')))host.dropPriorImages(owner);
       const result=host.call('tool',{name:s.name,args,owner});
-      if(needsUi&&result?.isError&&result.code==='NOT_READY'&&
-        /virtual display|no virtual display|shizuku backend|display service/i.test(String(result.message??'')))
-        host.releaseScreen?.(owner);
+      const lostUiLease=result?.isError&&(
+        (result.code==='NOT_READY'&&/virtual display|no virtual display|shizuku backend|display service/i.test(String(result.message??'')))||
+        (result.code==='PERMISSION_REQUIRED'&&/accessibility/i.test(String(result.message??'')))
+      );
+      if(needsUi&&lostUiLease)host.releaseScreen?.(owner);
       return toolResult(result);
     },
   }));

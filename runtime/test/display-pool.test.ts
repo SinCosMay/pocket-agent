@@ -108,6 +108,29 @@ test('a Shizuku service death clears stale UI ownership and lets the same worker
   assert.equal(bridge.calls.filter(c=>c.name==='phone_screen'&&c.args.action==='acquire').length,2);
 });
 
+test('accessibility loss releases a stale virtual-display lease before retry',async()=>{
+  class PermissionBridge extends Bridge {
+    denied=false;
+    override call(method:string,json:string):string {
+      const args=JSON.parse(json);
+      if(method==='tool'&&args.name==='phone_observe'&&this.denied) {
+        return JSON.stringify({ok:true,result:{isError:true,code:'PERMISSION_REQUIRED',message:'Enable Pocket Agent accessibility to use virtual displays'}});
+      }
+      return super.call(method,json);
+    }
+  }
+  const bridge=new PermissionBridge(),app=new PocketRuntime(bridge);
+  const observe=()=>nativeTools(app,'worker').find(t=>t.name==='phone_observe')!.execute('t',{});
+  assert.equal(unwrap(await observe()).owner,'worker');
+  assert.equal(app.displayPool.active,1);
+  bridge.denied=true;
+  assert.equal((await observe()).isError,true);
+  assert.equal(app.displayPool.active,0,'accessibility loss must release the stale JS/native lease');
+  bridge.denied=false;
+  assert.equal(unwrap(await observe()).owner,'worker');
+  assert.equal(bridge.calls.filter(c=>c.name==='phone_screen'&&c.args.action==='acquire').length,2);
+});
+
 test('FIFO queue rejects duplicate requests and never leaves display zero available',async()=>{
   const pool=new DisplayPool(1);
   await pool.reserve('first');

@@ -36,6 +36,8 @@ final class AgentDisplayCoordinator implements AutoCloseable {
         idleHandler.removeCallbacks(idleShutdown);
         Integer existing=displays.get(owner);
         if(existing!=null) return Json.obj("status","acquired","display_id",existing,"owner",owner);
+        if(AgentAccessibility.connected==null)
+            throw new ControlException(PERMISSION_REQUIRED,"Enable Pocket Agent accessibility before using virtual displays");
         if(displays.size()>=MAX_DISPLAYS)
             throw new ControlException(NOT_READY,"All three displays are allocated");
         try {
@@ -56,6 +58,8 @@ final class AgentDisplayCoordinator implements AutoCloseable {
     synchronized int display(String owner) throws ControlException {
         Integer id=displays.get(owner);
         if(id==null||id<=0) throw new ControlException(NOT_READY,"No virtual display for conversation");
+        if(AgentAccessibility.connected==null)
+            throw new ControlException(PERMISSION_REQUIRED,"Enable Pocket Agent accessibility to use virtual displays");
         if(client==null||!"ready".equals(client.status()))
             throw new ControlException(NOT_READY,"Shizuku backend disconnected; observe after recovery");
         return id;
