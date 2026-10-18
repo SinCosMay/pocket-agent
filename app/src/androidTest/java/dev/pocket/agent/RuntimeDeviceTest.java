@@ -262,6 +262,18 @@ public class RuntimeDeviceTest {
             assertFalse(batch.toString(),batch.optBoolean("isError"));
             assertEquals("completed",batch.optString("status"));
             requireText(batch.getJSONArray("results").getJSONObject(1).getJSONObject("result"),batchText);
+
+            observation=fixtureObservation(tools,owner);
+            String uncertainText="Applied before provider failure "+nonce;
+            JSONObject uncertain=new JSONObject(type.toString()).put("snapshot_id",observation.getString("snapshot_id"))
+                .put("selector",new JSONObject().put("description","AGENT_THROWING_INPUT")).put("text",uncertainText)
+                .put("operation_id",prefix+"_delayunknown"+nonce);
+            JSONObject unknown=tools.execute("phone_act",uncertain,owner);
+            assertTrue(unknown.toString(),unknown.optBoolean("isError"));
+            assertEquals("RESULT_UNKNOWN",unknown.optString("code"));
+            requireText(fixtureObservation(tools,owner),uncertainText);
+            JSONObject duplicateUnknown=tools.execute("phone_act",uncertain,owner);
+            assertEquals(unknown.toString(),duplicateUnknown.toString());
         }
     }
     @Test public void directNativeFixtureAndMutationLedger() throws Exception {
