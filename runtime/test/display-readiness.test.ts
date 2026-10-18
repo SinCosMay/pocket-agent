@@ -48,6 +48,33 @@ test('open-app readiness never returns the previous package as the fresh post-la
   assert.equal(postLaunchReads,3);
 });
 
+test('open-app readiness times out with NOT_READY instead of returning a stale package forever',async()=>{
+  let launched=false,reads=0;
+  const host:any={
+    ensureDisplay:async()=>({status:'acquired',display_id:12}),
+    releaseScreen:()=>{},dropPriorImages:()=>{},
+    call:(_method:string,payload:any)=>{
+      if(payload.name==='phone_open_app'){launched=true;return {status:'requested',package_name:payload.args.package_name};}
+      if(payload.name==='phone_observe'){
+        reads++;
+        return {snapshot_id:'stale-'+reads,package_name:'old.app',window_id:1,nodes:[{text:launched?'still-old':'before'}]};
+      }
+      return {status:'ok'};
+    },
+  };
+  const tools=nativeTools(host,'timeout-transition-owner');
+  const observe=tools.find(t=>t.name==='phone_observe')!,open=tools.find(t=>t.name==='phone_open_app')!;
+  await observe.execute('before',{});
+  await open.execute('open',{package_name:'never.arrives',operation_id:'synthetic'});
+  const started=Date.now(),result=await observe.execute('after',{});
+  const elapsed=Date.now()-started;
+  assert.equal(result.isError,true);
+  assert.equal(result.details.code,'NOT_READY');
+  assert.match(result.content[0].text,/never\.arrives/);
+  assert.ok(elapsed>=2300&&elapsed<4000,`readiness wait should be bounded, got ${elapsed}ms`);
+  assert.ok(reads>2);
+});
+
 test('generic URL readiness waits for a changed observation and cancellation interrupts the wait',async()=>{
   let opened=false,reads=0;
   const host:any={
