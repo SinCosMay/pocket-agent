@@ -42,10 +42,17 @@ public final class WakeWordService extends Service {
     private volatile boolean enabled;
     private volatile float threshold = JarvisDetector.DEFAULT_THRESHOLD;
     private JarvisDetector detector;
+    private WakeAcknowledgementSound acknowledgementSound;
 
     static void updateThreshold(float value) {
         WakeWordService service = running;
         if (service != null) service.threshold = value;
+    }
+
+    static boolean playAcknowledgement() {
+        WakeWordService service = running;
+        return service != null && service.acknowledgementSound != null
+            && service.acknowledgementSound.play();
     }
 
     static boolean isListening() {
@@ -94,6 +101,7 @@ public final class WakeWordService extends Service {
     @Override public void onCreate() {
         super.onCreate();
         running = this;
+        acknowledgementSound = new WakeAcknowledgementSound(this);
         getSystemService(NotificationManager.class).createNotificationChannel(
             new NotificationChannel(CHANNEL, "Hey Jarvis wake-word detector",
                 NotificationManager.IMPORTANCE_LOW));
@@ -252,6 +260,8 @@ public final class WakeWordService extends Service {
                     paused = true;
                     getSystemService(NotificationManager.class).notify(
                         NOTIFICATION, notification("Active voice conversation"));
+                    if (VoiceSttSettings.engine(this) == VoiceSttSettings.Engine.DEEPGRAM)
+                        playAcknowledgement();
                     try {
                         startForegroundService(new Intent(this, VoiceListeningService.class)
                             .setAction(VoiceListeningService.ACTION_START)
@@ -285,6 +295,10 @@ public final class WakeWordService extends Service {
         if (detector != null && (previous == null || !previous.isAlive())) {
             try { detector.close(); } catch (Exception problem) { Log.w("JarvisWake", "Failed releasing model", problem); }
             detector = null;
+        }
+        if (acknowledgementSound != null) {
+            acknowledgementSound.close();
+            acknowledgementSound = null;
         }
         running = null;
         stopForeground(STOP_FOREGROUND_REMOVE);

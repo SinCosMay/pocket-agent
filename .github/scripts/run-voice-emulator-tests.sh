@@ -41,6 +41,7 @@ for test_class in \
   dev.pocket.agent.InstantVoiceCaptureDeviceTest \
   dev.pocket.agent.JarvisDetectorDeviceTest \
   dev.pocket.agent.JarvisWakeLifecycleDeviceTest \
+  dev.pocket.agent.WakeAcknowledgementSoundDeviceTest \
   dev.pocket.agent.WakeWordSettingsDeviceTest; do
   run_test "$test_class" || result=1
 done
