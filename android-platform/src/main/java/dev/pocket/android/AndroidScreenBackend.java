@@ -411,7 +411,7 @@ public final class AndroidScreenBackend implements ControlBackend {
                 }
                 if(!accepted) {
                     verifier.recycle();verifier=null;
-                    throw new ControlException(ACTION_REJECTED,"Text input rejected");
+                    throw new ControlException(RESULT_UNKNOWN,"Text dispatch was not confirmed; observe before repeating");
                 }
                 return new PendingText(verifier,expected);
             } finally {

@@ -14,13 +14,13 @@ public final class FixtureActivity extends Activity {
    return super.performAccessibilityAction(action,args);
   }
  }
- private static final class ThrowingAccessibilityEditText extends EditText {
-  ThrowingAccessibilityEditText(android.content.Context context){super(context);}
+ private static final class RejectingAccessibilityEditText extends EditText {
+  RejectingAccessibilityEditText(android.content.Context context){super(context);}
   @Override public boolean performAccessibilityAction(int action,Bundle args) {
    if(action==android.view.accessibility.AccessibilityNodeInfo.ACTION_SET_TEXT&&args!=null) {
     CharSequence value=args.getCharSequence(android.view.accessibility.AccessibilityNodeInfo.ACTION_ARGUMENT_SET_TEXT_CHARSEQUENCE);
     setText(value==null?"":value);
-    throw new IllegalStateException("Synthetic post-dispatch provider failure");
+    return false;
    }
    return super.performAccessibilityAction(action,args);
   }
@@ -34,7 +34,7 @@ public final class FixtureActivity extends Activity {
   TextView heading=new TextView(this);heading.setText("POCKET_AGENT_FIXTURE");column.addView(heading);
   EditText input=new EditText(this);input.setHint("AGENT_INPUT");input.setContentDescription("AGENT_INPUT");column.addView(input);
   EditText delayedInput=new DelayedAccessibilityEditText(this);delayedInput.setHint("AGENT_DELAYED_INPUT");delayedInput.setContentDescription("AGENT_DELAYED_INPUT");column.addView(delayedInput);
-  EditText throwingInput=new ThrowingAccessibilityEditText(this);throwingInput.setHint("AGENT_THROWING_INPUT");throwingInput.setContentDescription("AGENT_THROWING_INPUT");column.addView(throwingInput);
+  EditText rejectingInput=new RejectingAccessibilityEditText(this);rejectingInput.setHint("AGENT_REJECTING_INPUT");rejectingInput.setContentDescription("AGENT_REJECTING_INPUT");column.addView(rejectingInput);
   TextView status=new TextView(this);status.setText("STATUS_READY");status.setContentDescription("AGENT_STATUS");
   Button click=new Button(this);click.setText("AGENT_CLICK");int[] count={0};click.setOnClickListener(v->{count[0]++;status.setText("STATUS_CLICKED:"+input.getText()+" COUNT:"+count[0]);getPreferences(0).edit().putInt("count",count[0]).apply();});column.addView(click);column.addView(status);setContentView(column);column.requestFocus();
  }

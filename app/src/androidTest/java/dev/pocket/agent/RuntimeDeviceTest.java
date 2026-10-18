@@ -264,9 +264,9 @@ public class RuntimeDeviceTest {
             requireText(batch.getJSONArray("results").getJSONObject(1).getJSONObject("result"),batchText);
 
             observation=fixtureObservation(tools,owner);
-            String uncertainText="Applied before provider failure "+nonce;
+            String uncertainText="Applied before rejected result "+nonce;
             JSONObject uncertain=new JSONObject(type.toString()).put("snapshot_id",observation.getString("snapshot_id"))
-                .put("selector",new JSONObject().put("description","AGENT_THROWING_INPUT")).put("text",uncertainText)
+                .put("selector",new JSONObject().put("description","AGENT_REJECTING_INPUT")).put("text",uncertainText)
                 .put("operation_id",prefix+"_delayunknown"+nonce);
             JSONObject unknown=tools.execute("phone_act",uncertain,owner);
             assertTrue(unknown.toString(),unknown.optBoolean("isError"));
