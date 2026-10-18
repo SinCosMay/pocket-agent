@@ -14,6 +14,14 @@ import static org.junit.Assert.*;
 @RunWith(AndroidJUnit4.class)
 public class NativeAndroidApisTest {
     private Context context() {return InstrumentationRegistry.getInstrumentation().getTargetContext();}
+    @Test public void unavailableTraversalChildFailsClosed() throws Exception {
+        try {
+            AndroidScreenBackend.requireTraversalChild(null);
+            fail("Unavailable accessibility child was accepted");
+        } catch(ControlException expected) {
+            assertEquals(ControlException.Code.ACTION_REJECTED,expected.code);
+        }
+    }
     @Test public void invalidCallCannotDial() throws Exception {
         Context c=context();
         assertEquals("Grant CALL_PHONE to the test APK before running this case; otherwise invalid-call handling is not tested.",
