@@ -42,6 +42,10 @@ public final class AndroidScreenBackend implements ControlBackend {
     private final Map<String, Long> snapshotRevisions = new LinkedHashMap<>();
     private final java.util.concurrent.atomic.AtomicLong interactionTime = new java.util.concurrent.atomic.AtomicLong();
     private static final long MAX_SNAPSHOT_AGE_MS = 15_000;
+    private static final long SCREENSHOT_THROTTLE_RETRY_MS = 1_100;
+    private static final int SCREENSHOT_THROTTLE_RETRIES = 1;
+    private static final long TEXT_VERIFICATION_TIMEOUT_MS = 1_500;
+    private static final long TEXT_VERIFICATION_POLL_MS = 75;
 
     public AndroidScreenBackend(AccessibilityService service) {this(service,Display.DEFAULT_DISPLAY);}
     public AndroidScreenBackend(AccessibilityService service,int displayId) {if(displayId<0)throw new IllegalArgumentException("displayId");this.service=service;this.displayId=displayId;}
@@ -178,34 +182,45 @@ public final class AndroidScreenBackend implements ControlBackend {
     private Capture screenshot(int maxDimension) throws ControlException {
         CompletableFuture<Capture> future = new CompletableFuture<>();
         onMain(() -> {
-            service.takeScreenshot(displayId, service.getMainExecutor(), new AccessibilityService.TakeScreenshotCallback() {
-                @Override public void onSuccess(AccessibilityService.ScreenshotResult screenshot) {
-                    Bitmap hardware = null, software = null, scaled = null;
-                    try {
-                        if (future.isDone()) return;
-                        hardware = Bitmap.wrapHardwareBuffer(screenshot.getHardwareBuffer(), screenshot.getColorSpace());
-                        if (hardware == null) throw new IllegalStateException("Empty screenshot buffer");
-                        software = hardware.copy(Bitmap.Config.ARGB_8888, false);
-                        double scale = Math.min(1.0, (double) maxDimension / Math.max(software.getWidth(),software.getHeight()));
-                        scaled = Bitmap.createScaledBitmap(software, Math.max(1,(int)Math.round(software.getWidth()*scale)), Math.max(1,(int)Math.round(software.getHeight()*scale)), true);
-                        ByteArrayOutputStream bytes = new ByteArrayOutputStream();
-                        if (!scaled.compress(Bitmap.CompressFormat.JPEG,75,bytes)) throw new IllegalStateException("JPEG failed");
-                        future.complete(new Capture(bytes.toByteArray(),scaled.getWidth(),scaled.getHeight()));
-                    } catch (Throwable e) { future.completeExceptionally(e); }
-                    finally {
-                        if (scaled != null && scaled != software) scaled.recycle();
-                        if (software != null) software.recycle();
-                        if (hardware != null) hardware.recycle();
-                        screenshot.getHardwareBuffer().close();
-                    }
-                }
-                @Override public void onFailure(int errorCode) {
-                    future.completeExceptionally(new ControlException(ACTION_REJECTED,"Screenshot rejected by Android: " + errorCode));
-                }
-            });
+            takeScreenshotAttempt(maxDimension,future,SCREENSHOT_THROTTLE_RETRIES);
             return null;
         });
-        return await(future,5_000);
+        return await(future,7_000);
+    }
+    private void takeScreenshotAttempt(int maxDimension,CompletableFuture<Capture> future,int throttleRetriesRemaining) {
+        service.takeScreenshot(displayId,service.getMainExecutor(),new AccessibilityService.TakeScreenshotCallback() {
+            @Override public void onSuccess(AccessibilityService.ScreenshotResult screenshot) {
+                Bitmap hardware=null,software=null,scaled=null;
+                try {
+                    if(future.isDone())return;
+                    hardware=Bitmap.wrapHardwareBuffer(screenshot.getHardwareBuffer(),screenshot.getColorSpace());
+                    if(hardware==null)throw new IllegalStateException("Empty screenshot buffer");
+                    software=hardware.copy(Bitmap.Config.ARGB_8888,false);
+                    double scale=Math.min(1.0,(double)maxDimension/Math.max(software.getWidth(),software.getHeight()));
+                    scaled=Bitmap.createScaledBitmap(software,Math.max(1,(int)Math.round(software.getWidth()*scale)),Math.max(1,(int)Math.round(software.getHeight()*scale)),true);
+                    ByteArrayOutputStream bytes=new ByteArrayOutputStream();
+                    if(!scaled.compress(Bitmap.CompressFormat.JPEG,75,bytes))throw new IllegalStateException("JPEG failed");
+                    future.complete(new Capture(bytes.toByteArray(),scaled.getWidth(),scaled.getHeight()));
+                } catch(Throwable error) {future.completeExceptionally(error);}
+                finally {
+                    if(scaled!=null&&scaled!=software)scaled.recycle();
+                    if(software!=null)software.recycle();
+                    if(hardware!=null)hardware.recycle();
+                    screenshot.getHardwareBuffer().close();
+                }
+            }
+            @Override public void onFailure(int errorCode) {
+                if(errorCode==AccessibilityService.ERROR_TAKE_SCREENSHOT_INTERVAL_TIME_SHORT&&throttleRetriesRemaining>0&&!future.isDone()) {
+                    main.postDelayed(()->{
+                        if(future.isDone())return;
+                        try {takeScreenshotAttempt(maxDimension,future,throttleRetriesRemaining-1);}
+                        catch(Throwable error) {future.completeExceptionally(error);}
+                    },SCREENSHOT_THROTTLE_RETRY_MS);
+                    return;
+                }
+                future.completeExceptionally(new ControlException(ACTION_REJECTED,"Screenshot rejected by Android: "+errorCode));
+            }
+        });
     }
 
     private void validateContext(Observation expected) throws ControlException {
@@ -253,6 +268,7 @@ public final class AndroidScreenBackend implements ControlBackend {
             return gesture(a,duration);
         }
         if (a.selector()==null && (a.x()!=null || a.y()!=null)) point(a.x(),a.y(),observed);
+        if(a.kind()==Kind.TYPE)return setText(a,observed);
         return onMain(() -> { validateContext(observed); validateFreshness(observed); return nativeAction(a); });
     }
 
@@ -297,19 +313,7 @@ public final class AndroidScreenBackend implements ControlBackend {
         if (root==null) throw new ControlException(NOT_READY,"No active window");
         AccessibilityNodeInfo node = null;
         try {
-            if (a.kind()==Kind.KEY || (a.kind()==Kind.TYPE && a.selector()==null && a.x()==null)) {
-                node = root.findFocus(AccessibilityNodeInfo.FOCUS_INPUT);
-            } else {
-                List<AccessibilityNodeInfo> matches = new ArrayList<>();
-                find(root,a,matches,0);
-                if (matches.size()!=1) {
-                    for (AccessibilityNodeInfo item:matches) item.recycle();
-                    throw new ControlException(matches.isEmpty()?ACTION_REJECTED:AMBIGUOUS_TARGET,"Target must match exactly one actionable node");
-                }
-                node=matches.get(0);
-            }
-            if (node==null || !node.isEnabled()) throw new ControlException(ACTION_REJECTED,"No enabled target");
-            if (a.kind()==Kind.TYPE) return setText(node,a);
+            node=targetNode(root,a);
             int action = switch(a.kind()) {
                 case CLICK -> AccessibilityNodeInfo.ACTION_CLICK;
                 case LONG_CLICK -> AccessibilityNodeInfo.ACTION_LONG_CLICK;
@@ -333,6 +337,24 @@ public final class AndroidScreenBackend implements ControlBackend {
             if (!node.performAction(action)) throw new ControlException(ACTION_REJECTED,"Native action rejected; no fake Enter or automatic input retry");
             return new Result("dispatched","Native Android action accepted");
         } finally { if (node!=null) node.recycle(); root.recycle(); }
+    }
+    private static AccessibilityNodeInfo targetNode(AccessibilityNodeInfo root,Action a) throws ControlException {
+        AccessibilityNodeInfo node;
+        if(a.kind()==Kind.KEY||(a.kind()==Kind.TYPE&&a.selector()==null&&a.x()==null))node=root.findFocus(AccessibilityNodeInfo.FOCUS_INPUT);
+        else {
+            List<AccessibilityNodeInfo> matches=new ArrayList<>();
+            find(root,a,matches,0);
+            if(matches.size()!=1) {
+                for(AccessibilityNodeInfo item:matches)item.recycle();
+                throw new ControlException(matches.isEmpty()?ACTION_REJECTED:AMBIGUOUS_TARGET,"Target must match exactly one actionable node");
+            }
+            node=matches.get(0);
+        }
+        if(node==null||!node.isEnabled()) {
+            if(node!=null)node.recycle();
+            throw new ControlException(ACTION_REJECTED,"No enabled target");
+        }
+        return node;
     }
     private static boolean supports(AccessibilityNodeInfo node,int id) {
         for(AccessibilityNodeInfo.AccessibilityAction action:node.getActionList()) if(action.getId()==id) return true;
@@ -363,17 +385,55 @@ public final class AndroidScreenBackend implements ControlBackend {
         }
     }
 
-    private static Result setText(AccessibilityNodeInfo node,Action a) throws ControlException {
+    private record PendingText(AccessibilityNodeInfo node,String expected) {}
+    private Result setText(Action a,Observation observed) throws ControlException {
         if(a.text()==null || a.text().length()>20000) throw new ControlException(INVALID_ARGUMENT,"Text required, maximum 20000 characters; empty is valid");
-        String existing=node.isShowingHintText()?"":text(node.getText());
-        int start=node.getTextSelectionStart(),end=node.getTextSelectionEnd();
-        start=start<0?existing.length():Math.min(start,existing.length());
-        end=end<0?start:Math.min(end,existing.length());
-        int left=Math.min(start,end),right=Math.max(start,end);
-        String expected=a.replace()?a.text():existing.substring(0,left)+a.text()+existing.substring(right);
-        Bundle args=new Bundle();args.putCharSequence(AccessibilityNodeInfo.ACTION_ARGUMENT_SET_TEXT_CHARSEQUENCE,expected);
-        if(!node.performAction(AccessibilityNodeInfo.ACTION_SET_TEXT,args)) throw new ControlException(ACTION_REJECTED,"Text input rejected");
-        if(!node.refresh() || !expected.equals(node.isShowingHintText()?"":text(node.getText()))) throw new ControlException(RESULT_UNKNOWN,"Text result not confirmed; observe before repeating");
-        return new Result("verified","Exact field text verified");
+        PendingText pending=onMain(()->{
+            validateContext(observed);validateFreshness(observed);
+            AccessibilityNodeInfo root=freshRoot();
+            if(root==null)throw new ControlException(NOT_READY,"No active window");
+            AccessibilityNodeInfo node=null,verifier=null;
+            try {
+                node=targetNode(root,a);
+                String existing=node.isShowingHintText()?"":text(node.getText());
+                int start=node.getTextSelectionStart(),end=node.getTextSelectionEnd();
+                start=start<0?existing.length():Math.min(start,existing.length());
+                end=end<0?start:Math.min(end,existing.length());
+                int left=Math.min(start,end),right=Math.max(start,end);
+                String expected=a.replace()?a.text():existing.substring(0,left)+a.text()+existing.substring(right);
+                Bundle args=new Bundle();args.putCharSequence(AccessibilityNodeInfo.ACTION_ARGUMENT_SET_TEXT_CHARSEQUENCE,expected);
+                verifier=AccessibilityNodeInfo.obtain(node);
+                if(!node.performAction(AccessibilityNodeInfo.ACTION_SET_TEXT,args)) {
+                    verifier.recycle();verifier=null;
+                    throw new ControlException(ACTION_REJECTED,"Text input rejected");
+                }
+                return new PendingText(verifier,expected);
+            } finally {
+                if(node!=null)node.recycle();
+                root.recycle();
+            }
+        });
+        long deadline=android.os.SystemClock.uptimeMillis()+TEXT_VERIFICATION_TIMEOUT_MS;
+        try {
+            for(;;) {
+                boolean verified;
+                try {
+                    verified=onMain(()->{
+                        validateContext(observed);
+                        return pending.node().refresh()&&pending.expected().equals(pending.node().isShowingHintText()?"":text(pending.node().getText()));
+                    });
+                } catch(ControlException postDispatch) {
+                    throw new ControlException(RESULT_UNKNOWN,"Text was dispatched but verification became unavailable; observe before repeating");
+                }
+                if(verified)return new Result("verified","Exact field text verified");
+                long remaining=deadline-android.os.SystemClock.uptimeMillis();
+                if(remaining<=0)throw new ControlException(RESULT_UNKNOWN,"Text was dispatched but exact result was not confirmed; observe before repeating");
+                try {Thread.sleep(Math.min(TEXT_VERIFICATION_POLL_MS,remaining));}
+                catch(InterruptedException interrupted) {
+                    Thread.currentThread().interrupt();
+                    throw new ControlException(RESULT_UNKNOWN,"Text was dispatched but verification was interrupted; observe before repeating");
+                }
+            }
+        } finally {pending.node().recycle();}
     }
 }
