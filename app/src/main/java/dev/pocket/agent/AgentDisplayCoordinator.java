@@ -1,6 +1,7 @@
 package dev.pocket.agent;
 
 import android.content.Context;
+import android.content.ComponentName;
 import dev.pocket.android.AndroidScreenBackend;
 import dev.pocket.control.ControlException;
 import java.util.LinkedHashMap;
@@ -27,18 +28,23 @@ final class AgentDisplayCoordinator implements AutoCloseable {
         if(existing!=null) return Json.obj("status","acquired","display_id",existing,"owner",owner);
         if(displays.size()>=MAX_DISPLAYS)
             throw new ControlException(NOT_READY,"All three displays are allocated");
-        try {
-            int id=client().createDisplay();
-            if(id<=0||displays.containsValue(id)) {
-                if(id>0&&!displays.containsValue(id))client().removeDisplay(id);
-                throw new ControlException(NOT_READY,"Virtual display backend supplied invalid or duplicate display ID");
-            }
-            displays.put(owner,id);
-            return Json.obj("status","acquired","display_id",id,"owner",owner);
-        } catch(ControlException | RuntimeException error) {
-            stopIfIdle();
-            throw error;
+        ShizukuDisplayClient active=client();
+        int id=active.createDisplay();
+        if(id<=0||displays.containsValue(id)) {
+            if(id>0&&!displays.containsValue(id))active.removeDisplay(id);
+            throw new ControlException(NOT_READY,"Virtual display backend supplied invalid or duplicate display ID");
         }
+        try {
+            active.launch(id,new ComponentName(context,MainActivity.class).flattenToString());
+        } catch(ControlException error) {
+            active.removeDisplay(id);
+            throw error;
+        } catch(RuntimeException error) {
+            active.removeDisplay(id);
+            throw new ControlException(NOT_READY,"Virtual display backend failed while launching Pocket Agent");
+        }
+        displays.put(owner,id);
+        return Json.obj("status","acquired","display_id",id,"owner",owner);
     }
 
     synchronized int display(String owner) throws ControlException {
@@ -68,7 +74,6 @@ final class AgentDisplayCoordinator implements AutoCloseable {
             if(observer!=null) observer.release(id);
             if(client!=null) client.removeDisplay(id);
         }
-        stopIfIdle();
     }
 
     private synchronized void invalidate() {
@@ -77,16 +82,11 @@ final class AgentDisplayCoordinator implements AutoCloseable {
         displays.clear();
     }
 
-    private synchronized void stopIfIdle() {
-        if(!displays.isEmpty()||client==null)return;
-        ShizukuDisplayClient closing=client;client=null;closing.close();
-    }
-
     synchronized int activeCount() {return displays.size();}
     String backendStatus() {ShizukuDisplayClient present=client;return present==null?ShizukuDisplayClient.prerequisites():present.status();}
 
     @Override public synchronized void close() {
         for(String owner:java.util.List.copyOf(displays.keySet()))release(owner);
-        stopIfIdle();
+        if(client!=null) {ShizukuDisplayClient closing=client;client=null;closing.close();}
     }
 }

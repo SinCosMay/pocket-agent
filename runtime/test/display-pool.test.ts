@@ -85,12 +85,13 @@ test('Shizuku acquisition failure frees reservation and wakes waiting owner',asy
   assert.equal(app.displayPool.active,3);
 });
 
-test('a Shizuku service death clears stale UI ownership and lets the same worker reacquire',async()=>{
+test('a Shizuku service death transparently reacquires one fresh lease for the same worker',async()=>{
   class DisconnectingBridge extends Bridge {
-    lost=false;
+    failNext=false;
     override call(method:string,json:string):string {
       const args=JSON.parse(json);
-      if(method==='tool'&&args.name==='phone_observe'&&this.lost) {
+      if(method==='tool'&&args.name==='phone_observe'&&this.failNext) {
+        this.failNext=false;
         return JSON.stringify({ok:true,result:{isError:true,code:'NOT_READY',message:'Shizuku backend disconnected; observe after recovery'}});
       }
       return super.call(method,json);
@@ -100,12 +101,40 @@ test('a Shizuku service death clears stale UI ownership and lets the same worker
   const observe=()=>nativeTools(app,'worker').find(t=>t.name==='phone_observe')!.execute('t',{});
   assert.equal(unwrap(await observe()).owner,'worker');
   assert.equal(app.displayPool.active,1);
-  bridge.lost=true;
-  assert.equal((await observe()).isError,true);
-  assert.equal(app.displayPool.active,0,'dead native ownership must not pin the JS pool');
-  bridge.lost=false;
-  assert.equal(unwrap(await observe()).owner,'worker');
+  bridge.failNext=true;
+  const recovered=await observe();
+  assert.equal(recovered.isError,false);
+  assert.equal(recovered.details.display_replaced,true);
+  assert.equal(app.displayPool.active,1,'recovery must replace the dead lease without leaking a pool slot');
   assert.equal(bridge.calls.filter(c=>c.name==='phone_screen'&&c.args.action==='acquire').length,2);
+});
+
+test('host-managed release clears pending launch readiness before the next lease',async()=>{
+  class TransitionBridge extends Bridge {
+    packageName='old.app';
+    override call(method:string,json:string):string {
+      const args=JSON.parse(json);
+      if(method==='tool'&&args.name==='phone_observe') {
+        this.calls.push(args);
+        return JSON.stringify({ok:true,result:{snapshot_id:'screen',package_name:this.packageName,window_id:1,nodes:[]}});
+      }
+      if(method==='tool'&&args.name==='phone_open_app') {
+        this.calls.push(args);
+        return JSON.stringify({ok:true,result:{status:'requested',package_name:args.args.package_name}});
+      }
+      if(method==='tool'&&args.name==='phone_screen'&&args.args.action==='release')this.packageName='dev.pocket.agent';
+      return super.call(method,json);
+    }
+  }
+  const bridge=new TransitionBridge(),app=new PocketRuntime(bridge),owner='managed-release';
+  const tools=nativeTools(app,owner);
+  const observe=tools.find(t=>t.name==='phone_observe')!,open=tools.find(t=>t.name==='phone_open_app')!;
+  assert.equal((await observe.execute('before',{})).details.package_name,'old.app');
+  await open.execute('open',{package_name:'target.app',operation_id:'synthetic'});
+  app.releaseScreen(owner);
+  const fresh=await observe.execute('fresh',{});
+  assert.equal(fresh.isError,false);
+  assert.equal(fresh.details.package_name,'dev.pocket.agent');
 });
 
 test('FIFO queue rejects duplicate requests and never leaves display zero available',async()=>{

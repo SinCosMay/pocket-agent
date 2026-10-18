@@ -3,7 +3,7 @@ import { SubagentRuntime } from '../vendor/pi9/runtime.js';
 import { completedGeneration,errorGeneration,interruptedGeneration,generationKey } from '../vendor/pi9/conversation.js';
 import { MobileSession } from './session.js';
 import { DisplayPool } from './display-pool.js';
-import { nativeTools,subagentTool,speakToUserTool } from './tools.js';
+import { nativeTools,subagentTool,speakToUserTool,clearNativeToolUiState } from './tools.js';
 import {memoryTools,recallBlock,MEMORY_GUIDANCE,MEMORY_TOOL_NAMES} from './memory.js';
 import { messageText } from './scripted.js';
 import { modelFor,makeStream } from './provider.js';
@@ -206,7 +206,7 @@ export class PocketRuntime {
     try{return await request;}finally{this.pendingDisplays.delete(owner);}
   }
   releaseScreen(owner:string):void {
-    this.nativeDisplays.delete(owner);
+    clearNativeToolUiState(this,owner);this.nativeDisplays.delete(owner);
     try{this.call('tool',{name:'phone_screen',args:{action:'release'},owner});}catch{/* Service shutdown also releases leases. */}
     finally{this.displayPool.release(owner);}
   }
