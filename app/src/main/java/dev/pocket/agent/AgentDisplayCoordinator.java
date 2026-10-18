@@ -39,6 +39,9 @@ final class AgentDisplayCoordinator implements AutoCloseable {
         } catch(ControlException error) {
             active.removeDisplay(id);
             throw error;
+        } catch(RuntimeException error) {
+            active.removeDisplay(id);
+            throw new ControlException(NOT_READY,"Virtual display backend failed while launching Pocket Agent");
         }
         displays.put(owner,id);
         return Json.obj("status","acquired","display_id",id,"owner",owner);
