@@ -28,6 +28,7 @@ final class NativeTools implements AutoCloseable {
     private static final int OBSERVATION_NODE_TEXT_LIMIT=400;
     private static final int OBSERVATION_NODE_ID_LIMIT=240;
     private static final int OBSERVATION_NODE_ROLE_LIMIT=160;
+    private static final int BATCH_TEXT_BUDGET=28_000;
     private final Context context;
     private final OperationStore operations;
     private final JSONArray definitions;
@@ -64,15 +65,82 @@ final class NativeTools implements AutoCloseable {
                 if(name.equals("phone_batch") || name.equals("phone_screen")) throw new ControlException(INVALID_ARGUMENT,"Nested batches and lease changes are not allowed");
                 validate(call.getJSONObject("args"),definition(name).getJSONObject("inputSchema"));
             }
-            JSONArray results=new JSONArray();
+            JSONArray results=new JSONArray();JSONObject previousObservation=null;String expectedPackage=null;
+            boolean transitionPending=false;long transitionStartedMs=0;
             for(int i=0;i<calls.length();i++) {
-                JSONObject call=calls.getJSONObject(i);
-                JSONObject result=execute(call.getString("name"),call.getJSONObject("args"),owner);
-                results.put(Json.obj("index",i,"name",call.getString("name"),"result",result));
-                if(result.optBoolean("isError")) return Json.obj("isError",true,"status","partial","results",results,"stopped_at",i,"retry_safe",false);
+                JSONObject call=calls.getJSONObject(i);String name=call.getString("name");JSONObject callArgs=call.getJSONObject("args");
+                JSONObject spec=definition(name);boolean readOnly=spec.getJSONObject("annotations").optBoolean("readOnlyHint",false);
+                JSONObject result;
+                if(name.equals("phone_observe")) {
+                    int remaining=BATCH_TEXT_BUDGET-results.toString().length()-1500;
+                    result=remaining<1200
+                        ?Json.failure("OUTPUT_LIMIT","Batch response budget exhausted; issue this observation separately")
+                        :batchObservation(callArgs,owner,Math.min(OBSERVATION_TEXT_BUDGET,remaining),transitionPending,expectedPackage,previousObservation,transitionStartedMs);
+                } else result=execute(name,callArgs,owner);
+                JSONObject entry=Json.obj("index",i,"name",name,"result",result);
+                if(readOnly && results.toString().length()+entry.toString().length()+512>BATCH_TEXT_BUDGET) {
+                    result=Json.failure("OUTPUT_LIMIT","Batch response budget exceeded; issue this read separately");
+                    entry=Json.obj("index",i,"name",name,"result",result);
+                }
+                results.put(entry);
+                if(result.optBoolean("isError")) return Json.obj("isError",true,"code",result.optString("code","BATCH_PARTIAL"),
+                    "message",result.optString("message","Batch stopped on an error"),"status","partial","results",results,"stopped_at",i,"retry_safe",false);
+                if(name.equals("phone_observe")) {previousObservation=result;transitionPending=false;expectedPackage=null;}
+                else if(name.equals("phone_open_app")) {transitionPending=true;expectedPackage=callArgs.getString("package_name");transitionStartedMs=android.os.SystemClock.elapsedRealtime();}
+                else if(name.equals("phone_open_url")||name.equals("phone_clock_screen")) {transitionPending=true;expectedPackage=null;transitionStartedMs=android.os.SystemClock.elapsedRealtime();}
             }
             return Json.obj("status","completed","results",results);
         } catch(Exception error) {return Json.failure("INVALID_ARGUMENT",error.getMessage()==null?"Invalid batch":error.getMessage());}
+    }
+    private static boolean sameObservation(JSONObject first,JSONObject second) {
+        return first.optString("package_name").equals(second.optString("package_name"))
+            && first.optInt("window_id",-1)==second.optInt("window_id",-1)
+            && String.valueOf(first.optJSONArray("nodes")).equals(String.valueOf(second.optJSONArray("nodes")));
+    }
+    private static boolean pauseObservationRetry() {
+        try {Thread.sleep(120);return true;}
+        catch(InterruptedException interrupted) {Thread.currentThread().interrupt();return false;}
+    }
+    private JSONObject observationResult(JSONObject args,String owner,int textBudget) {
+        try {return observation(args,owner,textBudget);}
+        catch(ControlException error) {return Json.failure(error.code.name(),error.getMessage());}
+        catch(SecurityException error) {return Json.failure("PERMISSION_REQUIRED","Android denied access");}
+        catch(Exception error) {return Json.failure("RESULT_UNKNOWN","Operation unavailable; inspect current state before repeating");}
+    }
+    private JSONObject batchObservation(JSONObject args,String owner,int textBudget,boolean transitionPending,String expectedPackage,
+                                        JSONObject previousObservation,long transitionStartedMs) {
+        long deadline=android.os.SystemClock.elapsedRealtime()+(transitionPending?2500:2000);
+        for(;;) {
+            JSONObject result=observationResult(args,owner,textBudget);long now=android.os.SystemClock.elapsedRealtime();
+            if(result.optBoolean("isError")) {
+                String code=result.optString("code"),message=result.optString("message");
+                boolean retryable="STALE_OBSERVATION".equals(code) ||
+                    ("NOT_READY".equals(code) && message.toLowerCase(java.util.Locale.ROOT).matches(".*(active accessibility window|screen transition|virtual display|shizuku backend|display service).*"));
+                if(retryable&&now<deadline) {
+                    if(!pauseObservationRetry())return Json.failure("RESULT_UNKNOWN","Interrupted while waiting for screen readiness; inspect before repeating");
+                    continue;
+                }
+                return result;
+            }
+            if(transitionPending) {
+                if(expectedPackage!=null&&!expectedPackage.equals(result.optString("package_name"))) {
+                    if(now<deadline) {
+                        if(!pauseObservationRetry())return Json.failure("RESULT_UNKNOWN","Interrupted while waiting for screen readiness; inspect before repeating");
+                        continue;
+                    }
+                    return Json.failure("NOT_READY","Launch transition to "+expectedPackage+" was not observable before the readiness deadline");
+                }
+                if(expectedPackage==null) {
+                    long elapsed=now-transitionStartedMs;
+                    boolean changed=previousObservation!=null&&!sameObservation(previousObservation,result);
+                    if(((previousObservation!=null&&!changed&&elapsed<1200)||(previousObservation==null&&elapsed<350))&&now<deadline) {
+                        if(!pauseObservationRetry())return Json.failure("RESULT_UNKNOWN","Interrupted while waiting for screen readiness; inspect before repeating");
+                        continue;
+                    }
+                }
+            }
+            return result;
+        }
     }
     private JSONObject definition(String name) throws Exception {
         for(int i=0;i<definitions.length();i++) if(definitions.getJSONObject(i).getString("name").equals(name)) return definitions.getJSONObject(i);
@@ -123,23 +191,28 @@ final class NativeTools implements AutoCloseable {
     private static Integer integer(JSONObject a,String name) throws Exception {return a.has(name)?a.getInt(name):null;}
     private static String string(JSONObject a,String name) throws Exception {return a.has(name)?a.getString(name):null;}
     private JSONObject outcome(AndroidSystemActions.Outcome value) {return Json.tool(Json.obj("status",value.status(),"reference",value.reference(),"message",value.message()));}
-    static JSONObject boundedObservationNodes(List<ControlBackend.Node> source) {
+    static JSONObject boundedObservationNodes(List<ControlBackend.Node> source) {return boundedObservationNodes(source,OBSERVATION_TEXT_BUDGET);}
+    private static boolean exceeds(String value,int max) {return value!=null&&value.length()>max;}
+    private static JSONObject boundedObservationNodes(List<ControlBackend.Node> source,int textBudget) {
         JSONArray nodes=new JSONArray();int nodeCharacters=0;boolean outputTruncated=false;
         for(ControlBackend.Node n:source) {
+            outputTruncated|=exceeds(n.resourceId(),OBSERVATION_NODE_ID_LIMIT)||exceeds(n.text(),OBSERVATION_NODE_TEXT_LIMIT)
+                ||exceeds(n.description(),OBSERVATION_NODE_TEXT_LIMIT)||exceeds(n.role(),OBSERVATION_NODE_ROLE_LIMIT);
             JSONObject node=Json.obj("index",n.index(),"resource_id",clip(n.resourceId(),OBSERVATION_NODE_ID_LIMIT),
                 "text",clip(n.text(),OBSERVATION_NODE_TEXT_LIMIT),"description",clip(n.description(),OBSERVATION_NODE_TEXT_LIMIT),
                 "role",clip(n.role(),OBSERVATION_NODE_ROLE_LIMIT),
                 "bounds",Json.obj("left",n.left(),"top",n.top(),"right",n.right(),"bottom",n.bottom()),"enabled",n.enabled(),"focused",n.focused(),
                 "editable",n.editable(),"clickable",n.clickable(),"long_clickable",n.longClickable(),"scrollable",n.scrollable());
             int next=node.toString().length()+1;
-            if(nodeCharacters+next>OBSERVATION_TEXT_BUDGET) {outputTruncated=true;break;}
+            if(nodeCharacters+next>textBudget) {outputTruncated=true;break;}
             nodes.put(node);nodeCharacters+=next;
         }
         return Json.obj("nodes",nodes,"nodes_truncated",outputTruncated);
     }
-    private JSONObject observation(JSONObject a,String owner) throws Exception {
+    private JSONObject observation(JSONObject a,String owner) throws Exception {return observation(a,owner,OBSERVATION_TEXT_BUDGET);}
+    private JSONObject observation(JSONObject a,String owner,int textBudget) throws Exception {
         ControlBackend.Observation o=screen(owner).observe(a.optBoolean("include_image",false),a.optInt("max_image_dimension",1280),a.optInt("max_nodes",DEFAULT_OBSERVATION_NODES));
-        JSONObject bounded=boundedObservationNodes(o.nodes());JSONArray nodes=bounded.getJSONArray("nodes");
+        JSONObject bounded=boundedObservationNodes(o.nodes(),textBudget);JSONArray nodes=bounded.getJSONArray("nodes");
         JSONObject data=Json.obj("snapshot_id",o.snapshotId(),"captured_at_ms",o.capturedAtMs(),"package_name",o.packageName(),"window_id",o.windowId(),"coordinate_width",o.coordinateWidth(),"coordinate_height",o.coordinateHeight(),"interactive",o.interactive(),"locked",o.locked(),"nodes",nodes,"nodes_truncated",o.nodesTruncated()||bounded.getBoolean("nodes_truncated"),"image_width",o.imageWidth(),"image_height",o.imageHeight());
         JSONObject result=Json.tool(data);byte[] image=o.image();if(image!=null) result.put("images",Json.arr(Json.obj("data",Base64.encodeToString(image,Base64.NO_WRAP),"mimeType",o.imageMime())));
         return result;
