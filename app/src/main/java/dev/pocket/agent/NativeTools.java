@@ -193,7 +193,7 @@ final class NativeTools implements AutoCloseable {
     private JSONObject outcome(AndroidSystemActions.Outcome value) {return Json.tool(Json.obj("status",value.status(),"reference",value.reference(),"message",value.message()));}
     static JSONObject boundedObservationNodes(List<ControlBackend.Node> source) {return boundedObservationNodes(source,OBSERVATION_TEXT_BUDGET);}
     private static boolean exceeds(String value,int max) {return value!=null&&value.length()>max;}
-    private static JSONObject boundedObservationNodes(List<ControlBackend.Node> source,int textBudget) {
+    static JSONObject boundedObservationNodes(List<ControlBackend.Node> source,int textBudget) {
         JSONArray nodes=new JSONArray();int nodeCharacters=0;boolean outputTruncated=false;
         for(ControlBackend.Node n:source) {
             outputTruncated|=exceeds(n.resourceId(),OBSERVATION_NODE_ID_LIMIT)||exceeds(n.text(),OBSERVATION_NODE_TEXT_LIMIT)
