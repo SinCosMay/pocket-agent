@@ -107,6 +107,7 @@ jobs:
           python3 scripts/native_footprint.py > artifacts/native-stripping.json
           python3 scripts/check_apk.py artifacts/Pocket-Agent-arm64.apk artifacts/Pocket-Agent-x86_64.apk artifacts/Pocket-Agent-universal.apk > artifacts/payload-report.jsonl
           sha256sum artifacts/*.apk > artifacts/SHA256SUMS.txt
+          (cd artifacts && sha256sum Pocket-Agent-x86_64.apk Pocket-Agent-tests.apk Pocket-Agent-fixture.apk > EMULATOR_SHA256SUMS.txt)
       - uses: actions/upload-artifact@v4
         with:
           name: pocket-agent-emulator-validation
@@ -115,7 +116,7 @@ jobs:
             artifacts/Pocket-Agent-tests.apk
             artifacts/Pocket-Agent-fixture.apk
             artifacts/source-commit.txt
-            artifacts/SHA256SUMS.txt
+            artifacts/EMULATOR_SHA256SUMS.txt
           retention-days: 7
           if-no-files-found: error
       - uses: actions/upload-artifact@v4
