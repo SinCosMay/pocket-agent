@@ -260,7 +260,7 @@ public final class WakeWordService extends Service {
                     paused = true;
                     getSystemService(NotificationManager.class).notify(
                         NOTIFICATION, notification("Active voice conversation"));
-                    if (VoiceSttSettings.engine(this) == VoiceSttSettings.Engine.DEEPGRAM)
+                    if (VoiceSttSettings.mode(this).usesDeepgramStt())
                         playAcknowledgement();
                     try {
                         startForegroundService(new Intent(this, VoiceListeningService.class)
