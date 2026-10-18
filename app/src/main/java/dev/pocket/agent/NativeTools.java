@@ -152,7 +152,10 @@ final class NativeTools implements AutoCloseable {
                 boolean retryable="STALE_OBSERVATION".equals(code) ||
                     ("NOT_READY".equals(code) && lower.matches(".*(active accessibility window|screen transition|virtual display|shizuku backend|display service).*"));
                 if(retryable&&now<deadline) {
-                    if(!pauseObservationRetry())return Json.failure("RESULT_UNKNOWN","Interrupted while waiting for screen readiness; inspect before repeating");
+                    if(!pauseObservationRetry()) {
+                        JSONObject interrupted=Json.failure("RESULT_UNKNOWN","Interrupted while waiting for screen readiness; inspect before repeating");
+                        return displayReplaced?markDisplayReplacement(interrupted):interrupted;
+                    }
                     continue;
                 }
                 return displayReplaced?markDisplayReplacement(result):result;
