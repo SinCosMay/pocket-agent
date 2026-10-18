@@ -194,6 +194,88 @@ public class RuntimeDeviceTest {
             assertTrue("Whole batch must stay below the runtime text cap: "+result.toString().length(),result.toString().length()<30_000);
         }
     }
+    @Test public void rapidScreenshotsRetryReadThrottleWithoutLosingObservation() throws Exception {
+        DeviceTestAccess.ensureAccessibility();
+        try(NativeTools tools=new NativeTools(context())) {
+            String owner="rapid-screenshot";JSONObject caps=tools.execute("phone_capabilities",new JSONObject(),owner);
+            String prefix=caps.getString("operation_prefix"),nonce=Long.toString(System.nanoTime());
+            JSONObject acquired=tools.execute("phone_screen",new JSONObject().put("action","acquire"),owner);
+            assertFalse(acquired.toString(),acquired.optBoolean("isError"));
+            JSONObject opened=tools.execute("phone_open_app",new JSONObject().put("package_name","dev.pocket.agent.fixture")
+                .put("operation_id",prefix+"_shotopen"+nonce),owner);
+            assertFalse(opened.toString(),opened.optBoolean("isError"));
+            fixtureObservation(tools,owner);
+            JSONObject args=new JSONObject().put("include_image",true).put("max_image_dimension",512).put("max_nodes",80);
+            JSONObject first=tools.execute("phone_observe",args,owner);
+            assertFalse(first.toString(),first.optBoolean("isError"));
+            assertEquals(1,first.getJSONArray("images").length());
+            JSONObject second=tools.execute("phone_observe",args,owner);
+            assertFalse(second.toString(),second.optBoolean("isError"));
+            assertEquals(1,second.getJSONArray("images").length());
+            assertTrue(second.toString(),second.getJSONArray("nodes").length()>0);
+            JSONObject batch=tools.execute("phone_batch",new JSONObject().put("calls",new JSONArray()
+                .put(new JSONObject().put("name","phone_observe").put("args",args))
+                .put(new JSONObject().put("name","phone_observe").put("args",args))),owner);
+            assertFalse(batch.toString(),batch.optBoolean("isError"));
+            assertEquals("completed",batch.optString("status"));
+            assertEquals(2,batch.getJSONArray("results").length());
+            assertTrue(batch.toString(),batch.getJSONArray("results").getJSONObject(1).getJSONObject("result").has("images"));
+        }
+    }
+    @Test public void delayedAccessibilityTextVerificationCoversExactUnicodeClearAndBatch() throws Exception {
+        DeviceTestAccess.ensureAccessibility();
+        try(NativeTools tools=new NativeTools(context())) {
+            String owner="delayed-text";JSONObject caps=tools.execute("phone_capabilities",new JSONObject(),owner);
+            String prefix=caps.getString("operation_prefix"),nonce=Long.toString(System.nanoTime());
+            JSONObject acquired=tools.execute("phone_screen",new JSONObject().put("action","acquire"),owner);
+            assertFalse(acquired.toString(),acquired.optBoolean("isError"));
+            JSONObject opened=tools.execute("phone_open_app",new JSONObject().put("package_name","dev.pocket.agent.fixture")
+                .put("operation_id",prefix+"_delayopen"+nonce),owner);
+            assertFalse(opened.toString(),opened.optBoolean("isError"));
+            JSONObject observation=fixtureObservation(tools,owner);
+            String exact="  नमस्ते 😀 café  ";
+            JSONObject type=new JSONObject().put("kind","type").put("snapshot_id",observation.getString("snapshot_id"))
+                .put("selector",new JSONObject().put("description","AGENT_DELAYED_INPUT")).put("text",exact).put("replace",true)
+                .put("operation_id",prefix+"_delaytype"+nonce);
+            long started=android.os.SystemClock.elapsedRealtime();
+            JSONObject typed=tools.execute("phone_act",type,owner);
+            long elapsed=android.os.SystemClock.elapsedRealtime()-started;
+            assertFalse(typed.toString(),typed.optBoolean("isError"));
+            assertEquals("verified",typed.optString("status"));
+            assertTrue("Delayed fixture should require asynchronous verification, elapsed="+elapsed,elapsed>=250);
+            requireText(fixtureObservation(tools,owner),exact);
+
+            observation=fixtureObservation(tools,owner);
+            JSONObject clear=new JSONObject(type.toString()).put("snapshot_id",observation.getString("snapshot_id"))
+                .put("text","").put("operation_id",prefix+"_delayclear"+nonce);
+            JSONObject cleared=tools.execute("phone_act",clear,owner);
+            assertFalse(cleared.toString(),cleared.optBoolean("isError"));
+            assertEquals("verified",cleared.optString("status"));
+
+            observation=fixtureObservation(tools,owner);
+            String batchText="Batch verified state "+nonce;
+            JSONObject batchType=new JSONObject(type.toString()).put("snapshot_id",observation.getString("snapshot_id"))
+                .put("text",batchText).put("operation_id",prefix+"_delaybatch"+nonce);
+            JSONObject batch=tools.execute("phone_batch",new JSONObject().put("calls",new JSONArray()
+                .put(new JSONObject().put("name","phone_act").put("args",batchType))
+                .put(new JSONObject().put("name","phone_observe").put("args",new JSONObject().put("max_nodes",120)))),owner);
+            assertFalse(batch.toString(),batch.optBoolean("isError"));
+            assertEquals("completed",batch.optString("status"));
+            requireText(batch.getJSONArray("results").getJSONObject(1).getJSONObject("result"),batchText);
+
+            observation=fixtureObservation(tools,owner);
+            String uncertainText="Applied before rejected result "+nonce;
+            JSONObject uncertain=new JSONObject(type.toString()).put("snapshot_id",observation.getString("snapshot_id"))
+                .put("selector",new JSONObject().put("description","AGENT_REJECTING_INPUT")).put("text",uncertainText)
+                .put("operation_id",prefix+"_delayunknown"+nonce);
+            JSONObject unknown=tools.execute("phone_act",uncertain,owner);
+            assertTrue(unknown.toString(),unknown.optBoolean("isError"));
+            assertEquals("RESULT_UNKNOWN",unknown.optString("code"));
+            requireText(fixtureObservation(tools,owner),uncertainText);
+            JSONObject duplicateUnknown=tools.execute("phone_act",uncertain,owner);
+            assertEquals(unknown.toString(),duplicateUnknown.toString());
+        }
+    }
     @Test public void directNativeFixtureAndMutationLedger() throws Exception {
         DeviceTestAccess.ensureAccessibility();Context c=context();NativeTools tools=new NativeTools(c);String owner="instrumentation-fixture";
         JSONObject caps=tools.execute("phone_capabilities",new JSONObject(),owner);
