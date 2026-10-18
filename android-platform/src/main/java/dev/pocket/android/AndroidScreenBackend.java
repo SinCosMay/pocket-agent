@@ -390,17 +390,10 @@ public final class AndroidScreenBackend implements ControlBackend {
             AccessibilityNodeInfo child=node.getChild(i);
             if(child!=null) try {find(child,a,out,depth+1,visited);} finally {child.recycle();}
         }
-        if(matches && s==null && clickKind(a) && out.size()>descendants) {
-            Rect bounds=new Rect();node.getBoundsInScreen(bounds);
-            // Ignore an outer hit only for contained descendants in its own subtree.
-            // Hits in separate branches survive, even if their rectangles happen to nest.
-            boolean contains=true;
-            for(int i=descendants;i<out.size();i++) {
-                Rect childBounds=new Rect();out.get(i).getBoundsInScreen(childBounds);
-                contains &= bounds.contains(childBounds);
-            }
-            if(contains)return;
-        }
+        // A matching descendant in this node's own subtree is a more specific hit,
+        // even when Android reports child bounds extending beyond the parent. Matches
+        // from sibling branches predate descendants and therefore remain ambiguous.
+        if(matches && s==null && clickKind(a) && out.size()>descendants)return;
         if(matches)out.add(AccessibilityNodeInfo.obtain(node));
     }
 

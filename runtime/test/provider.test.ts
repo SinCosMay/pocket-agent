@@ -129,6 +129,8 @@ test('Codex does not retry permanent HTTP errors, quota exhaustion, or excessive
  for(const response of [
    ...[400,401,403,404,422,501].map(status=>()=>new Response('private body',{status})),
    ()=>Response.json({error:{code:'insufficient_quota',message:'private body'}},{status:429}),
+   ()=>Response.json({error:{type:'usage_limit_reached',message:'private body'}},{status:429}),
+   ()=>Response.json({error:{type:'usage_not_included',message:'private body'}},{status:429}),
    ()=>new Response('private body',{status:503,headers:{'retry-after':'60'}}),
  ]) {
    const credentials=accountCredential();let calls=0;

@@ -32,7 +32,7 @@ public final class FixtureActivity extends Activity {
   TextView label=new TextView(this);label.setText("Chrome");label.setTextSize(22);row.addView(label);
   if(mode.startsWith("duplicate")) {TextView duplicate=new TextView(this);duplicate.setText("Chrome");
    if("duplicate_disabled".equals(mode))duplicate.setEnabled(false);row.addView(duplicate);}
-  FrameLayout.LayoutParams rowParams=new FrameLayout.LayoutParams(400,200);rowParams.leftMargin=60;rowParams.topMargin=100;panel.addView(row,rowParams);
+  FrameLayout.LayoutParams rowParams=new FrameLayout.LayoutParams("overflow_descendant".equals(mode)?580:400,200);rowParams.leftMargin=60;rowParams.topMargin=100;panel.addView(row,rowParams);
   if("disabled".equals(mode) || "disabled_only".equals(mode))row.setEnabled(false);
   if(mode.endsWith("_only")) {outer.setClickable(false);outer.setLongClickable(false);panel.setClickable(false);panel.setLongClickable(false);}
   if("long_parent".equals(mode))row.setLongClickable(false);

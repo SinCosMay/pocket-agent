@@ -141,7 +141,7 @@ async function terminalCodexError(response: Response): Promise<boolean> {
     }
     const body = JSON.parse(Buffer.concat(chunks).toString('utf8'));
     return ['insufficient_quota','usage_limit_reached','billing_hard_limit_reached','invalid_api_key','token_expired']
-      .includes(body?.error?.code) || body?.error?.type === 'insufficient_quota';
+      .includes(body?.error?.code) || ['insufficient_quota','usage_limit_reached','usage_not_included'].includes(body?.error?.type);
   } catch {return false;}
   finally {try {await reader.cancel();} catch {/* Discard remote diagnostics. */}}
 }

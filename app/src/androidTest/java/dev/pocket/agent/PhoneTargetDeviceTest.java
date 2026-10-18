@@ -1,6 +1,7 @@
 package dev.pocket.agent;
 
 import android.app.ActivityOptions;
+import android.content.ActivityNotFoundException;
 import android.app.UiAutomation;
 import android.content.Context;
 import android.content.Intent;
@@ -28,25 +29,32 @@ public class PhoneTargetDeviceTest {
         .getUiAutomation(UiAutomation.FLAG_DONT_SUPPRESS_ACCESSIBILITY_SERVICES);
 
     private final class Chooser implements AutoCloseable {
-        final ImageReader reader;
-        final VirtualDisplay display;
-        final AndroidScreenBackend screen;
+        ImageReader reader;
+        VirtualDisplay display;
+        AndroidScreenBackend screen;
         Chooser(String mode) throws Exception {
-            DeviceTestAccess.ensureAccessibility();
-            automation.adoptShellPermissionIdentity("android.permission.ADD_TRUSTED_DISPLAY",
-                "android.permission.ADD_ALWAYS_UNLOCKED_DISPLAY");
             try {
-                reader=ImageReader.newInstance(720,1280,PixelFormat.RGBA_8888,2);
-                reader.setOnImageAvailableListener(r->{try(Image frame=r.acquireLatestImage()) {}},new Handler(Looper.getMainLooper()));
-                display=context.getSystemService(DisplayManager.class).createVirtualDisplay("PocketChooserTest",720,1280,320,reader.getSurface(),
-                    1|8|64|1024|2048|4096|16384|32768);
-            } finally {automation.dropShellPermissionIdentity();}
-            assertNotNull(display);
-            screen=AgentAccessibility.connected.backend(display.getDisplay().getDisplayId());
-            context.startActivity(new Intent().setClassName("dev.pocket.agent.fixture","dev.pocket.agent.fixture.FixtureActivity")
-                .putExtra("chooser_case",mode).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK|Intent.FLAG_ACTIVITY_MULTIPLE_TASK),
-                ActivityOptions.makeBasic().setLaunchDisplayId(display.getDisplay().getDisplayId()).toBundle());
-            observed("CHOOSER_READY");
+                DeviceTestAccess.ensureAccessibility();
+                automation.adoptShellPermissionIdentity("android.permission.ADD_TRUSTED_DISPLAY",
+                    "android.permission.ADD_ALWAYS_UNLOCKED_DISPLAY");
+                try {
+                    reader=ImageReader.newInstance(720,1280,PixelFormat.RGBA_8888,2);
+                    reader.setOnImageAvailableListener(r->{try(Image frame=r.acquireLatestImage()) {}},new Handler(Looper.getMainLooper()));
+                    display=context.getSystemService(DisplayManager.class).createVirtualDisplay("PocketChooserTest",720,1280,320,reader.getSurface(),
+                        1|8|64|1024|2048|4096|16384|32768);
+                } finally {automation.dropShellPermissionIdentity();}
+                assertNotNull(display);
+                screen=AgentAccessibility.connected.backend(display.getDisplay().getDisplayId());
+                String fixtureClass="launch_failure".equals(mode)
+                    ?"dev.pocket.agent.fixture.MissingActivity":"dev.pocket.agent.fixture.FixtureActivity";
+                context.startActivity(new Intent().setClassName("dev.pocket.agent.fixture",fixtureClass)
+                    .putExtra("chooser_case",mode).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK|Intent.FLAG_ACTIVITY_MULTIPLE_TASK),
+                    ActivityOptions.makeBasic().setLaunchDisplayId(display.getDisplay().getDisplayId()).toBundle());
+                observed("CHOOSER_READY");
+            } catch(Exception|AssertionError error) {
+                close();
+                throw error;
+            }
         }
         Observation observed(String expected) throws Exception {
             long end=System.currentTimeMillis()+6000;
@@ -81,9 +89,26 @@ public class PhoneTargetDeviceTest {
             observed("CHOOSER_READY");
         }
         @Override public void close() {
-            AgentAccessibility.connected.release(display.getDisplay().getDisplayId());
-            display.release();reader.close();
+            if(display!=null) {
+                if(AgentAccessibility.connected!=null)AgentAccessibility.connected.release(display.getDisplay().getDisplayId());
+                display.release();display=null;
+            }
+            if(reader!=null) {reader.close();reader=null;}
         }
+    }
+    private int chooserDisplayCount() {
+        int count=0;
+        for(android.view.Display item:context.getSystemService(DisplayManager.class).getDisplays())
+            if("PocketChooserTest".equals(item.getName()))count++;
+        return count;
+    }
+    @Test public void failedConstructionReleasesVirtualDisplayAndReader() throws Exception {
+        int before=chooserDisplayCount();
+        try {new Chooser("launch_failure");fail("Expected fixture launch failure");}
+        catch(ActivityNotFoundException expected) {}
+        long deadline=System.currentTimeMillis()+2000;
+        while(chooserDisplayCount()!=before && System.currentTimeMillis()<deadline)Thread.sleep(50);
+        assertEquals(before,chooserDisplayCount());
     }
     @Test public void uniqueVisibleLabelResolvesNearestClickAndLongClickAncestor() throws Exception {
         for(Kind kind:new Kind[]{Kind.CLICK,Kind.LONG_CLICK})try(Chooser c=new Chooser("normal")) {
@@ -108,7 +133,7 @@ public class PhoneTargetDeviceTest {
             }
     }
     @Test public void coordinateHitsChooseDeepestInAncestorChain() throws Exception {
-        for(String mode:new String[]{"normal","ineligible_siblings"})
+        for(String mode:new String[]{"normal","ineligible_siblings","overflow_descendant"})
             for(Kind kind:new Kind[]{Kind.CLICK,Kind.LONG_CLICK})try(Chooser c=new Chooser(mode)) {
             assertEquals("dispatched",c.screen.execute(c.action(kind,null,true)).status());
             c.observed(kind==Kind.CLICK?"CHOOSER_SELECTED":"CHOOSER_LONG_SELECTED");
