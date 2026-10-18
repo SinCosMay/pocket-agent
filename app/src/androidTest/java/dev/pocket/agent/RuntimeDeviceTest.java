@@ -5,6 +5,7 @@ import android.content.Intent;
 import androidx.test.ext.junit.runners.AndroidJUnit4;
 import androidx.test.platform.app.InstrumentationRegistry;
 import java.util.concurrent.TimeUnit;
+import org.json.JSONArray;
 import org.json.JSONObject;
 import org.junit.Test;
 import org.junit.runner.RunWith;
@@ -97,6 +98,20 @@ public class RuntimeDeviceTest {
         int textLength=NativeTools.textLengthWithoutImages(entry);
         assertTrue("Screenshot base64 must not consume the batch text budget: "+textLength,textLength<1_000);
         assertTrue("Actual textual payload must still be counted",textLength>150);
+    }
+    @Test public void batchImagePayloadKeepsOnlyLatestAndCapsOversized() throws Exception {
+        JSONObject priorResult=Json.obj("snapshot_id","old","images",Json.arr(Json.obj("data","A".repeat(40_000),"mimeType","image/jpeg")));
+        JSONArray prior=new JSONArray().put(Json.obj("index",0,"name","phone_observe","result",priorResult));
+        JSONObject current=Json.obj("snapshot_id","new","images",Json.arr(Json.obj("data","B".repeat(50_000),"mimeType","image/jpeg")));
+        NativeTools.prepareBatchObservationImages(prior,current);
+        assertFalse("Superseded batch screenshots must be discarded before bridge serialization",priorResult.has("images"));
+        assertEquals(1,current.getJSONArray("images").length());
+        assertEquals(50_000,current.getJSONArray("images").getJSONObject(0).getString("data").length());
+
+        JSONObject oversized=Json.obj("snapshot_id","huge","images",Json.arr(Json.obj("data","C".repeat(2_000_001),"mimeType","image/jpeg")));
+        NativeTools.prepareBatchObservationImages(new JSONArray(),oversized);
+        assertFalse("Oversized screenshot must not cross the native bridge",oversized.has("images"));
+        assertTrue(oversized.getBoolean("image_omitted"));
     }
     @Test public void batchObservationLeaseRecoveryClassifiesOnlyReadFailuresThatNeedReplacement() throws Exception {
         assertTrue(NativeTools.observationLeaseReplacementNeeded(Json.failure("RESULT_UNKNOWN","Timed out; inspect before repeating the action")));

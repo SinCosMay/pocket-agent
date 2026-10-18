@@ -29,6 +29,7 @@ final class NativeTools implements AutoCloseable {
     private static final int OBSERVATION_NODE_ID_LIMIT=240;
     private static final int OBSERVATION_NODE_ROLE_LIMIT=160;
     private static final int BATCH_TEXT_BUDGET=28_000;
+    private static final int BATCH_IMAGE_PAYLOAD_LIMIT=2_000_000;
     private final Context context;
     private final OperationStore operations;
     private final JSONArray definitions;
@@ -71,6 +72,27 @@ final class NativeTools implements AutoCloseable {
         if(value instanceof String string)return JSONObject.quote(string).length();
         return String.valueOf(value).length();
     }
+    static void prepareBatchObservationImages(JSONArray priorResults,JSONObject current) throws Exception {
+        for(int i=0;i<priorResults.length();i++) {
+            JSONObject entry=priorResults.optJSONObject(i);
+            JSONObject result=entry==null?null:entry.optJSONObject("result");
+            if(result!=null)result.remove("images");
+        }
+        JSONArray images=current.optJSONArray("images");
+        if(images==null)return;
+        JSONObject latest=null;
+        for(int i=0;i<images.length();i++) {
+            JSONObject image=images.optJSONObject(i);
+            String data=image==null?null:image.optString("data",null);
+            String mime=image==null?null:image.optString("mimeType",null);
+            if(data!=null&&!data.isEmpty()&&data.length()<=BATCH_IMAGE_PAYLOAD_LIMIT&&mime!=null&&!mime.isEmpty())latest=image;
+        }
+        if(latest==null) {
+            current.remove("images");
+            current.put("image_omitted",true);
+            current.put("image_note","Screenshot payload exceeded the independent batch image limit and was omitted.");
+        } else current.put("images",new JSONArray().put(latest));
+    }
     private JSONObject batch(JSONObject args,String owner) {
         JSONArray calls=args.optJSONArray("calls");
         if(args.length()!=1 || calls==null || calls.length()<1 || calls.length()>8)
@@ -96,6 +118,7 @@ final class NativeTools implements AutoCloseable {
                         ?Json.failure("OUTPUT_LIMIT","Batch response budget exhausted; issue this observation separately")
                         :batchObservation(callArgs,owner,Math.min(OBSERVATION_TEXT_BUDGET,remaining),transitionPending,expectedPackage,previousObservation,transitionStartedMs);
                 } else result=execute(name,callArgs,owner);
+                if(name.equals("phone_observe"))prepareBatchObservationImages(results,result);
                 JSONObject entry=Json.obj("index",i,"name",name,"result",result);
                 if(readOnly && textLengthWithoutImages(results)+textLengthWithoutImages(entry)+512>BATCH_TEXT_BUDGET) {
                     result=Json.failure("OUTPUT_LIMIT","Batch response budget exceeded; issue this read separately");
