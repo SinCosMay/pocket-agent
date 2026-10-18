@@ -23,6 +23,11 @@ import org.json.JSONObject;
 import static dev.pocket.control.ControlException.Code.*;
 
 final class NativeTools implements AutoCloseable {
+    private static final int DEFAULT_OBSERVATION_NODES=40;
+    private static final int OBSERVATION_TEXT_BUDGET=24_000;
+    private static final int OBSERVATION_NODE_TEXT_LIMIT=400;
+    private static final int OBSERVATION_NODE_ID_LIMIT=240;
+    private static final int OBSERVATION_NODE_ROLE_LIMIT=160;
     private final Context context;
     private final OperationStore operations;
     private final JSONArray definitions;
@@ -118,12 +123,24 @@ final class NativeTools implements AutoCloseable {
     private static Integer integer(JSONObject a,String name) throws Exception {return a.has(name)?a.getInt(name):null;}
     private static String string(JSONObject a,String name) throws Exception {return a.has(name)?a.getString(name):null;}
     private JSONObject outcome(AndroidSystemActions.Outcome value) {return Json.tool(Json.obj("status",value.status(),"reference",value.reference(),"message",value.message()));}
+    static JSONObject boundedObservationNodes(List<ControlBackend.Node> source) {
+        JSONArray nodes=new JSONArray();int nodeCharacters=0;boolean outputTruncated=false;
+        for(ControlBackend.Node n:source) {
+            JSONObject node=Json.obj("index",n.index(),"resource_id",clip(n.resourceId(),OBSERVATION_NODE_ID_LIMIT),
+                "text",clip(n.text(),OBSERVATION_NODE_TEXT_LIMIT),"description",clip(n.description(),OBSERVATION_NODE_TEXT_LIMIT),
+                "role",clip(n.role(),OBSERVATION_NODE_ROLE_LIMIT),
+                "bounds",Json.obj("left",n.left(),"top",n.top(),"right",n.right(),"bottom",n.bottom()),"enabled",n.enabled(),"focused",n.focused(),
+                "editable",n.editable(),"clickable",n.clickable(),"long_clickable",n.longClickable(),"scrollable",n.scrollable());
+            int next=node.toString().length()+1;
+            if(nodeCharacters+next>OBSERVATION_TEXT_BUDGET) {outputTruncated=true;break;}
+            nodes.put(node);nodeCharacters+=next;
+        }
+        return Json.obj("nodes",nodes,"nodes_truncated",outputTruncated);
+    }
     private JSONObject observation(JSONObject a,String owner) throws Exception {
-        ControlBackend.Observation o=screen(owner).observe(a.optBoolean("include_image",false),a.optInt("max_image_dimension",1280),a.optInt("max_nodes",150));
-        JSONArray nodes=new JSONArray();
-        for(ControlBackend.Node n:o.nodes()) nodes.put(Json.obj("index",n.index(),"resource_id",n.resourceId(),"text",n.text(),"description",n.description(),"role",n.role(),
-            "bounds",Json.obj("left",n.left(),"top",n.top(),"right",n.right(),"bottom",n.bottom()),"enabled",n.enabled(),"focused",n.focused(),"editable",n.editable(),"clickable",n.clickable(),"long_clickable",n.longClickable(),"scrollable",n.scrollable()));
-        JSONObject data=Json.obj("snapshot_id",o.snapshotId(),"captured_at_ms",o.capturedAtMs(),"package_name",o.packageName(),"window_id",o.windowId(),"coordinate_width",o.coordinateWidth(),"coordinate_height",o.coordinateHeight(),"interactive",o.interactive(),"locked",o.locked(),"nodes",nodes,"nodes_truncated",o.nodesTruncated(),"image_width",o.imageWidth(),"image_height",o.imageHeight());
+        ControlBackend.Observation o=screen(owner).observe(a.optBoolean("include_image",false),a.optInt("max_image_dimension",1280),a.optInt("max_nodes",DEFAULT_OBSERVATION_NODES));
+        JSONObject bounded=boundedObservationNodes(o.nodes());JSONArray nodes=bounded.getJSONArray("nodes");
+        JSONObject data=Json.obj("snapshot_id",o.snapshotId(),"captured_at_ms",o.capturedAtMs(),"package_name",o.packageName(),"window_id",o.windowId(),"coordinate_width",o.coordinateWidth(),"coordinate_height",o.coordinateHeight(),"interactive",o.interactive(),"locked",o.locked(),"nodes",nodes,"nodes_truncated",o.nodesTruncated()||bounded.getBoolean("nodes_truncated"),"image_width",o.imageWidth(),"image_height",o.imageHeight());
         JSONObject result=Json.tool(data);byte[] image=o.image();if(image!=null) result.put("images",Json.arr(Json.obj("data",Base64.encodeToString(image,Base64.NO_WRAP),"mimeType",o.imageMime())));
         return result;
     }
