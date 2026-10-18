@@ -28,7 +28,8 @@ adb shell 'ps -A | grep -q shizuku_server'
 
 for case in \
   rapidScreenshotsRetryReadThrottleWithoutLosingObservation \
-  delayedAccessibilityTextVerificationCoversExactUnicodeClearAndBatch
+  delayedAccessibilityTextVerificationCoversExactUnicodeClearAndBatch \
+  directNativeFixtureAndMutationLedger
 do
   output="$(adb shell am instrument -w -r -e class "dev.pocket.agent.RuntimeDeviceTest#$case" dev.pocket.agent.test/androidx.test.runner.AndroidJUnitRunner)"
   printf '%s\n' "$output"
