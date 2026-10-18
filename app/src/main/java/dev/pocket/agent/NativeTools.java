@@ -84,7 +84,8 @@ final class NativeTools implements AutoCloseable {
                 }
                 results.put(entry);
                 if(result.optBoolean("isError")) return Json.obj("isError",true,"code",result.optString("code","BATCH_PARTIAL"),
-                    "message",result.optString("message","Batch stopped on an error"),"status","partial","results",results,"stopped_at",i,"retry_safe",false);
+                    "message",result.optString("message","Batch stopped on an error"),"status","partial","results",results,"stopped_at",i,
+                    "retry_safe",false,"display_replaced",result.optBoolean("display_replaced"));
                 if(result.optBoolean("display_replaced")&&i+1<calls.length()) return Json.obj("isError",true,"code","NOT_READY",
                     "message","Display lease was replaced while recovering the observation; prior private-display app state was discarded and remaining batch calls were not dispatched.",
                     "status","partial","results",results,"stopped_after",i,"next_index",i+1,"retry_safe",false,"display_replaced",true);
@@ -145,7 +146,7 @@ final class NativeTools implements AutoCloseable {
                     if(replacement.optBoolean("isError"))return replacement;
                     displayReplaced=true;transitionPending=false;expectedPackage=null;previousObservation=null;
                     deadline=android.os.SystemClock.elapsedRealtime()+2000;
-                    if(!pauseObservationRetry())return Json.failure("RESULT_UNKNOWN","Interrupted while replacing the private display; inspect before repeating");
+                    if(!pauseObservationRetry())return markDisplayReplacement(Json.failure("RESULT_UNKNOWN","Interrupted while replacing the private display; inspect before repeating"));
                     continue;
                 }
                 boolean retryable="STALE_OBSERVATION".equals(code) ||
@@ -154,7 +155,7 @@ final class NativeTools implements AutoCloseable {
                     if(!pauseObservationRetry())return Json.failure("RESULT_UNKNOWN","Interrupted while waiting for screen readiness; inspect before repeating");
                     continue;
                 }
-                return result;
+                return displayReplaced?markDisplayReplacement(result):result;
             }
             if(transitionPending) {
                 if(expectedPackage!=null&&!expectedPackage.equals(result.optString("package_name"))) {
