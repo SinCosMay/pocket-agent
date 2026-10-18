@@ -166,6 +166,67 @@ test('a missing native display lease is recovered once instead of surfacing NOT_
   assert.equal(reads,2);
 });
 
+test('standalone open-app readiness is settled before a following batch observation',async()=>{
+  let reads=0,batches=0,targetReady=false;
+  const host:any={
+    ensureDisplay:async()=>({status:'acquired',display_id:41}),
+    releaseScreen:()=>{},dropPriorImages:()=>{},
+    call:(_method:string,payload:any)=>{
+      if(payload.name==='phone_open_app')return {status:'requested',package_name:'target.app'};
+      if(payload.name==='phone_observe'){
+        reads++;
+        if(reads<3)return {snapshot_id:'old-'+reads,package_name:'old.app',window_id:1,nodes:[]};
+        targetReady=true;
+        return {snapshot_id:'ready',package_name:'target.app',window_id:2,nodes:[]};
+      }
+      if(payload.name==='phone_batch'){
+        batches++;
+        return {status:'completed',results:[{index:0,name:'phone_observe',result:{
+          snapshot_id:'batched',package_name:targetReady?'target.app':'old.app',window_id:targetReady?2:1,nodes:[],
+        }}]};
+      }
+      return {status:'ok'};
+    },
+  };
+  const tools=nativeTools(host,'cross-batch-owner');
+  const open=tools.find(t=>t.name==='phone_open_app')!,batch=tools.find(t=>t.name==='phone_batch')!;
+  assert.equal((await open.execute('open',{package_name:'target.app',operation_id:'synthetic'})).isError,false);
+  const result=await batch.execute('batch',{calls:[{name:'phone_observe',args:{include_image:true}}]});
+  assert.equal(result.isError,false);
+  assert.equal(result.details.results[0].result.package_name,'target.app');
+  assert.equal(reads,3,'pending launch must be settled with read-only retries before batch dispatch');
+  assert.equal(batches,1,'the batch itself must still be dispatched exactly once');
+});
+
+test('display replacement while settling pending batch readiness prevents batch dispatch',async()=>{
+  let reads=0,batches=0,acquires=0,releases=0;
+  const host:any={
+    ensureDisplay:async()=>{acquires++;return {status:'acquired',display_id:70+acquires};},
+    releaseScreen:()=>{releases++;},dropPriorImages:()=>{},
+    call:(_method:string,payload:any)=>{
+      if(payload.name==='phone_open_app')return {status:'requested',package_name:'target.app'};
+      if(payload.name==='phone_observe'){
+        reads++;
+        if(reads===1)return {isError:true,code:'NOT_READY',message:'No virtual display for conversation'};
+        return {snapshot_id:'fresh',package_name:'dev.pocket.agent',window_id:5,nodes:[]};
+      }
+      if(payload.name==='phone_batch'){batches++;return {status:'completed',results:[]};}
+      return {status:'ok'};
+    },
+  };
+  const tools=nativeTools(host,'cross-batch-recovery');
+  const open=tools.find(t=>t.name==='phone_open_app')!,batch=tools.find(t=>t.name==='phone_batch')!;
+  assert.equal((await open.execute('open',{package_name:'target.app',operation_id:'synthetic'})).isError,false);
+  const result=await batch.execute('batch',{calls:[{name:'phone_observe',args:{}}]});
+  assert.equal(result.isError,true);
+  assert.equal(result.details.code,'NOT_READY');
+  assert.equal(result.details.display_replaced,true);
+  assert.equal(result.details.batch_dispatched,false);
+  assert.equal(batches,0,'batch must not dispatch after readiness recovery discarded prior display state');
+  assert.equal(acquires,2);
+  assert.equal(releases,1);
+});
+
 test('a successful batch launch records readiness for the next standalone observation',async()=>{
   let reads=0;
   const host:any={

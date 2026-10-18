@@ -88,6 +88,16 @@ public class RuntimeDeviceTest {
         assertTrue(batchBudget.toString(),batchBudget.getBoolean("nodes_truncated"));
         assertTrue("Batch-sized node payload must leave envelope room: "+batchBudget.toString().length(),batchBudget.toString().length()<4000);
     }
+    @Test public void batchTextBudgetExcludesScreenshotPayloads() throws Exception {
+        String largeImage="A".repeat(40_000);
+        JSONObject entry=Json.obj("index",0,"name","phone_observe","result",Json.obj(
+            "snapshot_id","s","package_name","dev.pocket.agent","nodes",new org.json.JSONArray()
+                .put(Json.obj("text","x".repeat(150))),"images",Json.arr(Json.obj("data",largeImage,"mimeType","image/jpeg"))));
+        assertTrue("Fixture must exceed the old budget path",entry.toString().length()>40_000);
+        int textLength=NativeTools.textLengthWithoutImages(entry);
+        assertTrue("Screenshot base64 must not consume the batch text budget: "+textLength,textLength<1_000);
+        assertTrue("Actual textual payload must still be counted",textLength>150);
+    }
     @Test public void batchObservationLeaseRecoveryClassifiesOnlyReadFailuresThatNeedReplacement() throws Exception {
         assertTrue(NativeTools.observationLeaseReplacementNeeded(Json.failure("RESULT_UNKNOWN","Timed out; inspect before repeating the action")));
         assertTrue(NativeTools.observationLeaseReplacementNeeded(Json.failure("NOT_READY","Shizuku backend disconnected; observe after recovery")));

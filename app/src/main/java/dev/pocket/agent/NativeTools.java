@@ -52,6 +52,25 @@ final class NativeTools implements AutoCloseable {
         if(action.equals("release")) {releaseOwner(owner);return Json.obj("status","released");}
         return Json.failure("INVALID_ARGUMENT","action must be acquire or release");
     }
+    static int textLengthWithoutImages(Object value) {
+        if(value==null||value==JSONObject.NULL)return 4;
+        if(value instanceof JSONObject object) {
+            int chars=2;boolean first=true;Iterator<String> keys=object.keys();
+            while(keys.hasNext()) {
+                String key=keys.next();if("images".equals(key))continue;
+                if(!first)chars++;first=false;
+                chars+=JSONObject.quote(key).length()+1+textLengthWithoutImages(object.opt(key));
+            }
+            return chars;
+        }
+        if(value instanceof JSONArray array) {
+            int chars=2;
+            for(int i=0;i<array.length();i++) {if(i>0)chars++;chars+=textLengthWithoutImages(array.opt(i));}
+            return chars;
+        }
+        if(value instanceof String string)return JSONObject.quote(string).length();
+        return String.valueOf(value).length();
+    }
     private JSONObject batch(JSONObject args,String owner) {
         JSONArray calls=args.optJSONArray("calls");
         if(args.length()!=1 || calls==null || calls.length()<1 || calls.length()>8)
@@ -72,13 +91,13 @@ final class NativeTools implements AutoCloseable {
                 JSONObject spec=definition(name);boolean readOnly=spec.getJSONObject("annotations").optBoolean("readOnlyHint",false);
                 JSONObject result;
                 if(name.equals("phone_observe")) {
-                    int remaining=BATCH_TEXT_BUDGET-results.toString().length()-1500;
+                    int remaining=BATCH_TEXT_BUDGET-textLengthWithoutImages(results)-1500;
                     result=remaining<1200
                         ?Json.failure("OUTPUT_LIMIT","Batch response budget exhausted; issue this observation separately")
                         :batchObservation(callArgs,owner,Math.min(OBSERVATION_TEXT_BUDGET,remaining),transitionPending,expectedPackage,previousObservation,transitionStartedMs);
                 } else result=execute(name,callArgs,owner);
                 JSONObject entry=Json.obj("index",i,"name",name,"result",result);
-                if(readOnly && results.toString().length()+entry.toString().length()+512>BATCH_TEXT_BUDGET) {
+                if(readOnly && textLengthWithoutImages(results)+textLengthWithoutImages(entry)+512>BATCH_TEXT_BUDGET) {
                     result=Json.failure("OUTPUT_LIMIT","Batch response budget exceeded; issue this read separately");
                     entry=Json.obj("index",i,"name",name,"result",result);
                 }

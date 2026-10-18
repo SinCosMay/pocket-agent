@@ -118,6 +118,16 @@ async function observeReady(host:any,owner:string,args:any,signal?:AbortSignal):
     return last;
   }
 }
+const UI_TOOL_NAMES=new Set(['phone_observe','phone_act','phone_open_app','phone_open_url','phone_clock_screen']);
+function firstBatchUiCall(args:any):any {
+  return Array.isArray(args?.calls)?args.calls.find((call:any)=>UI_TOOL_NAMES.has(call?.name)):undefined;
+}
+async function settlePendingBatchObservation(host:any,owner:string,args:any,signal?:AbortSignal):Promise<any> {
+  const state=ownerUiState(host,owner),firstUi=firstBatchUiCall(args);
+  if(!state.transition||!['phone_observe','phone_act'].includes(firstUi?.name))return null;
+  const observeArgs=firstUi?.name==='phone_observe'?{...(firstUi.args??{}),include_image:false}:{include_image:false};
+  return observeReady(host,owner,observeArgs,signal);
+}
 function recordBatchUiState(host:any,owner:string,args:any,result:any):void {
   const calls=Array.isArray(args?.calls)?args.calls:[],entries=Array.isArray(result?.results)?result.results:[];
   for(const entry of entries) {
@@ -148,13 +158,18 @@ export function nativeTools(host:any,owner:string,grant?:readonly string[]):any[
         if(args.action==='acquire'&&host.ensureDisplay)return toolResult(await host.ensureDisplay(owner,signal));
       }
       const needsUi=s.name==='phone_observe'||s.name==='phone_act'||s.name==='phone_open_app'||s.name==='phone_open_url'||s.name==='phone_clock_screen'||
-        (s.name==='phone_batch'&&args.calls?.some((c:any)=>['phone_observe','phone_act','phone_open_app','phone_open_url','phone_clock_screen'].includes(c.name)));
+        (s.name==='phone_batch'&&args.calls?.some((c:any)=>UI_TOOL_NAMES.has(c.name)));
       if(needsUi&&host.ensureDisplay){
         const result=await host.ensureDisplay(owner,signal);
         if(result?.isError)return toolResult(result);
       }
       if(signal?.aborted)throw new Error('Cancelled before native dispatch');
       if(s.name==='phone_observe'||(s.name==='phone_batch'&&args.calls?.some((x:any)=>x.name==='phone_observe')))host.dropPriorImages(owner);
+      if(s.name==='phone_batch') {
+        const settled=await settlePendingBatchObservation(host,owner,args,signal);
+        if(settled?.isError)return toolResult(settled);
+        if(settled?.display_replaced)return toolResult({isError:true,code:'NOT_READY',message:'Display lease was replaced while settling pending UI readiness; prior private-display app state was discarded and the batch was not dispatched.',display_replaced:true,display_note:settled.display_note,batch_dispatched:false});
+      }
       const result=s.name==='phone_observe'?await observeReady(host,owner,args,signal):host.call('tool',{name:s.name,args,owner});
       if(s.name==='phone_batch')recordBatchUiState(host,owner,args,result);
       else if(!result?.isError) {
