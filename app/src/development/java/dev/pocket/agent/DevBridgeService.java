@@ -55,19 +55,20 @@ public final class DevBridgeService extends Service {
             notifyState("Bridge already active; stop before switching modes");
             return START_NOT_STICKY;
         }
-        if(android.os.Build.VERSION.SDK_INT>=34)startForeground(52,notification("Starting authenticated local server"),ServiceInfo.FOREGROUND_SERVICE_TYPE_SPECIAL_USE);
-        else startForeground(52,notification("Starting authenticated local server"));
+        boolean publicRequested=START_PUBLIC.equals(action);
+        String startMessage=publicRequested?"Starting authenticated wireless bridge":"Starting local USB server";
+        if(android.os.Build.VERSION.SDK_INT>=34)startForeground(52,notification(startMessage),ServiceInfo.FOREGROUND_SERVICE_TYPE_SPECIAL_USE);
+        else startForeground(52,notification(startMessage));
         stopped=false;stage="starting";diagnostic="";publicUrl="";
         if(!AgentService.isRunning())
             startForegroundService(new Intent(this,AgentService.class).setAction(AgentService.ACTION_START));
-        boolean publicRequested=START_PUBLIC.equals(action);
         starter=new Thread(()->start(publicRequested),"pocket-dev-bridge");
         starter.start();return START_NOT_STICKY;
     }
     private void start(boolean remote) {
         try {
-            DevSecrets secrets=new DevSecrets(this);
-            String bearer=secrets.bearer();
+            DevSecrets secrets=remote?new DevSecrets(this):null;
+            String bearer=remote?secrets.bearer():"";
             String authtoken=remote?secrets.ngrok():"";
             if(remote&&authtoken.trim().isEmpty())throw new IllegalArgumentException("ngrok token missing");
             if(remote&&!new java.io.File(getApplicationInfo().nativeLibraryDir,"libngrok_java.so").exists())
