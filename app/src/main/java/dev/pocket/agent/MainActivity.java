@@ -384,7 +384,30 @@ public final class MainActivity extends Activity implements AgentService.Observe
         panel.addView(button("Enable Shizuku virtual displays", this::enableVirtualDisplays));
         panel.addView(button("Notification access settings", () -> startActivity(new Intent(Settings.ACTION_NOTIFICATION_LISTENER_SETTINGS))));
         panel.addView(button("Choose phone permissions", this::permissions));
-        panel.addView(text("Voice uses Deepgram streaming speech recognition and synthesis with the Pi main agent. Listening stops after three seconds of idle silence or when you tap Stop listening in the notification. Background workers continue."));
+        panel.addView(text("Speech-to-text engine"));
+        Spinner sttEngine = new Spinner(this);
+        String[] sttEngineNames = {"Deepgram (current)", "Android default recognizer"};
+        sttEngine.setAdapter(new ArrayAdapter<>(this, android.R.layout.simple_spinner_dropdown_item, sttEngineNames));
+        VoiceSttSettings.Engine savedSttEngine = VoiceSttSettings.engine(this);
+        sttEngine.setSelection(savedSttEngine == VoiceSttSettings.Engine.ANDROID_DEFAULT ? 1 : 0);
+        panel.addView(sttEngine);
+        TextView sttHelp = text("");
+        panel.addView(sttHelp);
+        java.util.function.Consumer<VoiceSttSettings.Engine> updateSttHelp = engine ->
+            sttHelp.setText(engine == VoiceSttSettings.Engine.ANDROID_DEFAULT
+                ? "Android default uses the phone's system SpeechRecognizer with its own microphone, matching the standalone test APK path. After Hey Jarvis, speak after the ready beep so the system recognizer owns the microphone. A fresh recognition cycle starts after each spoken reply. Deepgram is still used for speech synthesis."
+                : "Deepgram uses the current streaming speech-recognition path and supports listening for interruptions while the agent speaks. Deepgram is the default.");
+        updateSttHelp.accept(savedSttEngine);
+        sttEngine.setOnItemSelectedListener(new AdapterView.OnItemSelectedListener() {
+            @Override public void onItemSelected(AdapterView<?> parent, View view, int position, long id) {
+                VoiceSttSettings.Engine selectedEngine = position == 1
+                    ? VoiceSttSettings.Engine.ANDROID_DEFAULT : VoiceSttSettings.Engine.DEEPGRAM;
+                VoiceSttSettings.setEngine(MainActivity.this, selectedEngine);
+                updateSttHelp.accept(selectedEngine);
+            }
+            @Override public void onNothingSelected(AdapterView<?> parent) { }
+        });
+        panel.addView(text("Voice keeps the existing three-second idle stop. Engine changes apply to the next voice session. Background workers continue."));
         panel.addView(button("Deepgram voice key", this::voiceKeySettings));
         panel.addView(text("Hey Jarvis runs locally at 16 kHz. The wake-word sensitivity below is saved across restarts and applies immediately to an active listener."));
         TextView wakeConfidenceLabel = text("");
@@ -431,7 +454,7 @@ public final class MainActivity extends Activity implements AgentService.Observe
         });
         panel.addView(standardMic);
         panel.addView(text("If enrollment repeatedly shows 1–3% confidence, try the standard microphone and compare the signal level shown during enrollment. This helps distinguish poor input audio from a wake model that does not match your speech. Lowering the threshold does not retrain the model."));
-        panel.addView(text("Optional calibration tunes the phrase detector; it does NOT authenticate your identity. Deepgram and the agent start only after detection."));
+        panel.addView(text("Optional calibration tunes the phrase detector; it does NOT authenticate your identity. The selected speech-to-text engine and the agent start only after detection."));
         panel.addView(button("Enable Hey Jarvis always-listening", this::enableWakeWord));
         panel.addView(button("Disable Hey Jarvis", () -> {
             startService(new Intent(this, WakeWordService.class).setAction(WakeWordService.ACTION_DISABLE));

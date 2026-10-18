@@ -19,8 +19,8 @@ android {
         applicationId = "dev.pocket.agent"
         minSdk = 31
         targetSdk = 36
-        versionCode = 6
-        versionName = "0.1.6-integrated-preview.1"
+        versionCode = 7
+        versionName = "0.1.7-stt-selector-test.1"
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
         buildConfigField("boolean", "DEVELOPMENT_TOOLS", "false")
     }
