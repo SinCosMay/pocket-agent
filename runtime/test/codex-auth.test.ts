@@ -104,3 +104,15 @@ test('redaction covers raw and JSON-escaped credential values',()=>{
  assert.deepEqual(JSON.parse(redacted),{apiKey:'[redacted]',refreshToken:'[redacted]',idToken:'[redacted]'});
  assert.equal(redactProviderSecrets(creds.refreshToken,creds),'[redacted]');
 });
+
+
+test('uncertain refresh network or transient HTTP failures stay latched without rotation replay',async()=>{
+ for(const fail of [async()=>{throw new TypeError('fetch failed');},async()=>new Response('private refresh diagnostic',{status:503})]) {
+   const creds=credentials();let calls=0,saves=0;
+   registerCodexCredentialUpdater(creds,update=>{saves++;return update;});
+   for(let attempt=0;attempt<3;attempt++)await assert.rejects(ensureCodexCredentials(creds,{now:()=>now,fetch:async()=>{calls++;return fail();}}),error=>{
+     assert.ok(!String(error).includes('private refresh diagnostic'));return /sign in again/.test(String(error));
+   });
+   assert.equal(calls,1);assert.equal(saves,0);
+ }
+});

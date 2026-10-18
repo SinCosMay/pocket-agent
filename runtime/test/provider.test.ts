@@ -100,13 +100,116 @@ test('direct Codex never infers before refreshed credentials are durably saved',
  assert.equal(calls,1,'uncertain rotation/persistence failure must not be retried');
 });
 
-test('direct Codex discards remote error details without retrying or leaking credentials',async()=>{
+test('direct Codex discards oversized remote error details without retrying or leaking credentials',async()=>{
  const credentials=accountCredential();let calls=0;
  const fetcher:typeof fetch=async()=>{calls++;return new Response(('private remote body '+credentials.refreshToken+' '+credentials.idToken+' ').repeat(20000),{status:429});};
  const result=await(await makeStream(accountConfig,credentials,'main')(modelFor(accountConfig,credentials),{messages:[]},{fetch:fetcher})).result();
  assert.equal(calls,1);assert.equal(result.stopReason,'error');
  assert.ok((result.errorMessage?.length||0)<512);
  for(const secret of ['private remote body',credentials.refreshToken,credentials.idToken,credentials.accessToken,credentials.accountId])assert.ok(!JSON.stringify(result).includes(secret));
+});
+
+test('Codex retries transient inference HTTP failures within a three-attempt bound',async()=>{
+ for(const status of [408,429,500,502,503,504]) {
+   const credentials=accountCredential();let calls=0;
+   const fetcher:typeof fetch=async()=>++calls<3
+     ? new Response('private upstream diagnostic',{status,headers:{'retry-after':'0'}})
+     : codexResponse([]);
+   const result=await(await makeStream(accountConfig,credentials,'main')(modelFor(accountConfig,credentials),{messages:[]},{fetch:fetcher})).result();
+   assert.equal(calls,3);assert.equal(result.stopReason,'stop');
+ }
+ const credentials=accountCredential();let calls=0;
+ const result=await(await makeStream(accountConfig,credentials,'main')(modelFor(accountConfig,credentials),{messages:[]},{fetch:async()=>{
+   calls++;return new Response('private '+credentials.refreshToken,{status:503,headers:{'retry-after-ms':'0'}});
+ }})).result();
+ assert.equal(calls,3);assert.equal(result.stopReason,'error');assert.ok(!JSON.stringify(result).includes(credentials.refreshToken));
+});
+
+test('Codex does not retry permanent HTTP errors, quota exhaustion, or excessive Retry-After',async()=>{
+ for(const response of [
+   ...[400,401,403,404,422,501].map(status=>()=>new Response('private body',{status})),
+   ()=>Response.json({error:{code:'insufficient_quota',message:'private body'}},{status:429}),
+   ()=>new Response('private body',{status:503,headers:{'retry-after':'60'}}),
+ ]) {
+   const credentials=accountCredential();let calls=0;
+   const result=await(await makeStream(accountConfig,credentials,'main')(modelFor(accountConfig,credentials),{messages:[]},{fetch:async()=>{calls++;return response();}})).result();
+   assert.equal(calls,1);assert.equal(result.stopReason,'error');assert.ok(!JSON.stringify(result).includes('private body'));
+ }
+});
+
+test('Codex retries classified network failures but not arbitrary exceptions or TLS errors',async()=>{
+ for(const error of [new TypeError('fetch failed'),Object.assign(new Error('private socket failure'),{cause:{code:'ECONNRESET'}}),new Error('callback failed'),Object.assign(new TypeError('fetch failed'),{cause:{code:'CERT_HAS_EXPIRED'}})]) {
+   const credentials=accountCredential();let calls=0;
+   const result=await(await makeStream(accountConfig,credentials,'main')(modelFor(accountConfig,credentials),{messages:[]},{fetch:async()=>{if(++calls===1)throw error;return codexResponse([]);}})).result();
+   const retries=(error instanceof TypeError && !(error as any).cause) || (error as any).cause?.code==='ECONNRESET';
+   assert.equal(calls,retries?2:1);assert.equal(result.stopReason,retries?'stop':'error');
+   assert.ok(!JSON.stringify(result).includes('private socket failure'));
+ }
+});
+
+test('Codex cancellation interrupts inference backoff without another dispatch', {timeout:3000},async()=>{
+ const credentials=accountCredential(),abort=new AbortController();let calls=0;
+ const stream=await makeStream(accountConfig,credentials,'main')(modelFor(accountConfig,credentials),{messages:[]},{signal:abort.signal,fetch:async()=>{
+   calls++;setTimeout(()=>abort.abort(),20);return new Response('private',{status:503,headers:{'retry-after':'5'}});
+ }});
+ assert.equal((await stream.result()).stopReason,'aborted');assert.equal(calls,1);
+});
+
+test('Codex inference deadline covers retry backoff and stalled response bodies', {timeout:3000},async()=>{
+ const originalTimeout=AbortSignal.timeout;
+ try {
+   for(const stall of ['backoff','stream','error-body']) {
+     const deadline=new AbortController();(AbortSignal as any).timeout=()=>deadline.signal;
+     const credentials=accountCredential();let calls=0,bodyAborted=false;
+     const stream=await makeStream(accountConfig,credentials,'main')(modelFor(accountConfig,credentials),{messages:[]},{fetch:async(_input,init)=>{
+       calls++;setTimeout(()=>deadline.abort(),20);
+       if(stall==='backoff')return new Response('private',{status:503,headers:{'retry-after':'5'}});
+       return new Response(new ReadableStream({start(controller){
+         init?.signal?.addEventListener('abort',()=>{bodyAborted=true;controller.error(new Error('timeout'));},{once:true});
+       }}),{status:stall==='error-body'?503:200});
+     }});
+     assert.equal((await stream.result()).stopReason,'error');assert.equal(calls,1);
+     if(stall!=='backoff')assert.equal(bodyAborted,true);
+   }
+ } finally {(AbortSignal as any).timeout=originalTimeout;}
+});
+
+test('Codex does not restart SSE after tool output or provider stream failure',async()=>{
+ for(const partialTool of [false,true]) {
+   const credentials=accountCredential();let calls=0,executions=0;
+   const fetcher:typeof fetch=async()=>{
+     calls++;
+     const events=partialTool?[
+       {type:'response.output_item.added',output_index:0,item:{type:'function_call',id:'fc_partial',call_id:'call_partial',name:'subagent',arguments:''}},
+       {type:'response.function_call_arguments.delta',output_index:0,delta:'{"action":"agents"}'},
+       {type:'response.output_item.done',output_index:0,item:{type:'function_call',id:'fc_partial',call_id:'call_partial',name:'subagent',arguments:'{"action":"agents"}',status:'completed'}},
+     ]:[];
+     events.push({type:'response.failed',response:{error:{code:'server_error',message:'private '+credentials.refreshToken}}} as any);
+     return new Response(events.map(event=>'data: '+JSON.stringify(event)+'\n\n').join(''));
+   };
+   const stream=makeStream(accountConfig,credentials,'main');
+   const agent=new Agent({streamFn:(model,context,options)=>stream(model,context,{...options,fetch:fetcher}),initialState:{model:modelFor(accountConfig,credentials),tools:[{name:'subagent',label:'Subagent',description:'Inspect workers.',parameters:SubagentParams,execute:async()=>{executions++;return {content:[],details:{}};}}]}});
+   await agent.prompt('Inspect workers.');
+   assert.equal(calls,1);assert.equal(executions,0);assert.equal(agent.state.messages.at(-1)?.stopReason,'error');
+   assert.ok(!JSON.stringify(agent.state.messages).includes(credentials.refreshToken));
+ }
+});
+
+test('Codex retries only the current inference and never replays completed tool side effects',async()=>{
+ const credentials=accountCredential();let calls=0,executions=0;const wires:any[]=[];
+ const fetcher:typeof fetch=async(_input,init)=>{
+   const body=requestBody(init);wires.push(body);calls++;
+   if(calls===1)return new Response('temporary',{status:503,headers:{'retry-after':'0'}});
+   if(calls===2)return codexResponse([{type:'function_call',id:'fc_once',call_id:'call_once',name:'subagent',arguments:'{"action":"agents"}',status:'completed'}]);
+   if(calls===3)throw new TypeError('fetch failed');
+   return codexResponse([]);
+ };
+ const stream=makeStream(accountConfig,credentials,'main');
+ const agent=new Agent({streamFn:(model,context,options)=>stream(model,context,{...options,fetch:fetcher}),initialState:{model:modelFor(accountConfig,credentials),tools:[{name:'subagent',label:'Subagent',description:'Inspect workers.',parameters:SubagentParams,execute:async()=>{executions++;return {content:[{type:'text',text:'saved-result'}],details:{}};}}]}});
+ await agent.prompt('Inspect workers.');
+ assert.equal(calls,4);assert.equal(executions,1);assert.equal(agent.state.messages.at(-1)?.stopReason,'stop');
+ assert.deepEqual(wires[0],wires[1]);assert.deepEqual(wires[2],wires[3]);
+ assert.ok(wires[3].input.some((item:any)=>item.type==='function_call_output'&&item.output.includes('saved-result')));
 });
 
 test('direct Codex streaming abort propagates to the fixed-origin fetch body', {timeout:3000},async()=>{
