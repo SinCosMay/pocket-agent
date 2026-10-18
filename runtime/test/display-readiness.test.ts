@@ -141,7 +141,7 @@ test('read-only observation timeout replaces the display lease once and succeeds
   assert.equal(result.details.package_name,'dev.pocket.agent');
   assert.equal(result.details.display_replaced,true);
   assert.match(result.details.display_note,/prior app state/i);
-  assert.equal(acquires,2);
+  assert.equal(acquires,2,'initial observation and one recovery each ask the host to ensure the lease');
   assert.equal(releases,1);
   assert.equal(reads,2);
 });
@@ -199,10 +199,10 @@ test('standalone open-app readiness is settled before a following batch observat
 });
 
 test('display replacement while settling pending batch readiness prevents batch dispatch',async()=>{
-  let reads=0,batches=0,acquires=0,releases=0;
+  let reads=0,batches=0,acquires=0,releases=0,leased=false,displayId=70;
   const host:any={
-    ensureDisplay:async()=>{acquires++;return {status:'acquired',display_id:70+acquires};},
-    releaseScreen:()=>{releases++;},dropPriorImages:()=>{},
+    ensureDisplay:async()=>{if(!leased){leased=true;acquires++;displayId++;}return {status:'acquired',display_id:displayId};},
+    releaseScreen:()=>{releases++;leased=false;},dropPriorImages:()=>{},
     call:(_method:string,payload:any)=>{
       if(payload.name==='phone_open_app')return {status:'requested',package_name:'target.app'};
       if(payload.name==='phone_observe'){
