@@ -199,6 +199,8 @@ public class RuntimeDeviceTest {
         try(NativeTools tools=new NativeTools(context())) {
             String owner="rapid-screenshot";JSONObject caps=tools.execute("phone_capabilities",new JSONObject(),owner);
             String prefix=caps.getString("operation_prefix"),nonce=Long.toString(System.nanoTime());
+            JSONObject acquired=tools.execute("phone_screen",new JSONObject().put("action","acquire"),owner);
+            assertFalse(acquired.toString(),acquired.optBoolean("isError"));
             JSONObject opened=tools.execute("phone_open_app",new JSONObject().put("package_name","dev.pocket.agent.fixture")
                 .put("operation_id",prefix+"_shotopen"+nonce),owner);
             assertFalse(opened.toString(),opened.optBoolean("isError"));
@@ -225,6 +227,8 @@ public class RuntimeDeviceTest {
         try(NativeTools tools=new NativeTools(context())) {
             String owner="delayed-text";JSONObject caps=tools.execute("phone_capabilities",new JSONObject(),owner);
             String prefix=caps.getString("operation_prefix"),nonce=Long.toString(System.nanoTime());
+            JSONObject acquired=tools.execute("phone_screen",new JSONObject().put("action","acquire"),owner);
+            assertFalse(acquired.toString(),acquired.optBoolean("isError"));
             JSONObject opened=tools.execute("phone_open_app",new JSONObject().put("package_name","dev.pocket.agent.fixture")
                 .put("operation_id",prefix+"_delayopen"+nonce),owner);
             assertFalse(opened.toString(),opened.optBoolean("isError"));
