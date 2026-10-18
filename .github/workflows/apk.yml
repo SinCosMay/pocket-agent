@@ -79,7 +79,9 @@ jobs:
         uses: actions/upload-artifact@v4
         with:
           name: emulator-test-report
-          path: app/build/outputs/androidTest-results/connected/
+          path: |
+            app/build/outputs/androidTest-results/connected/
+            android-platform/build/outputs/androidTest-results/connected/
           if-no-files-found: ignore
       - name: Collect provenance and signed APKs
         run: |
