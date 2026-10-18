@@ -71,8 +71,12 @@ jobs:
             ./gradlew --no-daemon :app:connectedReleaseAndroidTest -Pandroid.testInstrumentationRunnerArguments.class=dev.pocket.agent.VoiceAssistantDeviceTest
             ./gradlew --no-daemon :app:connectedReleaseAndroidTest -Pandroid.testInstrumentationRunnerArguments.class=dev.pocket.agent.LifecycleDeviceTest#mainThreadPromptAndDebugControlsWorkOnDevice
             adb install -r fixture/build/outputs/apk/debug/fixture-debug.apk
-            ./gradlew --no-daemon :app:connectedDebugAndroidTest -Pandroid.testInstrumentationRunnerArguments.class=dev.pocket.agent.PhoneTargetDeviceTest
+            adb uninstall dev.pocket.agent || true
+            adb uninstall dev.pocket.agent.test || true
+            ./gradlew --no-daemon -PvoiceEmulatorTest :app:connectedDebugAndroidTest -Pandroid.testInstrumentationRunnerArguments.class=dev.pocket.agent.PhoneTargetDeviceTest
             ./gradlew --no-daemon :android-platform:connectedDebugAndroidTest -Pandroid.testInstrumentationRunnerArguments.class=dev.pocket.android.NativeAndroidApisTest#unavailableTraversalChildFailsClosed
+            adb uninstall dev.pocket.agent || true
+            adb uninstall dev.pocket.agent.test || true
             ./gradlew --no-daemon -PdevEmulatorTest :app:connectedDevelopmentAndroidTest -Pandroid.testInstrumentationRunnerArguments.class=dev.pocket.agent.DevBridgeDeviceTest
       - name: Upload emulator test report
         if: always()
