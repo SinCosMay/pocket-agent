@@ -253,3 +253,82 @@ test('a successful batch launch records readiness for the next standalone observ
   assert.equal(result.details.package_name,'target.app');
   assert.equal(reads,3);
 });
+
+test('a real-duration timeout gives the replacement display a fresh readiness budget',async(t)=>{
+  t.mock.timers.enable({apis:['Date'],now:10_000});
+  let reads=0,acquires=0,releases=0;
+  const host:any={
+    ensureDisplay:async()=>{acquires++;return {status:'acquired',display_id:80+acquires};},
+    releaseScreen:()=>{releases++;},dropPriorImages:()=>{},
+    call:()=>{
+      reads++;
+      if(reads===1) {
+        t.mock.timers.tick(5000);
+        return {isError:true,code:'RESULT_UNKNOWN',message:'Timed out; inspect before repeating the action'};
+      }
+      if(reads===2)return {isError:true,code:'NOT_READY',message:'No active accessibility window yet; wait for the screen transition and observe again'};
+      return {snapshot_id:'fresh-ready',package_name:'dev.pocket.agent',window_id:8,nodes:[]};
+    },
+  };
+  const result=await nativeTools(host,'slow-timeout-owner').find(t=>t.name==='phone_observe')!.execute('observe',{});
+  assert.equal(result.isError,false);
+  assert.equal(result.details.snapshot_id,'fresh-ready');
+  assert.equal(result.details.display_replaced,true);
+  assert.equal(reads,3);
+  assert.equal(acquires,2);
+  assert.equal(releases,1);
+});
+
+for(const failure of [
+  {isError:true,code:'PERMISSION_REQUIRED',message:'Enable Pocket Agent accessibility'},
+  {isError:true,code:'RESULT_UNKNOWN',message:'Timed out; inspect before repeating the action'},
+])test(`failed replacement observation preserves display loss evidence: ${failure.code}`,async()=>{
+  let reads=0,acquires=0,releases=0;
+  const host:any={
+    ensureDisplay:async()=>{acquires++;return {status:'acquired',display_id:90+acquires};},
+    releaseScreen:()=>{releases++;},dropPriorImages:()=>{},
+    call:()=>++reads===1?{isError:true,code:'RESULT_UNKNOWN',message:'Timed out; inspect before repeating the action'}:failure,
+  };
+  const result=await nativeTools(host,'failed-recovery-'+failure.code).find(t=>t.name==='phone_observe')!.execute('observe',{});
+  assert.equal(result.isError,true);
+  assert.equal(result.details.code,failure.code);
+  assert.equal(result.details.message,failure.message);
+  assert.equal(result.details.display_replaced,true);
+  assert.match(result.details.display_note,/prior app state.*discarded/i);
+  assert.equal(reads,2);
+  assert.equal(acquires,2,'a second timeout must not replace the lease again');
+  assert.equal(releases,1);
+});
+
+test('failed batch recovery clears the launch expectation for the discarded display',async()=>{
+  let reads=0,batches=0;
+  const host:any={
+    ensureDisplay:async()=>({status:'acquired',display_id:100}),
+    releaseScreen:()=>{},dropPriorImages:()=>{},
+    call:(_method:string,payload:any)=>{
+      if(payload.name==='phone_batch') {
+        batches++;
+        return {isError:true,code:'PERMISSION_REQUIRED',status:'partial',display_replaced:true,results:[
+          {index:0,name:'phone_open_app',result:{status:'requested',package_name:'target.app'}},
+          {index:1,name:'phone_observe',result:{isError:true,code:'PERMISSION_REQUIRED',display_replaced:true}},
+        ]};
+      }
+      assert.equal(payload.name,'phone_observe');
+      reads++;
+      return {snapshot_id:'recovered',package_name:'dev.pocket.agent',window_id:10,nodes:[]};
+    },
+  };
+  const tools=nativeTools(host,'failed-batch-recovery');
+  const batch=tools.find(t=>t.name==='phone_batch')!,observe=tools.find(t=>t.name==='phone_observe')!;
+  const partial=await batch.execute('batch',{calls:[
+    {name:'phone_open_app',args:{package_name:'target.app',operation_id:'synthetic'}},
+    {name:'phone_observe',args:{}},
+  ]});
+  assert.equal(partial.isError,true);
+  assert.equal(partial.details.display_replaced,true);
+  const fresh=await observe.execute('observe',{});
+  assert.equal(fresh.isError,false);
+  assert.equal(fresh.details.package_name,'dev.pocket.agent');
+  assert.equal(reads,1,'the replacement display must not wait for the discarded app');
+  assert.equal(batches,1,'the failed batch must not be replayed');
+});

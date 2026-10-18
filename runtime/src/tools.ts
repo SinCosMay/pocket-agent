@@ -79,7 +79,7 @@ function markUiTransition(host:any,owner:string,expectedPackage?:string):void {
 }
 async function observeReady(host:any,owner:string,args:any,signal?:AbortSignal):Promise<any> {
   let state=ownerUiState(host,owner);
-  const readinessDeadline=Date.now()+2000;
+  let readinessDeadline=Date.now()+2000;
   let recoveredLease=false,last:any;
   for(;;) {
     if(signal?.aborted)throw new Error('Display request cancelled');
@@ -90,6 +90,7 @@ async function observeReady(host:any,owner:string,args:any,signal?:AbortSignal):
       const acquired=await host.ensureDisplay(owner,signal);
       if(acquired?.isError)return acquired;
       recoveredLease=true;state=ownerUiState(host,owner);
+      readinessDeadline=Date.now()+2000;
       continue;
     }
     const now=Date.now(),transition=state.transition;
@@ -97,6 +98,7 @@ async function observeReady(host:any,owner:string,args:any,signal?:AbortSignal):
       await pauseForUi(120,signal);
       continue;
     }
+    if(recoveredLease)last={...last,display_replaced:true,display_note:'Display lease was replaced after a backend failure; prior app state on this private display was discarded.'};
     if(last?.isError)return last;
     const current=observationState(last);
     if(transition) {
@@ -114,7 +116,6 @@ async function observeReady(host:any,owner:string,args:any,signal?:AbortSignal):
       state.transition=undefined;
     }
     state.last=current;
-    if(recoveredLease)return {...last,display_replaced:true,display_note:'Display lease was replaced after a backend failure; prior app state on this private display was discarded.'};
     return last;
   }
 }
@@ -132,6 +133,7 @@ function recordBatchUiState(host:any,owner:string,args:any,result:any):void {
   const calls=Array.isArray(args?.calls)?args.calls:[],entries=Array.isArray(result?.results)?result.results:[];
   for(const entry of entries) {
     const call=calls[Number(entry?.index)],nested=entry?.result;
+    if(nested?.display_replaced)clearNativeToolUiState(host,owner);
     if(!call||nested?.isError)break;
     if(call.name==='phone_open_app')markUiTransition(host,owner,call.args?.package_name);
     else if(call.name==='phone_open_url'||call.name==='phone_clock_screen')markUiTransition(host,owner);
