@@ -79,6 +79,14 @@ public class RuntimeDeviceTest {
             assertTrue(first.getString("resource_id").length()<=240);
             assertTrue(first.getString("role").length()<=160);
         }
+        java.util.List<dev.pocket.control.ControlBackend.Node> clipped=java.util.List.of(
+            new dev.pocket.control.ControlBackend.Node(0,"id","x".repeat(500),"short","role",0,0,10,10,true,false,false,false,false,false));
+        JSONObject clippedResult=NativeTools.boundedObservationNodes(clipped);
+        assertEquals(1,clippedResult.getJSONArray("nodes").length());
+        assertTrue("Field clipping must be disclosed",clippedResult.getBoolean("nodes_truncated"));
+        JSONObject batchBudget=NativeTools.boundedObservationNodes(nodes,3000);
+        assertTrue(batchBudget.toString(),batchBudget.getBoolean("nodes_truncated"));
+        assertTrue("Batch-sized node payload must leave envelope room: "+batchBudget.toString().length(),batchBudget.toString().length()<4000);
     }
     @Test public void coldDisplayBootstrapsAndRapidReacquireStaysHealthy() throws Exception {
         DeviceTestAccess.ensureAccessibility();
@@ -100,6 +108,25 @@ public class RuntimeDeviceTest {
                 JSONObject released=tools.execute("phone_screen",new JSONObject().put("action","release"),owner);
                 assertEquals(released.toString(),"released",released.optString("status"));
             }
+        }
+    }
+    @Test public void batchLaunchSettlesFinalObservationWithoutReplayingMutation() throws Exception {
+        DeviceTestAccess.ensureAccessibility();
+        try(NativeTools tools=new NativeTools(context())) {
+            String owner="batch-readiness";JSONObject caps=tools.execute("phone_capabilities",new JSONObject(),owner);
+            String prefix=caps.getString("operation_prefix"),nonce=Long.toString(System.nanoTime());
+            JSONObject acquired=tools.execute("phone_screen",new JSONObject().put("action","acquire"),owner);
+            assertFalse(acquired.toString(),acquired.optBoolean("isError"));
+            JSONObject batch=new JSONObject().put("calls",new org.json.JSONArray()
+                .put(new JSONObject().put("name","phone_open_app").put("args",new JSONObject()
+                    .put("package_name","dev.pocket.agent.fixture").put("operation_id",prefix+"_batchopen"+nonce)))
+                .put(new JSONObject().put("name","phone_observe").put("args",new JSONObject().put("max_nodes",500))));
+            JSONObject result=tools.execute("phone_batch",batch,owner);
+            assertFalse(result.toString(),result.optBoolean("isError"));
+            assertEquals(result.toString(),"completed",result.optString("status"));
+            JSONObject observed=result.getJSONArray("results").getJSONObject(1).getJSONObject("result");
+            assertEquals(observed.toString(),"dev.pocket.agent.fixture",observed.optString("package_name"));
+            assertTrue("Whole batch must stay below the runtime text cap: "+result.toString().length(),result.toString().length()<30_000);
         }
     }
     @Test public void directNativeFixtureAndMutationLedger() throws Exception {
