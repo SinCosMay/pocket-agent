@@ -48,7 +48,7 @@ function ownerUiState(host:any,owner:string):OwnerUiState {
   if(!state){state={};owners.set(owner,state);}
   return state;
 }
-function forgetOwnerUiState(host:any,owner:string):void {uiStates.get(host)?.delete(owner);}
+export function clearNativeToolUiState(host:any,owner:string):void {uiStates.get(host)?.delete(owner);}
 function observationState(result:any):ObservationState {
   const nodes=Array.isArray(result?.nodes)?result.nodes.slice(0,40).map((n:any)=>[n?.resource_id,n?.text,n?.description,n?.role,n?.bounds]):[];
   return {packageName:String(result?.package_name??''),windowId:Number(result?.window_id??-1),signature:JSON.stringify(nodes)};
@@ -85,7 +85,7 @@ async function observeReady(host:any,owner:string,args:any,signal?:AbortSignal):
     if(signal?.aborted)throw new Error('Display request cancelled');
     last=host.call('tool',{name:'phone_observe',args,owner});
     if((backendLeaseLost(last)||observationBackendTimedOut(last))&&!recoveredLease&&host.ensureDisplay) {
-      host.releaseScreen?.(owner);forgetOwnerUiState(host,owner);
+      host.releaseScreen?.(owner);clearNativeToolUiState(host,owner);
       await pauseForUi(100,signal);
       const acquired=await host.ensureDisplay(owner,signal);
       if(acquired?.isError)return acquired;
@@ -114,7 +114,21 @@ async function observeReady(host:any,owner:string,args:any,signal?:AbortSignal):
       state.transition=undefined;
     }
     state.last=current;
+    if(recoveredLease)return {...last,display_replaced:true,display_note:'Display lease was replaced after a backend failure; prior app state on this private display was discarded.'};
     return last;
+  }
+}
+function recordBatchUiState(host:any,owner:string,args:any,result:any):void {
+  const calls=Array.isArray(args?.calls)?args.calls:[],entries=Array.isArray(result?.results)?result.results:[];
+  for(const entry of entries) {
+    const call=calls[Number(entry?.index)],nested=entry?.result;
+    if(!call||nested?.isError)break;
+    if(call.name==='phone_open_app')markUiTransition(host,owner,call.args?.package_name);
+    else if(call.name==='phone_open_url'||call.name==='phone_clock_screen')markUiTransition(host,owner);
+    else if(call.name==='phone_observe') {
+      const state=ownerUiState(host,owner);
+      state.transition=undefined;state.last=observationState(nested);
+    }
   }
 }
 
@@ -128,7 +142,7 @@ export function nativeTools(host:any,owner:string,grant?:readonly string[]):any[
       if(s.name==='phone_batch' && args.calls?.some((x:any)=>!schemas.some(t=>t.name===x.name) || (grant && !grant.includes(x.name)))) throw new Error('Batch tool exceeds tool grant');
       if(s.name==='phone_screen'){
         if(args.action==='release'){
-          host.releaseScreen?.(owner);forgetOwnerUiState(host,owner);
+          host.releaseScreen?.(owner);clearNativeToolUiState(host,owner);
           return toolResult({status:'released'});
         }
         if(args.action==='acquire'&&host.ensureDisplay)return toolResult(await host.ensureDisplay(owner,signal));
@@ -142,13 +156,14 @@ export function nativeTools(host:any,owner:string,grant?:readonly string[]):any[
       if(signal?.aborted)throw new Error('Cancelled before native dispatch');
       if(s.name==='phone_observe'||(s.name==='phone_batch'&&args.calls?.some((x:any)=>x.name==='phone_observe')))host.dropPriorImages(owner);
       const result=s.name==='phone_observe'?await observeReady(host,owner,args,signal):host.call('tool',{name:s.name,args,owner});
-      if(!result?.isError) {
+      if(s.name==='phone_batch')recordBatchUiState(host,owner,args,result);
+      else if(!result?.isError) {
         if(s.name==='phone_open_app')markUiTransition(host,owner,args.package_name);
         else if(s.name==='phone_open_url'||s.name==='phone_clock_screen')markUiTransition(host,owner);
       }
       if(needsUi&&result?.isError&&result.code==='NOT_READY'&&
         /virtual display|no virtual display|shizuku backend|display service/i.test(String(result.message??''))) {
-        host.releaseScreen?.(owner);forgetOwnerUiState(host,owner);
+        host.releaseScreen?.(owner);clearNativeToolUiState(host,owner);
       }
       return toolResult(result);
     },
