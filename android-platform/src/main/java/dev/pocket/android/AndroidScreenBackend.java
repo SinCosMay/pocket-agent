@@ -403,7 +403,13 @@ public final class AndroidScreenBackend implements ControlBackend {
                 String expected=a.replace()?a.text():existing.substring(0,left)+a.text()+existing.substring(right);
                 Bundle args=new Bundle();args.putCharSequence(AccessibilityNodeInfo.ACTION_ARGUMENT_SET_TEXT_CHARSEQUENCE,expected);
                 verifier=AccessibilityNodeInfo.obtain(node);
-                if(!node.performAction(AccessibilityNodeInfo.ACTION_SET_TEXT,args)) {
+                boolean accepted;
+                try {accepted=node.performAction(AccessibilityNodeInfo.ACTION_SET_TEXT,args);}
+                catch(RuntimeException dispatchFailure) {
+                    verifier.recycle();verifier=null;
+                    throw new ControlException(RESULT_UNKNOWN,"Text dispatch outcome unknown; observe before repeating");
+                }
+                if(!accepted) {
                     verifier.recycle();verifier=null;
                     throw new ControlException(ACTION_REJECTED,"Text input rejected");
                 }
