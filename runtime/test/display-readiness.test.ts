@@ -112,7 +112,36 @@ test('read-only observation timeout replaces the display lease once and succeeds
   const result=await nativeTools(host,'timeout-owner').find(t=>t.name==='phone_observe')!.execute('timeout',{});
   assert.equal(result.isError,false);
   assert.equal(result.details.package_name,'dev.pocket.agent');
+  assert.equal(result.details.display_replaced,true);
+  assert.match(result.details.display_note,/prior app state/i);
   assert.equal(acquires,2);
   assert.equal(releases,1);
   assert.equal(reads,2);
+});
+
+test('a successful batch launch records readiness for the next standalone observation',async()=>{
+  let reads=0;
+  const host:any={
+    ensureDisplay:async()=>({status:'acquired',display_id:40}),
+    releaseScreen:()=>{},dropPriorImages:()=>{},
+    call:(_method:string,payload:any)=>{
+      if(payload.name==='phone_batch')return {status:'completed',results:[
+        {index:0,name:'phone_open_app',result:{status:'requested',package_name:'target.app'}},
+      ]};
+      if(payload.name==='phone_observe'){
+        reads++;
+        if(reads<3)return {snapshot_id:'old-'+reads,package_name:'old.app',window_id:1,nodes:[]};
+        return {snapshot_id:'ready',package_name:'target.app',window_id:2,nodes:[]};
+      }
+      return {status:'ok'};
+    },
+  };
+  const tools=nativeTools(host,'batch-owner');
+  const batch=tools.find(t=>t.name==='phone_batch')!,observe=tools.find(t=>t.name==='phone_observe')!;
+  const launched=await batch.execute('batch',{calls:[{name:'phone_open_app',args:{package_name:'target.app',operation_id:'synthetic'}}]});
+  assert.equal(launched.isError,false);
+  const result=await observe.execute('observe',{});
+  assert.equal(result.isError,false);
+  assert.equal(result.details.package_name,'target.app');
+  assert.equal(reads,3);
 });
