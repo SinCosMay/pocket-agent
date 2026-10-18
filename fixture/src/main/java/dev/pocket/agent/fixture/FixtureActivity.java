@@ -45,6 +45,12 @@ public final class FixtureActivity extends Activity {
   TextView status=new TextView(this);status.setText("CHOOSER_READY");status.setContentDescription("CHOOSER_STATUS");
   outer.setOnClickListener(v->status.setText("OUTER_CLICKED"));
   outer.setOnLongClickListener(v->{status.setText("OUTER_LONG_CLICKED");return true;});
+  if("backdrop_sibling".equals(mode)) {
+   FrameLayout backdrop=new FrameLayout(this);backdrop.setContentDescription("CHOOSER_BACKDROP");
+   backdrop.setOnClickListener(v->status.setText("BACKDROP_CLICKED"));
+   backdrop.setOnLongClickListener(v->{status.setText("BACKDROP_LONG_CLICKED");return true;});
+   outer.addView(backdrop,new FrameLayout.LayoutParams(-1,-1));
+  }
   FrameLayout panel=new FrameLayout(this);panel.setContentDescription("CHOOSER_PANEL");
   panel.setOnClickListener(v->status.setText("PANEL_CLICKED"));
   panel.setOnLongClickListener(v->{status.setText("PANEL_LONG_CLICKED");return true;});

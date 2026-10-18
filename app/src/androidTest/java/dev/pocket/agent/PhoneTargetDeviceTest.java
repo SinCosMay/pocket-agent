@@ -145,6 +145,12 @@ public class PhoneTargetDeviceTest {
             c.observed(kind==Kind.CLICK?"CHOOSER_SELECTED":"CHOOSER_LONG_SELECTED");
         }
     }
+    @Test public void coveredBackdropSiblingYieldsToForegroundOption() throws Exception {
+        for(Kind kind:new Kind[]{Kind.CLICK,Kind.LONG_CLICK})try(Chooser c=new Chooser("backdrop_sibling")) {
+            assertEquals("dispatched",c.screen.execute(c.action(kind,null,true)).status());
+            c.observed(kind==Kind.CLICK?"CHOOSER_SELECTED":"CHOOSER_LONG_SELECTED");
+        }
+    }
     @Test public void overlappingSiblingTargetsRemainAmbiguousEvenWhenBoundsNest() throws Exception {
         for(String mode:new String[]{"overlap","contained_sibling"})
             for(Kind kind:new Kind[]{Kind.CLICK,Kind.LONG_CLICK})try(Chooser c=new Chooser(mode)) {
