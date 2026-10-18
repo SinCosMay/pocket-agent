@@ -343,12 +343,16 @@ public final class AndroidScreenBackend implements ControlBackend {
         if(a.kind()==Kind.KEY||(a.kind()==Kind.TYPE&&a.selector()==null&&a.x()==null))node=root.findFocus(AccessibilityNodeInfo.FOCUS_INPUT);
         else {
             List<AccessibilityNodeInfo> matches=new ArrayList<>();
-            find(root,a,matches,0);
-            if(matches.size()!=1) {
-                for(AccessibilityNodeInfo item:matches)item.recycle();
-                throw new ControlException(matches.isEmpty()?ACTION_REJECTED:AMBIGUOUS_TARGET,"Target must match exactly one actionable node");
-            }
-            node=matches.get(0);
+            try {
+                find(root,a,matches,0,new int[]{0});
+                if(matches.size()!=1) throw new ControlException(matches.isEmpty()?ACTION_REJECTED:AMBIGUOUS_TARGET,
+                    "Target must match exactly one node");
+                node=AccessibilityNodeInfo.obtain(matches.get(0));
+                if(a.selector()!=null&&clickKind(a)) {
+                    AccessibilityNodeInfo resolved=clickAncestor(node,a);
+                    node.recycle();node=resolved;
+                }
+            } finally {for(AccessibilityNodeInfo item:matches)item.recycle();}
         }
         if(node==null||!node.isEnabled()) {
             if(node!=null)node.recycle();
@@ -361,28 +365,63 @@ public final class AndroidScreenBackend implements ControlBackend {
         return false;
     }
 
-    private static void find(AccessibilityNodeInfo node,Action a,List<AccessibilityNodeInfo> out,int depth) throws ControlException {
-        if (depth>30 || out.size()>20) return;
-        boolean actionable = switch(a.kind()) {
+    private static boolean clickKind(Action a) {return a.kind()==Kind.CLICK || a.kind()==Kind.LONG_CLICK;}
+    private static boolean actionable(AccessibilityNodeInfo node,Action a) {
+        return switch(a.kind()) {
             case CLICK -> node.isClickable(); case LONG_CLICK -> node.isLongClickable();
             case TYPE -> node.isEditable(); case SCROLL -> node.isScrollable(); default -> false;
         };
-        boolean matches = actionable && node.isEnabled() && node.isVisibleToUser();
+    }
+
+    /** Resolve only after exact visible selector uniqueness has been established. */
+    private static AccessibilityNodeInfo clickAncestor(AccessibilityNodeInfo label,Action a) throws ControlException {
+        Rect labelBounds=new Rect();label.getBoundsInScreen(labelBounds);
+        AccessibilityNodeInfo current=AccessibilityNodeInfo.obtain(label);
+        try {
+            for(int depth=0;current!=null && depth<=60;depth++) {
+                if(!current.isEnabled() || !current.isVisibleToUser() || current.getWindowId()!=label.getWindowId()) break;
+                Rect bounds=new Rect();current.getBoundsInScreen(bounds);
+                if(!bounds.contains(labelBounds)) break;
+                if(actionable(current,a)) return AccessibilityNodeInfo.obtain(current);
+                AccessibilityNodeInfo parent=current.getParent();current.recycle();current=parent;
+            }
+            throw new ControlException(ACTION_REJECTED,"No enabled visible actionable target or containing ancestor");
+        } finally {if(current!=null)current.recycle();}
+    }
+
+    static AccessibilityNodeInfo requireTraversalChild(AccessibilityNodeInfo child) throws ControlException {
+        if(child==null) throw new ControlException(ACTION_REJECTED,"Target tree contains an unavailable child; observe again");
+        return child;
+    }
+
+    private static void find(AccessibilityNodeInfo node,Action a,List<AccessibilityNodeInfo> out,int depth,int[] visited) throws ControlException {
+        // An incomplete search cannot establish uniqueness. Fail closed rather than silently truncating it.
+        if(depth>60 || ++visited[0]>5000) throw new ControlException(ACTION_REJECTED,"Target tree exceeds safe search limits");
+        boolean matches=node.isVisibleToUser();
         Selector s=a.selector();
-        if (s!=null) {
-            if (s.empty()) throw new ControlException(INVALID_ARGUMENT,"Selector must contain resource ID, text, or description");
+        if(s!=null) {
+            if(s.empty()) throw new ControlException(INVALID_ARGUMENT,"Selector must contain resource ID, text, or description");
             matches &= (s.resourceId()==null || s.resourceId().equals(text(node.getViewIdResourceName())))
                 && (s.text()==null || s.text().equals(text(node.getText())))
                 && (s.description()==null || s.description().equals(text(node.getContentDescription())));
+            // Click labels need not themselves advertise the action. Disabled matches still count
+            // towards selector ambiguity and are rejected during ancestor resolution.
+            if(!clickKind(a)) matches &= actionable(node,a) && node.isEnabled();
         } else {
-            if (a.x()==null || a.y()==null) throw new ControlException(INVALID_ARGUMENT,"Selector or point required");
-            Rect b=new Rect();node.getBoundsInScreen(b);matches &= b.contains(a.x(),a.y());
+            if(a.x()==null || a.y()==null) throw new ControlException(INVALID_ARGUMENT,"Selector or point required");
+            Rect bounds=new Rect();node.getBoundsInScreen(bounds);
+            matches &= actionable(node,a) && node.isEnabled() && bounds.contains(a.x(),a.y());
         }
-        if (matches) out.add(AccessibilityNodeInfo.obtain(node));
+        int descendants=out.size();
         for(int i=0;i<node.getChildCount();i++) {
-            AccessibilityNodeInfo child=node.getChild(i);
-            if(child!=null) try { find(child,a,out,depth+1); } finally {child.recycle();}
+            AccessibilityNodeInfo child=requireTraversalChild(node.getChild(i));
+            try {find(child,a,out,depth+1,visited);} finally {child.recycle();}
         }
+        // A matching descendant in this node's own subtree is a more specific hit,
+        // even when Android reports child bounds extending beyond the parent. Matches
+        // from sibling branches predate descendants and therefore remain ambiguous.
+        if(matches && s==null && clickKind(a) && out.size()>descendants)return;
+        if(matches)out.add(AccessibilityNodeInfo.obtain(node));
     }
 
     private record PendingText(AccessibilityNodeInfo node,String expected) {}
