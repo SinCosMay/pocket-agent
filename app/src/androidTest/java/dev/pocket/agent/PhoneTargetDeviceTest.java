@@ -94,6 +94,12 @@ public class PhoneTargetDeviceTest {
                 display.release();display=null;
             }
             if(reader!=null) {reader.close();reader=null;}
+            // Public virtual-display removal can move its task to display 0. Explicitly
+            // stop the synthetic fixture so teardown cannot contaminate later tests.
+            try(android.os.ParcelFileDescriptor.AutoCloseInputStream input=
+                    new android.os.ParcelFileDescriptor.AutoCloseInputStream(automation.executeShellCommand("am force-stop dev.pocket.agent.fixture"))) {
+                byte[] buffer=new byte[64];while(input.read(buffer)!=-1) {}
+            } catch(Exception ignored) {}
         }
     }
     private int chooserDisplayCount() {
