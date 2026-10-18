@@ -88,6 +88,46 @@ public class RuntimeDeviceTest {
         assertTrue(batchBudget.toString(),batchBudget.getBoolean("nodes_truncated"));
         assertTrue("Batch-sized node payload must leave envelope room: "+batchBudget.toString().length(),batchBudget.toString().length()<4000);
     }
+    @Test public void batchObservationLeaseRecoveryClassifiesOnlyReadFailuresThatNeedReplacement() throws Exception {
+        assertTrue(NativeTools.observationLeaseReplacementNeeded(Json.failure("RESULT_UNKNOWN","Timed out; inspect before repeating the action")));
+        assertTrue(NativeTools.observationLeaseReplacementNeeded(Json.failure("NOT_READY","Shizuku backend disconnected; observe after recovery")));
+        assertTrue(NativeTools.observationLeaseReplacementNeeded(Json.failure("NOT_READY","Virtual display backend disconnected")));
+        assertTrue(NativeTools.observationLeaseReplacementNeeded(Json.failure("NOT_READY","No virtual display for conversation")));
+        assertFalse(NativeTools.observationLeaseReplacementNeeded(Json.failure("STALE_OBSERVATION","Screen changed during observation")));
+        assertFalse(NativeTools.observationLeaseReplacementNeeded(Json.failure("NOT_READY","No active accessibility window yet")));
+        assertFalse(NativeTools.observationLeaseReplacementNeeded(Json.obj("snapshot_id","ready")));
+    }
+    @Test public void batchObservationRecoversMissingNativeLeaseInPlace() throws Exception {
+        DeviceTestAccess.ensureAccessibility();
+        try(NativeTools tools=new NativeTools(context())) {
+            String owner="batch-missing-lease";
+            JSONObject batch=new JSONObject().put("calls",new org.json.JSONArray()
+                .put(new JSONObject().put("name","phone_observe").put("args",new JSONObject())));
+            JSONObject result=tools.execute("phone_batch",batch,owner);
+            assertFalse(result.toString(),result.optBoolean("isError"));
+            assertEquals(result.toString(),"completed",result.optString("status"));
+            JSONObject observed=result.getJSONArray("results").getJSONObject(0).getJSONObject("result");
+            assertTrue(observed.toString(),observed.optBoolean("display_replaced"));
+            assertEquals(observed.toString(),"dev.pocket.agent",observed.optString("package_name"));
+        }
+    }
+    @Test public void batchLeaseReplacementStopsBeforeRemainingCalls() throws Exception {
+        DeviceTestAccess.ensureAccessibility();
+        try(NativeTools tools=new NativeTools(context())) {
+            String owner="batch-replacement-stop";
+            JSONObject batch=new JSONObject().put("calls",new org.json.JSONArray()
+                .put(new JSONObject().put("name","phone_observe").put("args",new JSONObject()))
+                .put(new JSONObject().put("name","phone_apps").put("args",new JSONObject())));
+            JSONObject result=tools.execute("phone_batch",batch,owner);
+            assertTrue(result.toString(),result.optBoolean("isError"));
+            assertEquals(result.toString(),"partial",result.optString("status"));
+            assertTrue(result.toString(),result.optBoolean("display_replaced"));
+            assertEquals(result.toString(),0,result.optInt("stopped_after",-1));
+            assertEquals(result.toString(),1,result.optInt("next_index",-1));
+            assertEquals(result.toString(),1,result.getJSONArray("results").length());
+            assertTrue(result.toString(),result.getJSONArray("results").getJSONObject(0).getJSONObject("result").optBoolean("display_replaced"));
+        }
+    }
     @Test public void coldDisplayBootstrapsAndRapidReacquireStaysHealthy() throws Exception {
         DeviceTestAccess.ensureAccessibility();
         try(NativeTools tools=new NativeTools(context())) {

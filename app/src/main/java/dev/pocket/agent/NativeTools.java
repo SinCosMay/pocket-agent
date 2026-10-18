@@ -85,6 +85,9 @@ final class NativeTools implements AutoCloseable {
                 results.put(entry);
                 if(result.optBoolean("isError")) return Json.obj("isError",true,"code",result.optString("code","BATCH_PARTIAL"),
                     "message",result.optString("message","Batch stopped on an error"),"status","partial","results",results,"stopped_at",i,"retry_safe",false);
+                if(result.optBoolean("display_replaced")&&i+1<calls.length()) return Json.obj("isError",true,"code","NOT_READY",
+                    "message","Display lease was replaced while recovering the observation; prior private-display app state was discarded and remaining batch calls were not dispatched.",
+                    "status","partial","results",results,"stopped_after",i,"next_index",i+1,"retry_safe",false,"display_replaced",true);
                 if(name.equals("phone_observe")) {previousObservation=result;transitionPending=false;expectedPackage=null;}
                 else if(name.equals("phone_open_app")) {transitionPending=true;expectedPackage=callArgs.getString("package_name");transitionStartedMs=android.os.SystemClock.elapsedRealtime();}
                 else if(name.equals("phone_open_url")||name.equals("phone_clock_screen")) {transitionPending=true;expectedPackage=null;transitionStartedMs=android.os.SystemClock.elapsedRealtime();}
@@ -101,6 +104,28 @@ final class NativeTools implements AutoCloseable {
         try {Thread.sleep(120);return true;}
         catch(InterruptedException interrupted) {Thread.currentThread().interrupt();return false;}
     }
+    static boolean observationLeaseReplacementNeeded(JSONObject result) {
+        if(!result.optBoolean("isError"))return false;
+        String code=result.optString("code"),message=result.optString("message").toLowerCase(java.util.Locale.ROOT);
+        return ("RESULT_UNKNOWN".equals(code)&&message.contains("timed out")) ||
+            ("NOT_READY".equals(code)&&(message.contains("shizuku backend")||message.contains("display service disconnected")||
+                message.contains("virtual display backend disconnected")||message.contains("no virtual display")));
+    }
+    private JSONObject replaceObservationLease(String owner) {
+        displays.release(owner);
+        try {return displays.acquire(owner);}
+        catch(ControlException error) {return Json.failure(error.code.name(),error.getMessage());}
+        catch(RuntimeException error) {return Json.failure("NOT_READY","Virtual display recovery failed");}
+    }
+    private static JSONObject markDisplayReplacement(JSONObject result) {
+        try {
+            result.put("display_replaced",true);
+            result.put("display_note","Display lease was replaced after a backend failure; prior app state on the display was discarded.");
+            return result;
+        } catch(org.json.JSONException impossible) {
+            return Json.failure("RESULT_UNKNOWN","Recovered display observation could not be annotated");
+        }
+    }
     private JSONObject observationResult(JSONObject args,String owner,int textBudget) {
         try {return observation(args,owner,textBudget);}
         catch(ControlException error) {return Json.failure(error.code.name(),error.getMessage());}
@@ -109,13 +134,22 @@ final class NativeTools implements AutoCloseable {
     }
     private JSONObject batchObservation(JSONObject args,String owner,int textBudget,boolean transitionPending,String expectedPackage,
                                         JSONObject previousObservation,long transitionStartedMs) {
-        long deadline=android.os.SystemClock.elapsedRealtime()+(transitionPending?2500:2000);
+        long deadline=android.os.SystemClock.elapsedRealtime()+(transitionPending?2500:2000);boolean displayReplaced=false;
         for(;;) {
             JSONObject result=observationResult(args,owner,textBudget);long now=android.os.SystemClock.elapsedRealtime();
             if(result.optBoolean("isError")) {
                 String code=result.optString("code"),message=result.optString("message");
+                String lower=message.toLowerCase(java.util.Locale.ROOT);
+                if(!displayReplaced&&observationLeaseReplacementNeeded(result)) {
+                    JSONObject replacement=replaceObservationLease(owner);
+                    if(replacement.optBoolean("isError"))return replacement;
+                    displayReplaced=true;transitionPending=false;expectedPackage=null;previousObservation=null;
+                    deadline=android.os.SystemClock.elapsedRealtime()+2000;
+                    if(!pauseObservationRetry())return Json.failure("RESULT_UNKNOWN","Interrupted while replacing the private display; inspect before repeating");
+                    continue;
+                }
                 boolean retryable="STALE_OBSERVATION".equals(code) ||
-                    ("NOT_READY".equals(code) && message.toLowerCase(java.util.Locale.ROOT).matches(".*(active accessibility window|screen transition|virtual display|shizuku backend|display service).*"));
+                    ("NOT_READY".equals(code) && lower.matches(".*(active accessibility window|screen transition|virtual display|shizuku backend|display service).*"));
                 if(retryable&&now<deadline) {
                     if(!pauseObservationRetry())return Json.failure("RESULT_UNKNOWN","Interrupted while waiting for screen readiness; inspect before repeating");
                     continue;
@@ -139,7 +173,7 @@ final class NativeTools implements AutoCloseable {
                     }
                 }
             }
-            return result;
+            return displayReplaced?markDisplayReplacement(result):result;
         }
     }
     private JSONObject definition(String name) throws Exception {
