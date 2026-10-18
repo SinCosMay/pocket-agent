@@ -32,7 +32,9 @@
         "max_nodes": {
           "type": "integer",
           "minimum": 0,
-          "maximum": 500
+          "maximum": 500,
+          "default": 40,
+          "description": "Maximum accessibility nodes to request. The default is 40 and observations are additionally byte-bounded; nodes_truncated reports either limit."
         }
       },
       "required": [],
