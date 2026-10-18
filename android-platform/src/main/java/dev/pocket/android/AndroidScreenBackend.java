@@ -367,6 +367,11 @@ public final class AndroidScreenBackend implements ControlBackend {
         } finally {if(current!=null)current.recycle();}
     }
 
+    static AccessibilityNodeInfo requireTraversalChild(AccessibilityNodeInfo child) throws ControlException {
+        if(child==null) throw new ControlException(ACTION_REJECTED,"Target tree contains an unavailable child; observe again");
+        return child;
+    }
+
     private static void find(AccessibilityNodeInfo node,Action a,List<AccessibilityNodeInfo> out,int depth,int[] visited) throws ControlException {
         // An incomplete search cannot establish uniqueness. Fail closed rather than silently truncating it.
         if(depth>60 || ++visited[0]>5000) throw new ControlException(ACTION_REJECTED,"Target tree exceeds safe search limits");
@@ -387,8 +392,8 @@ public final class AndroidScreenBackend implements ControlBackend {
         }
         int descendants=out.size();
         for(int i=0;i<node.getChildCount();i++) {
-            AccessibilityNodeInfo child=node.getChild(i);
-            if(child!=null) try {find(child,a,out,depth+1,visited);} finally {child.recycle();}
+            AccessibilityNodeInfo child=requireTraversalChild(node.getChild(i));
+            try {find(child,a,out,depth+1,visited);} finally {child.recycle();}
         }
         // A matching descendant in this node's own subtree is a more specific hit,
         // even when Android reports child bounds extending beyond the parent. Matches
