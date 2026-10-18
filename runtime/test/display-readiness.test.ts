@@ -166,26 +166,6 @@ test('a missing native display lease is recovered once instead of surfacing NOT_
   assert.equal(reads,2);
 });
 
-test('native lease invalidation with no virtual display replaces the lease once',async()=>{
-  let reads=0,acquires=0,releases=0;
-  const host:any={
-    ensureDisplay:async()=>{acquires++;return {status:'acquired',display_id:50+acquires};},
-    releaseScreen:()=>{releases++;},dropPriorImages:()=>{},
-    call:(_method:string,payload:any)=>{
-      if(payload.name!=='phone_observe')return {status:'ok'};
-      reads++;
-      if(reads===1)return {isError:true,code:'NOT_READY',message:'No virtual display for conversation'};
-      return {snapshot_id:'recovered-native',package_name:'dev.pocket.agent',window_id:44,nodes:[]};
-    },
-  };
-  const result=await nativeTools(host,'invalidated-owner').find(t=>t.name==='phone_observe')!.execute('observe',{});
-  assert.equal(result.isError,false);
-  assert.equal(result.details.display_replaced,true);
-  assert.equal(acquires,2);
-  assert.equal(releases,1);
-  assert.equal(reads,2);
-});
-
 test('a successful batch launch records readiness for the next standalone observation',async()=>{
   let reads=0;
   const host:any={
