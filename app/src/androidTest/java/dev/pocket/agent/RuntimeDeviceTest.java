@@ -63,6 +63,45 @@ public class RuntimeDeviceTest {
         System.out.println("POCKET_NODE_GATE="+gate);
         System.out.println("POCKET_NODE_MEMORY="+h.memoryStats().get(5,TimeUnit.SECONDS));
     }
+    @Test public void observationNodeSerializationStaysBelowToolTextBudget() throws Exception {
+        java.util.List<dev.pocket.control.ControlBackend.Node> nodes=new java.util.ArrayList<>();
+        String hostile=("\\\"\n".repeat(500))+"tail";
+        for(int i=0;i<500;i++)nodes.add(new dev.pocket.control.ControlBackend.Node(i,hostile,hostile,hostile,hostile,
+            0,0,720,1280,true,false,false,true,false,false));
+        JSONObject bounded=NativeTools.boundedObservationNodes(nodes);
+        assertTrue(bounded.toString(),bounded.getBoolean("nodes_truncated"));
+        assertTrue("Serialized node payload must leave room below the 32 KB runtime limit: "+bounded.toString().length(),bounded.toString().length()<25_000);
+        assertTrue(bounded.getJSONArray("nodes").length()<500);
+        if(bounded.getJSONArray("nodes").length()>0) {
+            JSONObject first=bounded.getJSONArray("nodes").getJSONObject(0);
+            assertTrue(first.getString("text").length()<=400);
+            assertTrue(first.getString("description").length()<=400);
+            assertTrue(first.getString("resource_id").length()<=240);
+            assertTrue(first.getString("role").length()<=160);
+        }
+    }
+    @Test public void coldDisplayBootstrapsAndRapidReacquireStaysHealthy() throws Exception {
+        DeviceTestAccess.ensureAccessibility();
+        try(NativeTools tools=new NativeTools(context())) {
+            String owner="rapid-reacquire";
+            for(int i=0;i<8;i++) {
+                JSONObject acquired=tools.execute("phone_screen",new JSONObject().put("action","acquire"),owner);
+                assertFalse("Acquire iteration "+i+": "+acquired,acquired.optBoolean("isError"));
+                assertTrue(acquired.toString(),acquired.optInt("display_id")>0);
+                long deadline=System.currentTimeMillis()+4000;JSONObject observation=new JSONObject();
+                while(System.currentTimeMillis()<deadline) {
+                    observation=tools.execute("phone_observe",new JSONObject(),owner);
+                    if(!observation.optBoolean("isError"))break;
+                    assertEquals(observation.toString(),"NOT_READY",observation.optString("code"));
+                    Thread.sleep(100);
+                }
+                assertFalse("Cold display never became observable on iteration "+i+": "+observation,observation.optBoolean("isError"));
+                assertEquals(observation.toString(),"dev.pocket.agent",observation.optString("package_name"));
+                JSONObject released=tools.execute("phone_screen",new JSONObject().put("action","release"),owner);
+                assertEquals(released.toString(),"released",released.optString("status"));
+            }
+        }
+    }
     @Test public void directNativeFixtureAndMutationLedger() throws Exception {
         DeviceTestAccess.ensureAccessibility();Context c=context();NativeTools tools=new NativeTools(c);String owner="instrumentation-fixture";
         JSONObject caps=tools.execute("phone_capabilities",new JSONObject(),owner);
