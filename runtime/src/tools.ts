@@ -36,6 +36,88 @@ export function toolResult(data:any):any {
   if(latestImage)content.push(latestImage);
   return {content,details:json.length>32000?{isError:true,code:'OUTPUT_LIMIT'}:text,isError:Boolean(data?.isError)||json.length>32000};
 }
+type ObservationState={packageName:string,windowId:number,signature:string};
+type UiTransition={startedAt:number,deadline:number,expectedPackage?:string,previous?:ObservationState};
+type OwnerUiState={last?:ObservationState,transition?:UiTransition};
+const uiStates=new WeakMap<object,Map<string,OwnerUiState>>();
+
+function ownerUiState(host:any,owner:string):OwnerUiState {
+  let owners=uiStates.get(host);
+  if(!owners){owners=new Map();uiStates.set(host,owners);}
+  let state=owners.get(owner);
+  if(!state){state={};owners.set(owner,state);}
+  return state;
+}
+function forgetOwnerUiState(host:any,owner:string):void {uiStates.get(host)?.delete(owner);}
+function observationState(result:any):ObservationState {
+  const nodes=Array.isArray(result?.nodes)?result.nodes.slice(0,40).map((n:any)=>[n?.resource_id,n?.text,n?.description,n?.role,n?.bounds]):[];
+  return {packageName:String(result?.package_name??''),windowId:Number(result?.window_id??-1),signature:JSON.stringify(nodes)};
+}
+function transitionRetryable(result:any):boolean {
+  if(!result?.isError)return false;
+  if(result.code==='STALE_OBSERVATION')return true;
+  return result.code==='NOT_READY'&&/active accessibility window|screen transition|virtual display|shizuku backend|display service/i.test(String(result.message??''));
+}
+function backendLeaseLost(result:any):boolean {
+  return result?.isError&&result.code==='NOT_READY'&&/shizuku backend|display service disconnected|virtual display backend disconnected/i.test(String(result.message??''));
+}
+function observationBackendTimedOut(result:any):boolean {
+  return result?.isError&&result.code==='RESULT_UNKNOWN'&&/timed out/i.test(String(result.message??''));
+}
+async function pauseForUi(ms:number,signal?:AbortSignal):Promise<void> {
+  if(signal?.aborted)throw new Error('Display request cancelled');
+  await new Promise<void>((resolve,reject)=>{
+    const timer=setTimeout(done,ms);
+    const abort=()=>{clearTimeout(timer);signal?.removeEventListener('abort',abort);reject(new Error('Display request cancelled'));};
+    function done(){signal?.removeEventListener('abort',abort);resolve();}
+    signal?.addEventListener('abort',abort,{once:true});
+  });
+}
+function markUiTransition(host:any,owner:string,expectedPackage?:string):void {
+  const state=ownerUiState(host,owner),now=Date.now();
+  state.transition={startedAt:now,deadline:now+2500,expectedPackage,previous:state.last};
+}
+async function observeReady(host:any,owner:string,args:any,signal?:AbortSignal):Promise<any> {
+  let state=ownerUiState(host,owner);
+  const readinessDeadline=Date.now()+2000;
+  let recoveredLease=false,last:any;
+  for(;;) {
+    if(signal?.aborted)throw new Error('Display request cancelled');
+    last=host.call('tool',{name:'phone_observe',args,owner});
+    if((backendLeaseLost(last)||observationBackendTimedOut(last))&&!recoveredLease&&host.ensureDisplay) {
+      host.releaseScreen?.(owner);forgetOwnerUiState(host,owner);
+      await pauseForUi(100,signal);
+      const acquired=await host.ensureDisplay(owner,signal);
+      if(acquired?.isError)return acquired;
+      recoveredLease=true;state=ownerUiState(host,owner);
+      continue;
+    }
+    const now=Date.now(),transition=state.transition;
+    if(transitionRetryable(last)&&now<(transition?.deadline??readinessDeadline)) {
+      await pauseForUi(120,signal);
+      continue;
+    }
+    if(last?.isError)return last;
+    const current=observationState(last);
+    if(transition) {
+      if(transition.expectedPackage&&current.packageName!==transition.expectedPackage) {
+        if(now<transition.deadline){await pauseForUi(120,signal);continue;}
+        state.transition=undefined;
+        return {isError:true,code:'NOT_READY',message:`Launch transition to ${transition.expectedPackage} was not observable before the readiness deadline; last observed package was ${current.packageName||'unknown'}. Observe again before acting.`};
+      }
+      if(!transition.expectedPackage) {
+        const changed=!transition.previous||current.packageName!==transition.previous.packageName||current.windowId!==transition.previous.windowId||current.signature!==transition.previous.signature;
+        const elapsed=now-transition.startedAt;
+        if(!changed&&elapsed<1200&&now<transition.deadline){await pauseForUi(120,signal);continue;}
+        if(!transition.previous&&elapsed<350&&now<transition.deadline){await pauseForUi(120,signal);continue;}
+      }
+      state.transition=undefined;
+    }
+    state.last=current;
+    return last;
+  }
+}
+
 export function nativeTools(host:any,owner:string,grant?:readonly string[]):any[] {
   return schemas.filter(s=>!grant || grant.includes(s.name)).map(s=>({
     name:s.name,label:s.name,description:s.description,
@@ -46,7 +128,7 @@ export function nativeTools(host:any,owner:string,grant?:readonly string[]):any[
       if(s.name==='phone_batch' && args.calls?.some((x:any)=>!schemas.some(t=>t.name===x.name) || (grant && !grant.includes(x.name)))) throw new Error('Batch tool exceeds tool grant');
       if(s.name==='phone_screen'){
         if(args.action==='release'){
-          host.releaseScreen?.(owner);
+          host.releaseScreen?.(owner);forgetOwnerUiState(host,owner);
           return toolResult({status:'released'});
         }
         if(args.action==='acquire'&&host.ensureDisplay)return toolResult(await host.ensureDisplay(owner,signal));
@@ -59,10 +141,15 @@ export function nativeTools(host:any,owner:string,grant?:readonly string[]):any[
       }
       if(signal?.aborted)throw new Error('Cancelled before native dispatch');
       if(s.name==='phone_observe'||(s.name==='phone_batch'&&args.calls?.some((x:any)=>x.name==='phone_observe')))host.dropPriorImages(owner);
-      const result=host.call('tool',{name:s.name,args,owner});
+      const result=s.name==='phone_observe'?await observeReady(host,owner,args,signal):host.call('tool',{name:s.name,args,owner});
+      if(!result?.isError) {
+        if(s.name==='phone_open_app')markUiTransition(host,owner,args.package_name);
+        else if(s.name==='phone_open_url'||s.name==='phone_clock_screen')markUiTransition(host,owner);
+      }
       if(needsUi&&result?.isError&&result.code==='NOT_READY'&&
-        /virtual display|no virtual display|shizuku backend|display service/i.test(String(result.message??'')))
-        host.releaseScreen?.(owner);
+        /virtual display|no virtual display|shizuku backend|display service/i.test(String(result.message??''))) {
+        host.releaseScreen?.(owner);forgetOwnerUiState(host,owner);
+      }
       return toolResult(result);
     },
   }));
