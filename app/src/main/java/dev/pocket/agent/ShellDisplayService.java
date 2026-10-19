@@ -211,7 +211,8 @@ public final class ShellDisplayService extends IDisplayShell.Stub {
         boolean found=false;
         for(String item:current.split(":")) {
             if(item.isBlank())continue;
-            if(item.equals(componentName)){found=true;continue;}
+            android.content.ComponentName parsed=android.content.ComponentName.unflattenFromString(item);
+            if(component.equals(parsed)){found=true;continue;}
             services.add(item);
         }
         if(!found)return false;
