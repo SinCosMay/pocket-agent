@@ -17,6 +17,7 @@ final class ShizukuDisplayClient implements AutoCloseable {
     private final Shizuku.UserServiceArgs args;
     private final Object readyLock=new Object();
     private final Runnable disconnected;
+    private final boolean removeServiceOnClose;
     private volatile IDisplayShell remote;
     private volatile boolean binding;
     private volatile long bindingStartedMs;
@@ -24,7 +25,7 @@ final class ShizukuDisplayClient implements AutoCloseable {
     private final ServiceConnection connection=new ServiceConnection() {
         @Override public void onServiceConnected(ComponentName name,IBinder binder) {
             if(closed) {
-                try {Shizuku.unbindUserService(args,connection,true);}catch(Exception ignored){}
+                try {Shizuku.unbindUserService(args,connection,removeServiceOnClose);}catch(Exception ignored){}
                 return;
             }
             IDisplayShell shell=IDisplayShell.Stub.asInterface(binder);
@@ -39,8 +40,10 @@ final class ShizukuDisplayClient implements AutoCloseable {
     private final Shizuku.OnBinderReceivedListener received=this::tryBind;
     private final Shizuku.OnBinderDeadListener died=this::loseService;
 
-    ShizukuDisplayClient(Context context,Runnable disconnected) {
+    ShizukuDisplayClient(Context context,Runnable disconnected) {this(context,disconnected,true);}
+    ShizukuDisplayClient(Context context,Runnable disconnected,boolean removeServiceOnClose) {
         this.disconnected=disconnected;
+        this.removeServiceOnClose=removeServiceOnClose;
         args=new Shizuku.UserServiceArgs(new ComponentName(context,ShellDisplayService.class))
             .daemon(false).tag("pocket-agent-displays").processNameSuffix("display").version(1);
         Shizuku.addBinderReceivedListenerSticky(received);
@@ -145,6 +148,6 @@ final class ShizukuDisplayClient implements AutoCloseable {
         synchronized(readyLock) {readyLock.notifyAll();}
         Shizuku.removeBinderReceivedListener(received);
         Shizuku.removeBinderDeadListener(died);
-        try {if(available()) Shizuku.unbindUserService(args,connection,true);}catch(Exception ignored){}
+        try {if(available()) Shizuku.unbindUserService(args,connection,removeServiceOnClose);}catch(Exception ignored){}
     }
 }

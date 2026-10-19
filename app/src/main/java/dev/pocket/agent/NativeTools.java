@@ -267,6 +267,7 @@ final class NativeTools implements AutoCloseable {
         if(value==null)return "";
         return value.length()>max?value.substring(0,max):value;
     }
+    static boolean shellDisplayKeySupported(boolean physicalInteractive,boolean physicalLocked) {return physicalInteractive&&!physicalLocked;}
     private AccessibilityProxyBackend screen(String owner) throws ControlException {return displays.screen(owner);}
     private static Integer integer(JSONObject a,String name) throws Exception {return a.has(name)?a.getInt(name):null;}
     private static String string(JSONObject a,String name) throws Exception {return a.has(name)?a.getString(name):null;}
@@ -351,6 +352,10 @@ final class NativeTools implements AutoCloseable {
                 ControlBackend.Result result;
                 if(action.kind()==ControlBackend.Kind.KEY && !"enter".equals(action.key())) {
                     screen(owner).validateAction(action);
+                    boolean physicalInteractive=context.getSystemService(PowerManager.class).isInteractive();
+                    boolean physicalLocked=context.getSystemService(KeyguardManager.class).isKeyguardLocked();
+                    if(!shellDisplayKeySupported(physicalInteractive,physicalLocked))
+                        throw new ControlException(UNSUPPORTED,"Virtual-display Home/Back/Recents are unavailable while the physical device is asleep or locked; use in-app semantic or gesture navigation");
                     int key=switch(action.key()==null?"":action.key()) {case "back"->4;case "home"->3;case "recents"->187;default->throw new ControlException(UNSUPPORTED,"Key must be home, back, recents or enter");};
                     displays.key(owner,key);
                     result=new ControlBackend.Result("dispatched","Display-targeted key accepted; task outcome not yet verified");

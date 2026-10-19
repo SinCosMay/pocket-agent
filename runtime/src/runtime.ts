@@ -350,9 +350,17 @@ export class PocketRuntime {
         if(!cmd.conversationId&&this.main.full())throw new Error('Main conversation is at the mobile context limit; history and pending results were retained');
         if(cmd.conversationId) void this.sendWorker(cmd.conversationId,cmd.text).catch(this.reportError);
         else {
+          const previousPaused=this.mainPaused;
           this.mainPaused=false;
           const voiceSessionId=typeof cmd.voiceSessionId==='string'&&/^[a-f0-9-]{36}$/.test(cmd.voiceSessionId)?cmd.voiceSessionId:undefined;
-          this.inbox.push({type:'user',text:cmd.text,...(voiceSessionId?{voiceSessionId}:{})});this.save();void this.pump();
+          const queued={type:'user',text:cmd.text,...(voiceSessionId?{voiceSessionId}:{})};
+          this.inbox.push(queued);
+          if(!this.save()) {
+            if(this.inbox.at(-1)===queued)this.inbox.pop();
+            this.mainPaused=previousPaused;
+            throw new Error('Could not durably queue the message');
+          }
+          queueMicrotask(()=>void this.pump());
         }
       } else if(cmd.action==='stop_main') {
         if(cmd.voiceSessionId===undefined) this.main.agent.abort();
@@ -542,10 +550,14 @@ export class PocketRuntime {
   }
   private coalesce():void {
     if(this.pendingSave||this.restoring)return;
-    this.pendingSave=setTimeout(()=>{this.pendingSave=undefined;this.save();this.publish();},120);
+    this.pendingSave=setTimeout(()=>{
+      this.pendingSave=undefined;
+      const saved=this.save();this.publish();
+      if(saved&&this.inbox.length&&!this.mainPaused)void this.pump();
+    },120);
   }
-  save():void {
-    if(this.restoring)return;
+  save():boolean {
+    if(this.restoring)return true;
     let chunked=false;
     try {
       const workerMessages:any={};
@@ -560,14 +572,16 @@ export class PocketRuntime {
       }
       if(serialized.length>MAX_DURABLE_CHECKPOINT_CHARS)throw new Error('Durable checkpoint exceeds the bounded 24 MB retention budget');
       const direct=JSON.stringify({state});
-      if(direct.length<=DIRECT_STORE_LIMIT) {this.call('store.save',{state});return;}
+      if(direct.length<=DIRECT_STORE_LIMIT) {this.call('store.save',{state});return true;}
       this.call('store.save.begin',{chars:serialized.length});chunked=true;
       for(let offset=0;offset<serialized.length;offset+=STORE_CHUNK_CHARS)
         this.call('store.save.chunk',{chunk:serialized.slice(offset,offset+STORE_CHUNK_CHARS)});
       this.call('store.save.commit',{});chunked=false;
+      return true;
     } catch(e) {
       if(chunked)try {this.call('store.save.abort',{});} catch {}
       this.reportError(e);
+      return false;
     }
   }
   state():any {

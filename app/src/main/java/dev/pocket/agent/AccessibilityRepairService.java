@@ -32,7 +32,9 @@ public final class AccessibilityRepairService extends Service {
                 String prerequisite=ShizukuDisplayClient.prerequisites();
                 if(!"idle".equals(prerequisite))outcome=prerequisite;
                 else {
-                    client=new ShizukuDisplayClient(this,()->{});
+                    // Recovery borrows the shared display UserService. Closing this temporary
+                    // client must only drop its binding, never remove active worker displays.
+                    client=new ShizukuDisplayClient(this,()->{},false);
                     boolean repaired=client.repairAccessibility(new ComponentName(this,AgentAccessibility.class).flattenToShortString());
                     outcome=repaired?"triggered":"failed";
                 }

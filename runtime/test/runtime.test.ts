@@ -469,12 +469,46 @@ test('coalesced persistence failure is contained and cannot escape the timer cal
  assert.match(runtime.state().lastError,/forced durable failure/);
 });
 
-test('stop all always clears its stopping latch when cancellation setup fails',async()=>{
- const runtime=new PocketRuntime(new Bridge()),internal=runtime as any;
- internal.runtime.listConversations=()=>{throw new Error('forced cancellation setup failure');};
- await internal.stopAll();
- assert.equal(internal.stoppingAll,false);
- assert.match(internal.lastError,/forced cancellation setup failure/);
+test('main inference never starts until its delivery checkpoint is durable',async()=>{
+ class GateBridge extends Bridge {
+  fail=false;
+  override call(method:string,argsJson:string):string {
+   if(this.fail&&method.startsWith('store.save'))throw new Error('forced delivery checkpoint failure');
+   return super.call(method,argsJson);
+  }
+ }
+ const bridge=new GateBridge(),runtime=new PocketRuntime(bridge),internal=runtime as any;
+ let continues=0;
+ (runtime.main as any).continue=async()=>{continues++;};
+ internal.inbox.push({type:'user',text:'must persist before inference'});
+ bridge.fail=true;
+ await internal.pump();
+ assert.equal(continues,0);
+ assert.equal(internal.inbox.length,1);
+ assert.ok(!runtime.state().messages.some((message:any)=>message.text==='must persist before inference'));
+ assert.match(runtime.state().lastError,/forced delivery checkpoint failure/);
+ if(internal.pendingSave){clearTimeout(internal.pendingSave);internal.pendingSave=undefined;}
+ bridge.fail=false;
+ await internal.pump();
+ assert.equal(continues,1);
+ assert.equal(internal.inbox.length,0);
+});
+
+test('stop all always clears its stopping latch when cancellation or abort setup fails',async()=>{
+ {
+  const runtime=new PocketRuntime(new Bridge()),internal=runtime as any;
+  internal.runtime.listConversations=()=>{throw new Error('forced cancellation setup failure');};
+  await internal.stopAll();
+  assert.equal(internal.stoppingAll,false);
+  assert.match(internal.lastError,/forced cancellation setup failure/);
+ }
+ {
+  const runtime=new PocketRuntime(new Bridge()),internal=runtime as any;
+  runtime.main.agent.abort=()=>{throw new Error('forced abort failure');};
+  await internal.stopAll();
+  assert.equal(internal.stoppingAll,false);
+  assert.match(internal.lastError,/forced abort failure/);
+ }
 });
 
 test('voice-scoped interruption aborts only its matching turn and removes stale queued speech',()=>{
