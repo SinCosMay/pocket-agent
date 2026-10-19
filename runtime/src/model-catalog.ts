@@ -1,3 +1,4 @@
+import { getPiUserAgent } from '@earendil-works/pi-ai/utils/pi-user-agent';
 import { modelFor, REASONING_EFFORTS, type ProviderConfig, type ProviderCredentials, type ReasoningEffort } from './provider.js';
 import { CODEX_CATALOG_COMPAT_VERSION, ensureCodexCredentials } from './codex-auth.js';
 
@@ -57,9 +58,10 @@ export async function discoverProviderModels(
   if (mode !== 'opencode' && token?.trim()) headers.Authorization = 'Bearer ' + token;
   if (account) {
     headers['ChatGPT-Account-Id'] = auth!.accountId;
-    // Keep discovery aligned with the Pi Codex inference identity rather than
-    // impersonating a first-party Codex surface.
+    // Current Codex catalog requests carry originator and User-Agent. Use Pi's
+    // own identity for both and never accept a caller-controlled discovery URL.
     headers.originator = CODEX_MODELS_ORIGINATOR;
+    headers['User-Agent'] = getPiUserAgent();
   }
   let response: Response;
   try {
