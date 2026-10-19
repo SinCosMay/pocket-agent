@@ -73,8 +73,13 @@ jobs:
             adb install -r fixture/build/outputs/apk/debug/fixture-debug.apk
             adb uninstall dev.pocket.agent || true
             adb uninstall dev.pocket.agent.test || true
+            # PhoneTargetDeviceTest exercises the same hidden WindowManager IME policy used by
+            # the privileged Shizuku shell UserService. Enable non-SDK access only on this
+            # disposable emulator so instrumentation can reach that platform API too.
+            adb shell settings put global hidden_api_policy 1
             ./gradlew --no-daemon -PvoiceEmulatorTest :app:connectedDebugAndroidTest -Pandroid.testInstrumentationRunnerArguments.class=dev.pocket.agent.PhoneTargetDeviceTest
             ./gradlew --no-daemon -PvoiceEmulatorTest :app:connectedDebugAndroidTest -Pandroid.testInstrumentationRunnerArguments.class=dev.pocket.agent.CrashResilienceDeviceTest
+            adb shell settings delete global hidden_api_policy
             ./gradlew --no-daemon :android-platform:connectedDebugAndroidTest -Pandroid.testInstrumentationRunnerArguments.class=dev.pocket.android.NativeAndroidApisTest#unavailableTraversalChildFailsClosed
             adb uninstall dev.pocket.agent || true
             adb uninstall dev.pocket.agent.test || true
