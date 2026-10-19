@@ -484,10 +484,10 @@ export class PocketRuntime {
         if(!this.busy&&!this.observing&&!this.pumping&&!this.deliveryTransaction&&!tasks.some(c=>c.currentGeneration||c.isStopping)){clean=true;break;}
         await new Promise(resolve=>setTimeout(resolve,10));
       }
+      this.save();
       if(this.observerSession){try{this.observerSession.abort();}catch{}try{this.observerSession.dispose();}catch{}this.observerSession=undefined;}
       for(const session of this.sessions.values())try{session.dispose();}catch{}
       try{this.main.dispose();}catch{}
-      this.save();
     } catch(e) {this.reportError(e);}
     finally {
       this.emit({type:'shutdown_ready',clean});
