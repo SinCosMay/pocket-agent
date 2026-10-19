@@ -76,7 +76,7 @@ test('Codex account discovery uses fixed origin, account-scoped authorization an
  const h=new Headers(request.init?.headers);
  assert.equal(h.get('authorization'),'Bearer '+auth.accessToken);
  assert.equal(h.get('chatgpt-account-id'),auth.accountId);
- assert.equal(h.get('version'),null);
+ assert.equal(h.get('version'),CODEX_MODELS_CLIENT_VERSION);
  assert.equal(h.get('originator'),CODEX_MODELS_ORIGINATOR);
  assert.match(h.get('user-agent')??'',/^pi \(/);
  assert.equal(request.init?.method,'GET');
