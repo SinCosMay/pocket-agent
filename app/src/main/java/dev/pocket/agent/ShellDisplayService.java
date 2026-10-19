@@ -17,6 +17,9 @@ import java.util.LinkedHashMap;
 import java.util.LinkedHashSet;
 import java.util.Map;
 import java.util.Set;
+import java.io.ByteArrayOutputStream;
+import java.io.InputStream;
+import java.nio.charset.StandardCharsets;
 import java.util.concurrent.TimeUnit;
 import java.util.regex.Matcher;
 import java.util.regex.Pattern;
@@ -31,7 +34,7 @@ public final class ShellDisplayService extends IDisplayShell.Stub {
     private static final int TRUSTED=1<<10, OWN_GROUP=1<<11, ALWAYS_UNLOCKED=1<<12;
     private static final int OWN_FOCUS=1<<14, DEVICE_GROUP=1<<15;
     private static final int DISPLAY_IME_POLICY_HIDE=2;
-    private static final Pattern ROOT_TASK=Pattern.compile("(?i)(?:RootTask\\s+(?:id=|#)|Stack\\s+id=)(\\d+).*?(?:m?displayId)\\s*[=:]\\s*(\\d+)");
+    private static final Pattern ROOT_TASK=Pattern.compile("(?i)(?:RootTask\\s+(?:id=|#)|Stack\\s+id=|Task\\{[^#]*#)(\\d+).*?(?:m?displayId|displayId)\\s*[=:]\\s*(\\d+)");
     private final Context context;
     private final Map<Integer,OwnedDisplay> displays=new LinkedHashMap<>();
     private HandlerThread frameThread;
@@ -109,7 +112,7 @@ public final class ShellDisplayService extends IDisplayShell.Stub {
     @Override public synchronized void removeDisplay(int id) {
         owned(id);
         OwnedDisplay owned=displays.remove(id);
-        for(int rootTask:owned.rootTasks) exec("/system/bin/am","stack","remove",String.valueOf(rootTask));
+        reconcileAndRemoveTasks(id,owned);
         owned.close();
         if(displays.isEmpty() && frameThread!=null) {frameThread.quitSafely();frameThread=null;}
     }
@@ -130,31 +133,42 @@ public final class ShellDisplayService extends IDisplayShell.Stub {
         }
         return result;
     }
-    private static String execOutput(String... command) {
+    private static final class CommandResult {
+        final boolean ok; final String output;
+        CommandResult(boolean ok,String output){this.ok=ok;this.output=output;}
+    }
+    private static CommandResult run(String... command) {
         ProcessBuilder builder=new ProcessBuilder(command).redirectErrorStream(true);
-        java.lang.Process child=null;
+        java.lang.Process child=null;Thread reader=null;ByteArrayOutputStream bytes=new ByteArrayOutputStream();
         try {
             child=builder.start();
-            if(!child.waitFor(8,TimeUnit.SECONDS)) {child.destroyForcibly();return "";}
-            byte[] output=child.getInputStream().readAllBytes();
-            return child.exitValue()==0?new String(output,java.nio.charset.StandardCharsets.UTF_8):"";
+            InputStream stream=child.getInputStream();
+            reader=new Thread(()->{
+                byte[] buffer=new byte[4096];int read,total=0;
+                try {
+                    while((read=stream.read(buffer))!=-1) {
+                        int keep=Math.min(read,262_144-total);
+                        if(keep>0){bytes.write(buffer,0,keep);total+=keep;}
+                    }
+                } catch(Exception ignored) {}
+            },"PocketShellCommandOutput");
+            reader.setDaemon(true);reader.start();
+            if(!child.waitFor(8,TimeUnit.SECONDS)) {
+                child.destroy();
+                if(!child.waitFor(250,TimeUnit.MILLISECONDS))child.destroyForcibly();
+                return new CommandResult(false,"");
+            }
+            if(reader!=null)reader.join(250);
+            return new CommandResult(child.exitValue()==0,bytes.toString(StandardCharsets.UTF_8));
         } catch(Exception e) {
-            if(child!=null) child.destroyForcibly();
-            return "";
+            if(child!=null)child.destroyForcibly();
+            return new CommandResult(false,"");
+        } finally {
+            if(reader!=null&&reader.isAlive())reader.interrupt();
         }
     }
-    private static boolean exec(String... command) {
-        ProcessBuilder builder=new ProcessBuilder(command).redirectErrorStream(true);
-        java.lang.Process child=null;
-        try {
-            child=builder.start();
-            if(!child.waitFor(8,TimeUnit.SECONDS)) {child.destroyForcibly();return false;}
-            return child.exitValue()==0;
-        } catch(Exception e) {
-            if(child!=null) child.destroyForcibly();
-            return false;
-        }
-    }
+    private static String execOutput(String... command) {CommandResult result=run(command);return result.ok?result.output:"";}
+    private static boolean exec(String... command) {return run(command).ok;}
     private static Set<String> accessibilityServices(String raw) {
         Set<String> services=new LinkedHashSet<>();
         if(raw==null)return services;
@@ -189,21 +203,39 @@ public final class ShellDisplayService extends IDisplayShell.Stub {
         current.add(component.flattenToShortString());
         return putAccessibilityServices(current);
     }
-    private boolean launchTracked(int id,String... command) {
-        Set<Integer> before=parseRootTasks(execOutput("/system/bin/am","stack","list"),id);
-        if(!exec(command))return false;
-        long deadline=android.os.SystemClock.elapsedRealtime()+1200;
-        do {
-            Set<Integer> after=parseRootTasks(execOutput("/system/bin/am","stack","list"),id);
-            after.removeAll(before);
-            if(!after.isEmpty()) {
-                OwnedDisplay owned=displays.get(id);
-                if(owned!=null)owned.rootTasks.addAll(after);
-                break;
+    private Set<Integer> rootTasksOnDisplay(int id) {
+        Set<Integer> result=parseRootTasks(execOutput("/system/bin/am","stack","list"),id);
+        if(result.isEmpty())result.addAll(parseRootTasks(execOutput("/system/bin/dumpsys","activity","activities"),id));
+        return result;
+    }
+    private void reconcileAndRemoveTasks(int id,OwnedDisplay owned) {
+        // Every root task on this shell-owned virtual display belongs to this lease.
+        // Reconcile immediately before release so tasks created after launch tracking
+        // cannot migrate into display 0 / Recents when Android destroys the display.
+        for(int pass=0;pass<3;pass++) {
+            owned.rootTasks.addAll(rootTasksOnDisplay(id));
+            if(owned.rootTasks.isEmpty()) {
+                if(pass<2)try {Thread.sleep(80);} catch(InterruptedException e){Thread.currentThread().interrupt();break;}
+                continue;
             }
-            try {Thread.sleep(60);} catch(InterruptedException e) {Thread.currentThread().interrupt();break;}
+            for(int rootTask:java.util.List.copyOf(owned.rootTasks))
+                if(exec("/system/bin/am","stack","remove",String.valueOf(rootTask)))owned.rootTasks.remove(rootTask);
+            if(rootTasksOnDisplay(id).isEmpty())break;
+        }
+    }
+    private boolean launchTracked(int id,String... command) {
+        Set<Integer> before=rootTasksOnDisplay(id);
+        if(!exec(command))return false;
+        long deadline=android.os.SystemClock.elapsedRealtime()+3000;
+        do {
+            Set<Integer> now=rootTasksOnDisplay(id);
+            OwnedDisplay owned=displays.get(id);
+            if(owned!=null)owned.rootTasks.addAll(now);
+            Set<Integer> created=new LinkedHashSet<>(now);created.removeAll(before);
+            if(!created.isEmpty())return true;
+            try {Thread.sleep(75);} catch(InterruptedException e) {Thread.currentThread().interrupt();return false;}
         } while(android.os.SystemClock.elapsedRealtime()<deadline);
-        return true;
+        return false;
     }
     @Override public synchronized boolean launchActivity(int id,String componentName) {
         owned(id);
@@ -239,9 +271,9 @@ public final class ShellDisplayService extends IDisplayShell.Stub {
         return "uid="+Process.myUid()+";display_count="+displays.size()+";android="+Build.VERSION.SDK_INT;
     }
     @Override public synchronized void destroy() {
-        for(OwnedDisplay d:displays.values()) {
-            for(int rootTask:d.rootTasks) exec("/system/bin/am","stack","remove",String.valueOf(rootTask));
-            try {d.close();}catch(Exception ignored){}
+        for(Map.Entry<Integer,OwnedDisplay> entry:displays.entrySet()) {
+            reconcileAndRemoveTasks(entry.getKey(),entry.getValue());
+            try {entry.getValue().close();}catch(Exception ignored){}
         }
         displays.clear();
         if(frameThread!=null) {frameThread.quitSafely();frameThread=null;}
