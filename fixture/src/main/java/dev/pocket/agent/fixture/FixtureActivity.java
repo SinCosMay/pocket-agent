@@ -45,6 +45,12 @@ public final class FixtureActivity extends Activity {
   TextView status=new TextView(this);status.setText("CHOOSER_READY");status.setContentDescription("CHOOSER_STATUS");
   outer.setOnClickListener(v->status.setText("OUTER_CLICKED"));
   outer.setOnLongClickListener(v->{status.setText("OUTER_LONG_CLICKED");return true;});
+  if("backdrop_sibling".equals(mode)) {
+   FrameLayout backdrop=new FrameLayout(this);backdrop.setContentDescription("CHOOSER_BACKDROP");
+   backdrop.setOnClickListener(v->status.setText("BACKDROP_CLICKED"));
+   backdrop.setOnLongClickListener(v->{status.setText("BACKDROP_LONG_CLICKED");return true;});
+   outer.addView(backdrop,new FrameLayout.LayoutParams(-1,-1));
+  }
   FrameLayout panel=new FrameLayout(this);panel.setContentDescription("CHOOSER_PANEL");
   panel.setOnClickListener(v->status.setText("PANEL_CLICKED"));
   panel.setOnLongClickListener(v->{status.setText("PANEL_LONG_CLICKED");return true;});
@@ -62,6 +68,13 @@ public final class FixtureActivity extends Activity {
   if("long_parent".equals(mode))row.setLongClickable(false);
   if("disabled_label".equals(mode))label.setEnabled(false);
   if("invisible".equals(mode) || "invisible_only".equals(mode))row.setVisibility(android.view.View.INVISIBLE);
+  if("many_overlaps".equals(mode)) for(int i=0;i<40;i++) {
+   FrameLayout competing=new FrameLayout(this);competing.setContentDescription("MANY_COMPETING_"+i);
+   competing.setOnClickListener(v->status.setText("COMPETING_CLICKED"));
+   competing.setOnLongClickListener(v->{status.setText("COMPETING_LONG_CLICKED");return true;});
+   FrameLayout.LayoutParams params=new FrameLayout.LayoutParams(400,200);params.leftMargin=60;params.topMargin=100;
+   panel.addView(competing,params);
+  }
   if("overlap".equals(mode) || "contained_sibling".equals(mode) || "ineligible_siblings".equals(mode)) {
    FrameLayout competing=new FrameLayout(this);competing.setContentDescription("COMPETING_ROW");
    competing.setOnClickListener(v->status.setText("COMPETING_CLICKED"));

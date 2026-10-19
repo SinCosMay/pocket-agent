@@ -145,6 +145,12 @@ public class PhoneTargetDeviceTest {
             c.observed(kind==Kind.CLICK?"CHOOSER_SELECTED":"CHOOSER_LONG_SELECTED");
         }
     }
+    @Test public void coveredBackdropSiblingYieldsToForegroundOption() throws Exception {
+        for(Kind kind:new Kind[]{Kind.CLICK,Kind.LONG_CLICK})try(Chooser c=new Chooser("backdrop_sibling")) {
+            assertEquals("dispatched",c.screen.execute(c.action(kind,null,true)).status());
+            c.observed(kind==Kind.CLICK?"CHOOSER_SELECTED":"CHOOSER_LONG_SELECTED");
+        }
+    }
     @Test public void overlappingSiblingTargetsRemainAmbiguousEvenWhenBoundsNest() throws Exception {
         for(String mode:new String[]{"overlap","contained_sibling"})
             for(Kind kind:new Kind[]{Kind.CLICK,Kind.LONG_CLICK})try(Chooser c=new Chooser(mode)) {
@@ -153,6 +159,11 @@ public class PhoneTargetDeviceTest {
                 a=new Action(a.kind(),a.snapshotId(),a.x()-50,a.y(),null,null,0,null,false,null,null,null);
                 c.rejected(a,ControlException.Code.AMBIGUOUS_TARGET);
             }
+    }
+    @Test public void excessiveCoordinateHitsRemainAmbiguous() throws Exception {
+        for(Kind kind:new Kind[]{Kind.CLICK,Kind.LONG_CLICK})try(Chooser c=new Chooser("many_overlaps")) {
+            c.rejected(c.action(kind,null,true),ControlException.Code.AMBIGUOUS_TARGET);
+        }
     }
     @Test public void rawGesturesReachChooserOnRequestedVirtualDisplayWithDispatchOnlyReceipts() throws Exception {
         for(Kind kind:new Kind[]{Kind.TAP,Kind.LONG_PRESS})try(Chooser c=new Chooser("normal")) {

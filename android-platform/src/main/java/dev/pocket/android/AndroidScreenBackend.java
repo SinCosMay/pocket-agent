@@ -46,6 +46,7 @@ public final class AndroidScreenBackend implements ControlBackend {
     private static final int SCREENSHOT_THROTTLE_RETRIES = 1;
     private static final long TEXT_VERIFICATION_TIMEOUT_MS = 1_500;
     private static final long TEXT_VERIFICATION_POLL_MS = 75;
+    private static final int MAX_BACKGROUND_PRUNE_HITS = 32;
 
     public AndroidScreenBackend(AccessibilityService service) {this(service,Display.DEFAULT_DISPLAY);}
     public AndroidScreenBackend(AccessibilityService service,int displayId) {if(displayId<0)throw new IllegalArgumentException("displayId");this.service=service;this.displayId=displayId;}
@@ -345,6 +346,7 @@ public final class AndroidScreenBackend implements ControlBackend {
             List<AccessibilityNodeInfo> matches=new ArrayList<>();
             try {
                 find(root,a,matches,0,new int[]{0});
+                if(a.selector()==null&&clickKind(a)&&matches.size()>1)pruneObscuredBackgroundHits(matches);
                 if(matches.size()!=1) throw new ControlException(matches.isEmpty()?ACTION_REJECTED:AMBIGUOUS_TARGET,
                     "Target must match exactly one node");
                 node=AccessibilityNodeInfo.obtain(matches.get(0));
@@ -392,6 +394,54 @@ public final class AndroidScreenBackend implements ControlBackend {
     static AccessibilityNodeInfo requireTraversalChild(AccessibilityNodeInfo child) throws ControlException {
         if(child==null) throw new ControlException(ACTION_REJECTED,"Target tree contains an unavailable child; observe again");
         return child;
+    }
+
+    private record CoordinateHit(AccessibilityNodeInfo node,Rect bounds,int windowId,boolean leaf,int drawingOrder,AccessibilityNodeInfo parent) {}
+
+    private static void pruneObscuredBackgroundHits(List<AccessibilityNodeInfo> matches) {
+        // Above this bound, preserve ambiguity rather than spending quadratic work on the main thread.
+        if(matches.size()>MAX_BACKGROUND_PRUNE_HITS)return;
+        List<CoordinateHit> hits=new ArrayList<>(matches.size());
+        try {
+            for(AccessibilityNodeInfo node:matches) {
+                Rect bounds=new Rect();node.getBoundsInScreen(bounds);
+                hits.add(new CoordinateHit(node,bounds,node.getWindowId(),node.getChildCount()==0,node.getDrawingOrder(),node.getParent()));
+            }
+            boolean[] remove=new boolean[matches.size()];
+            for(int i=0;i<hits.size();i++)for(int j=0;j<hits.size();j++) {
+                if(i!=j&&provablyObscuredBackground(hits.get(i),hits.get(j))) {remove[i]=true;break;}
+            }
+            for(int i=matches.size()-1;i>=0;i--)if(remove[i])matches.remove(i).recycle();
+        } finally {
+            for(CoordinateHit hit:hits)if(hit.parent()!=null)hit.parent().recycle();
+        }
+    }
+
+    /**
+     * Ignore only a leaf hit that is provably a covered background sibling: its bounds contain
+     * a later-drawn sibling branch, while the competing actionable hit is inside that branch.
+     * Direct sibling hits and equal/unknown drawing order remain ambiguous.
+     */
+    private static boolean provablyObscuredBackground(CoordinateHit background,CoordinateHit foreground) {
+        if(background.windowId()!=foreground.windowId()||!background.leaf()||background.parent()==null
+            ||!background.bounds().contains(foreground.bounds()))return false;
+        AccessibilityNodeInfo current=AccessibilityNodeInfo.obtain(foreground.node());
+        try {
+            for(int depth=0;current!=null&&depth<=60;depth++) {
+                AccessibilityNodeInfo next=current.getParent();
+                if(next==null)return false;
+                if(next.equals(background.parent())) {
+                    try {
+                        if(depth==0||current.equals(background.node()))return false;
+                        Rect branchBounds=new Rect();current.getBoundsInScreen(branchBounds);
+                        return background.bounds().contains(branchBounds)
+                            &&background.drawingOrder()<current.getDrawingOrder();
+                    } finally {next.recycle();}
+                }
+                current.recycle();current=next;
+            }
+            return false;
+        } finally {if(current!=null)current.recycle();}
     }
 
     private static void find(AccessibilityNodeInfo node,Action a,List<AccessibilityNodeInfo> out,int depth,int[] visited) throws ControlException {
