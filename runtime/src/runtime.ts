@@ -6,7 +6,7 @@ import { DisplayPool } from './display-pool.js';
 import { nativeTools,subagentTool,speakToUserTool,clearNativeToolUiState } from './tools.js';
 import {memoryTools,recallBlock,MEMORY_GUIDANCE,MEMORY_TOOL_NAMES} from './memory.js';
 import { messageText } from './scripted.js';
-import { modelFor,makeStream,normalizeReasoningEffort } from './provider.js';
+import { modelFor,makeStream,normalizeReasoningEffort,REASONING_EFFORTS,type ReasoningEffort } from './provider.js';
 import { discoverProviderModels, type CatalogModel } from './model-catalog.js';
 import { registerCodexCredentialUpdater,redactProviderSecrets,hasPendingCodexRefresh } from './codex-auth.js';
 
@@ -50,6 +50,7 @@ export class PocketRuntime {
   private catalogPending?:Promise<CatalogModel[]>;
   private discoveringModels=false;
   private cachedModels?:{at:number,models:CatalogModel[]};
+  private readonly workerReasoningProofs=new Map<string,{model:string,levels:ReasoningEffort[]}>();
   private catalogEpoch=0;
   private redact=(text:string)=>{for(const credentials of this.credentialHistory)text=redactProviderSecrets(text,credentials);return text;};
   private sanitize=(text:string)=>this.redact(text).slice(0,2000);
@@ -82,6 +83,10 @@ export class PocketRuntime {
     this.lastError=freshMainRequested?null:(saved.lastError?this.sanitize(String(saved.lastError)):null);
     this.main=this.createSession('main',undefined,freshMainRequested?[]:(saved.mainMessages??[]));
     const savedProviderMatches=typeof saved.providerRevision==='string' && saved.providerRevision===this.credentials.providerRevision;
+    if(savedProviderMatches&&saved.workerReasoningProofs&&typeof saved.workerReasoningProofs==='object')for(const [id,raw] of Object.entries(saved.workerReasoningProofs)) {
+      const proof:any=raw,levels=Array.isArray(proof?.levels)?proof.levels.filter((level:any)=>REASONING_EFFORTS.includes(level)):[];
+      if(typeof proof?.model==='string'&&proof.model.length<=160&&levels.length)this.workerReasoningProofs.set(id,{model:proof.model,levels});
+    }
     for(const stored of saved.workers??[]) {
       const snapshot:any=savedProviderMatches?stored:{...stored,requestedConfig:{...(stored.requestedConfig??{})}};
       if(!savedProviderMatches){delete snapshot.requestedConfig.model;delete snapshot.requestedConfig.thinking;}
@@ -151,7 +156,10 @@ export class PocketRuntime {
     const selectedModel=parent?.requestedConfig?.model;
     const currentModel=modelFor(this.config,this.credentials);
     const selectedModelId=selectedModel===`${currentModel.provider}/${currentModel.id}`?currentModel.id:selectedModel?modelFor(this.config,this.credentials,selectedModel).id:currentModel.id;
-    const supportedReasoning=this.cachedModels?.models.find(model=>model.id===selectedModelId)?.supportedReasoningLevels;
+    const catalogReasoning=this.cachedModels?.models.find(model=>model.id===selectedModelId)?.supportedReasoningLevels;
+    if(owner!=='main'&&catalogReasoning?.length)this.workerReasoningProofs.set(owner,{model:selectedModelId,levels:[...catalogReasoning]});
+    const savedProof=this.workerReasoningProofs.get(owner);
+    const supportedReasoning=catalogReasoning??(savedProof?.model===selectedModelId?savedProof.levels:undefined);
     const reasoning=normalizeReasoningEffort(parent?.requestedConfig?.thinking??this.config.reasoningEffort);
     const session=new MobileSession(owner,this.config,this.credentials,[],restored,systemPrompt,selectedModel,reasoning,supportedReasoning);
     this.configureSessionTools(session,parent);
@@ -357,11 +365,13 @@ export class PocketRuntime {
         // Resume a worker with its pinned model/reasoning only while the provider credential identity is unchanged.
         for(const c of this.runtime.listConversations()) {
           const session=this.sessions.get(c.conversationId)!;
-          if(!sameProvider){this.runtime.clearRequestedModel(c.conversationId);this.runtime.clearRequestedThinking(c.conversationId);}
+          if(!sameProvider){this.runtime.clearRequestedModel(c.conversationId);this.runtime.clearRequestedThinking(c.conversationId);this.workerReasoningProofs.delete(c.conversationId);}
           const requested=sameProvider?c.requestedConfig?.model:undefined;
+          const selected=modelFor(this.config,this.credentials,requested);
           const reasoning=normalizeReasoningEffort(sameProvider?c.requestedConfig?.thinking??this.config.reasoningEffort:this.config.reasoningEffort);
-          session.agent.streamFunction=makeStream(this.config,this.credentials,session.owner,reasoning);
-          session.agent.state.model=modelFor(this.config,this.credentials,requested);
+          const proof=this.workerReasoningProofs.get(c.conversationId);
+          session.agent.streamFunction=makeStream(this.config,this.credentials,session.owner,reasoning,proof?.model===selected.id?proof.levels:undefined);
+          session.agent.state.model=selected;
         }
       } else if(cmd.action==='set_system_prompt') {
         if(this.busy||this.pumping||this.deliveryTransaction||this.observing||(this.inbox.length&&!this.mainPaused)||this.runtime.listConversations().some(c=>c.currentGeneration||c.isStopping))throw new Error('Stop active work before changing the main system prompt');
@@ -423,7 +433,7 @@ export class PocketRuntime {
   }
   cleanupRemoved():void {
     const retained=new Set(this.runtime.listConversations().map(c=>c.conversationId));
-    for(const [id,session] of this.sessions)if(!retained.has(id as any)){session.dispose();this.sessions.delete(id);}
+    for(const [id,session] of this.sessions)if(!retained.has(id as any)){session.dispose();this.sessions.delete(id);this.workerReasoningProofs.delete(id);}
     this.delivered=new Set([...this.delivered].filter(key=>retained.has(JSON.parse(key)[0])));
   }
   private async stopAll():Promise<void> {
@@ -473,7 +483,7 @@ export class PocketRuntime {
     if(this.restoring)return;
     const workerMessages:any={};
     for(const [id,s] of this.sessions)workerMessages[id]=stripImages(s.messages);
-    this.call('store.save',{state:{version:1,config:this.config,providerRevision:this.credentials.providerRevision,busy:this.busy,lastError:this.lastError,mainPaused:this.mainPaused,totalStarts:this.totalStarts,mainSystemPrompt:this.mainSystemPrompt,mainMessages:stripImages(this.main.messages),workers:this.runtime.listConversations(),workerMessages,inbox:this.inbox,delivered:[...this.delivered],mainTurns:this.mainTurns,observationPending:this.observationPending}});
+    this.call('store.save',{state:{version:1,config:this.config,providerRevision:this.credentials.providerRevision,busy:this.busy,lastError:this.lastError,mainPaused:this.mainPaused,totalStarts:this.totalStarts,mainSystemPrompt:this.mainSystemPrompt,mainMessages:stripImages(this.main.messages),workers:this.runtime.listConversations(),workerMessages,workerReasoningProofs:Object.fromEntries(this.workerReasoningProofs),inbox:this.inbox,delivered:[...this.delivered],mainTurns:this.mainTurns,observationPending:this.observationPending}});
   }
   state():any {
     const tasks=this.runtime.listConversations().map(c=>{const g=c.generations.at(-1)!;return {...c,generation:g.generation,status:g.status.kind==='done'?({error:'failed',aborted:'cancelled',skipped:'cancelled'} as any)[g.status.outcome]??g.status.outcome:g.status.kind,output:g.status.kind==='done'?g.status.output:undefined};});

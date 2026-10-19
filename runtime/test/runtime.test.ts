@@ -353,18 +353,25 @@ test('reasoning effort survives restart and provider reconfiguration while inval
  assert.equal(restored.state().provider.reasoningEffort,'low');
 });
 
-test('retained workers keep reasoning on same-provider reconfigure and drop it on provider change',async()=>{
- const bridge=new Bridge();bridge.credentials={authMode:'scripted',model:'scripted',reasoningEffort:'high'};
+test('retained workers persist model-bound reasoning proof, keep it on same-provider configure, and clear it on provider change',async()=>{
+ const bridge=new Bridge();bridge.credentials={authMode:'scripted',model:'scripted',reasoningEffort:'high',providerRevision:'provider-rev-1'};
  const runtime=new PocketRuntime(bridge);
+ (runtime as any).cachedModels={at:Date.now(),models:[{id:'scripted',name:'Scripted model',supportedReasoningLevels:['low','medium','high']}]};
  const handle=runtime.startTasks([{kind:'spawn',agent:'researcher',label:'Pinned reasoning',prompt:'Read state',thinking:'medium'}],{initiatedBy:'user'});
  await handle.completion;await until(()=>runtime.state().tasks[0]?.status==='completed');
+ const id=runtime.state().tasks[0].conversationId;
  assert.equal(runtime.state().tasks[0].requestedConfig.thinking,'medium');
- bridge.credentials={authMode:'scripted',model:'scripted',reasoningEffort:'low'};
- command(runtime,{action:'configure'});
- assert.equal(runtime.state().tasks[0].requestedConfig.thinking,'medium','same provider preserves the worker reasoning snapshot');
- bridge.credentials={authMode:'openai',endpoint:'https://example.test/v1',apiKey:'provider-key',model:'next-model',reasoningEffort:'low'};
- command(runtime,{action:'configure'});
- assert.equal(runtime.state().tasks[0].requestedConfig.thinking,undefined,'provider changes clear stale worker reasoning overrides');
+ assert.deepEqual(bridge.state.workerReasoningProofs[id],{model:'scripted',levels:['low','medium','high']});
+ const restored=new PocketRuntime(bridge);
+ assert.deepEqual((restored as any).workerReasoningProofs.get(id),{model:'scripted',levels:['low','medium','high']},'model-bound proof survives restart');
+ bridge.credentials={...bridge.credentials,reasoningEffort:'low'};
+ command(restored,{action:'configure'});
+ assert.equal(restored.state().tasks[0].requestedConfig.thinking,'medium','same provider preserves the worker reasoning snapshot');
+ assert.deepEqual((restored as any).workerReasoningProofs.get(id),{model:'scripted',levels:['low','medium','high']});
+ bridge.credentials={authMode:'openai',endpoint:'https://example.test/v1',apiKey:'provider-key',model:'next-model',reasoningEffort:'low',providerRevision:'provider-rev-2'};
+ command(restored,{action:'configure'});
+ assert.equal(restored.state().tasks[0].requestedConfig.thinking,undefined,'provider changes clear stale worker reasoning overrides');
+ assert.equal((restored as any).workerReasoningProofs.has(id),false,'provider changes clear stale model-bound proof');
 });
 
 test('paused main with retained inbox can still apply provider and prompt settings',()=>{

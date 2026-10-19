@@ -88,9 +88,10 @@ test('direct Codex wires configured reasoning for main and workers and sanitizes
    ['high','main','gpt-6-luna',false,'low'],
    ['high','main',undefined,false,'low'],
    ['not-a-level','main',undefined,false,'low'],
-   ['xhigh','worker-fixture','gpt-6-luna',true,'xhigh'],
+   ['xhigh','worker-fixture','gpt-6-luna',true,'low'],
    ['high','worker-fixture','different-model',true,'low'],
    ['high','worker-fixture','gpt-6-luna',false,'low'],
+   ['high','memory-observer','gpt-6-luna',true,'low'],
  ] as const) {
    const credentials={...accountCredential(),...(proof?{
      reasoningEffortModel:proof,...(withLevels?{reasoningEfforts:['minimal','low','medium','high','xhigh','max']}:{})
@@ -105,11 +106,11 @@ test('direct Codex wires configured reasoning for main and workers and sanitizes
  }
 });
 
-test('worker reasoning override honors catalog support and only trusts missing catalog for a restored alternate model',async()=>{
+test('worker reasoning override requires model-bound catalog or credential proof',async()=>{
  for(const [supported,selectedModel,expected] of [
    [['low','high'],'gpt-6-luna','high'],
    [['low'],'gpt-6-luna','low'],
-   [undefined,'gpt-6-mini','high'],
+   [undefined,'gpt-6-mini','low'],
    [undefined,'gpt-6-luna','low'],
  ] as const) {
    const credentials=accountCredential();let wire:any;
