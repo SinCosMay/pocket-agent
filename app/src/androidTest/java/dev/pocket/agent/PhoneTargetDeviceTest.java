@@ -16,6 +16,9 @@ import androidx.test.ext.junit.runners.AndroidJUnit4;
 import androidx.test.platform.app.InstrumentationRegistry;
 import dev.pocket.control.ControlBackend.*;
 import dev.pocket.control.ControlException;
+import java.nio.charset.StandardCharsets;
+import java.util.regex.Matcher;
+import java.util.regex.Pattern;
 import org.junit.Test;
 import org.junit.runner.RunWith;
 import static org.junit.Assert.*;
@@ -43,13 +46,17 @@ public class PhoneTargetDeviceTest {
                         1|8|64|1024|2048|4096|16384|32768);
                 } finally {automation.dropShellPermissionIdentity();}
                 assertNotNull(display);
+                automation.adoptShellPermissionIdentity();
+                try {ShellDisplayService.hideIme(display.getDisplay().getDisplayId());}
+                finally {automation.dropShellPermissionIdentity();}
                 screen=new AccessibilityProxyBackend(context,display.getDisplay().getDisplayId());
                 String fixtureClass="launch_failure".equals(mode)
                     ?"dev.pocket.agent.fixture.MissingActivity":"dev.pocket.agent.fixture.FixtureActivity";
-                context.startActivity(new Intent().setClassName("dev.pocket.agent.fixture",fixtureClass)
-                    .putExtra("chooser_case",mode).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK|Intent.FLAG_ACTIVITY_MULTIPLE_TASK),
-                    ActivityOptions.makeBasic().setLaunchDisplayId(display.getDisplay().getDisplayId()).toBundle());
-                observed("CHOOSER_READY");
+                Intent launch=new Intent().setClassName("dev.pocket.agent.fixture",fixtureClass)
+                    .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK|Intent.FLAG_ACTIVITY_MULTIPLE_TASK|Intent.FLAG_ACTIVITY_EXCLUDE_FROM_RECENTS);
+                if(!"editable".equals(mode))launch.putExtra("chooser_case",mode);
+                context.startActivity(launch,ActivityOptions.makeBasic().setLaunchDisplayId(display.getDisplay().getDisplayId()).toBundle());
+                observed("editable".equals(mode)?"POCKET_AGENT_FIXTURE":"CHOOSER_READY");
             } catch(Exception|AssertionError error) {
                 close();
                 throw error;
@@ -87,19 +94,31 @@ public class PhoneTargetDeviceTest {
             catch(ControlException e) {assertEquals(e.getMessage(),code,e.code);}
             observed("CHOOSER_READY");
         }
-        @Override public void close() {
-            // Finish the synthetic app before removing its public display. Otherwise
-            // Android may migrate the task onto display 0 during display teardown.
-            try(android.os.ParcelFileDescriptor.AutoCloseInputStream input=
-                    new android.os.ParcelFileDescriptor.AutoCloseInputStream(automation.executeShellCommand("am force-stop dev.pocket.agent.fixture"))) {
-                byte[] buffer=new byte[64];while(input.read(buffer)!=-1) {}
-            } catch(Exception ignored) {}
+        void forceStopFixture() {
+            try {shell("am force-stop dev.pocket.agent.fixture");} catch(Exception ignored) {}
+        }
+        void releaseDisplayOnly() {
             if(display!=null) {
                 if(screen!=null)screen.release();
-                display.release();display=null;
+                display.release();display=null;screen=null;
             }
             if(reader!=null) {reader.close();reader=null;}
         }
+        @Override public void close() {forceStopFixture();releaseDisplayOnly();}
+    }
+    private String shell(String command) throws Exception {
+        try(android.os.ParcelFileDescriptor.AutoCloseInputStream input=
+                new android.os.ParcelFileDescriptor.AutoCloseInputStream(automation.executeShellCommand(command))) {
+            return new String(input.readAllBytes(),StandardCharsets.UTF_8);
+        }
+    }
+    private static Integer decimalField(String text,String name) {
+        Matcher match=Pattern.compile(Pattern.quote(name)+"=([0-9]+)").matcher(text);
+        return match.find()?Integer.parseInt(match.group(1)):null;
+    }
+    private static Integer hexField(String text,String name) {
+        Matcher match=Pattern.compile(Pattern.quote(name)+"=0x([0-9a-fA-F]+)").matcher(text);
+        return match.find()?Integer.parseUnsignedInt(match.group(1),16):null;
     }
     private int chooserDisplayCount() {
         int count=0;
@@ -107,6 +126,43 @@ public class PhoneTargetDeviceTest {
             if("PocketChooserTest".equals(item.getName()))count++;
         return count;
     }
+
+    @Test public void workerTaskDoesNotMigrateIntoPhysicalRecentsWhenDisplayIsReleased() throws Exception {
+        shell("am force-stop dev.pocket.agent.fixture");
+        Chooser c=new Chooser("normal");
+        try {
+            c.releaseDisplayOnly();
+            Thread.sleep(700);
+            String recents=shell("dumpsys activity recents");
+            assertFalse("Worker fixture leaked into physical Recents after virtual-display teardown",recents.contains("dev.pocket.agent.fixture"));
+        } finally {c.close();}
+    }
+
+    @Test public void focusingVirtualEditTextDoesNotShowImeOnPhysicalDisplay() throws Exception {
+        try(Chooser c=new Chooser("editable")) {
+            Observation o=c.observed("POCKET_AGENT_FIXTURE");
+            Node input=o.nodes().stream().filter(n->n.description().equals("AGENT_INPUT")).findFirst().orElseThrow();
+            int x=(input.left()+input.right())/2,y=(input.top()+input.bottom())/2;
+            Result receipt=c.screen.execute(new Action(Kind.TAP,o.snapshotId(),x,y,null,null,100,null,false,null,null,null));
+            assertEquals("dispatched",receipt.status());
+            Thread.sleep(800);
+            String ime=shell("dumpsys input_method");
+            Integer visibility=hexField(ime,"mImeWindowVis"),tokenDisplay=decimalField(ime,"mCurTokenDisplayId");
+            if(visibility!=null&&visibility!=0&&tokenDisplay!=null)
+                assertNotEquals("Visible worker IME surfaced on physical display 0",Integer.valueOf(0),tokenDisplay);
+            automation.adoptShellPermissionIdentity();
+            try {
+                Class<?> serviceManager=Class.forName("android.os.ServiceManager");
+                android.os.IBinder binder=(android.os.IBinder)serviceManager.getMethod("getService",String.class).invoke(null,"window");
+                Class<?> stub=Class.forName("android.view.IWindowManager$Stub");
+                Object wm=stub.getMethod("asInterface",android.os.IBinder.class).invoke(null,binder);
+                int policy=(Integer)Class.forName("android.view.IWindowManager").getMethod("getDisplayImePolicy",int.class)
+                    .invoke(wm,c.display.getDisplay().getDisplayId());
+                assertEquals("Worker display must retain DISPLAY_IME_POLICY_HIDE",2,policy);
+            } finally {automation.dropShellPermissionIdentity();}
+        }
+    }
+
     @Test public void failedConstructionReleasesVirtualDisplayAndReader() throws Exception {
         int before=chooserDisplayCount();
         try {new Chooser("launch_failure");fail("Expected fixture launch failure");}

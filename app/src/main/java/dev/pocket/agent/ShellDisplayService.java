@@ -116,7 +116,7 @@ public final class ShellDisplayService extends IDisplayShell.Stub {
         owned.close();
         if(displays.isEmpty() && frameThread!=null) {frameThread.quitSafely();frameThread=null;}
     }
-    private void hideIme(int displayId) throws Exception {
+    static void hideIme(int displayId) throws Exception {
         Class<?> serviceManager=Class.forName("android.os.ServiceManager");
         android.os.IBinder binder=(android.os.IBinder)serviceManager.getMethod("getService",String.class).invoke(null,"window");
         if(binder==null)throw new IllegalStateException("Window manager unavailable");
