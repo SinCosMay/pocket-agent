@@ -13,6 +13,8 @@ import { registerCodexCredentialUpdater,redactProviderSecrets,hasPendingCodexRef
 export const DEFAULT_MAIN_PROMPT=`You are the user's persistent phone assistant. Delegate substantial multi-step phone navigation, screenshots and computer use promptly to phone-operator using subagent spawn. Your model is the user's chosen main chat model; never change it through delegation. For a worker needing a different model or reasoning effort, call subagent action=models to see the current provider catalog and supported reasoning levels, then set spawns[].model and optionally spawns[].reasoning. Omit reasoning to inherit your current reasoning effort. Select smaller models for straightforward tasks and more capable models for difficult tasks, but do not invent prices or capabilities. If a model cannot call required tools, retry with a suitable listed model. Give a concise assignment, relevant facts, outcome and verification criteria. End your turn after async dispatch, remain available and let the host deliver completion. Do not poll workers or block main with join on unfinished work. Use speak_to_user only when an unsolicited spoken announcement is warranted or requested; worker completion alone must not cause speech. The tool queues audio, not confirmed delivery. You may do a genuinely short lookup directly. Never claim requested/dispatched actions prove outcomes. Read phone_capabilities before mutation. Use its operation_prefix plus an underscore and a unique 8..48 character nonce (ASCII letters, digits, underscore or hyphen) for each mutation. Include owner/generation/action/attempt or a timestamp for uniqueness; a valid suffix example is _type_0001, never reuse the example across actions; inspect phone_operation after uncertain outcomes and reuse the same ID/arguments. Prefer direct APIs, then app actions, accessibility, screenshot fallback. Virtual displays are acquired automatically on UI tools; do not acquire a display for SMS, calls or direct APIs. Release the virtual display when the UI phase is finished. Main Stop does not stop workers.`;
 const WORKER_PROMPT=`You are a bounded phone operator worker. Complete the assignment using the granted direct native tools, verify actual outcome, report evidence and uncertainties. Read phone_capabilities first. Never invent unavailable permissions or task success. Prefer APIs, then app actions, accessibility and image/gesture fallback. Virtual screens are allocated automatically for UI tools, with a FIFO queue if all three are occupied. Never request a display for native-only actions (SMS, calls, contacts, calendars). Release a display after the UI phase is complete; waiting for a display is not a task failure. Use fresh observations and honor display ownership. Mutations require operation_prefix plus underscore and a unique 8..48 character nonce containing only ASCII letters, digits, underscore or hyphen. Include owner/generation/action/attempt or a timestamp for uniqueness; a valid suffix example is _type_0001, never reuse the example across actions; preserve operation IDs across uncertain retries and inspect receipts before repeating. A phone_act STALE_OBSERVATION with dispatch_status=not_dispatched permits reobserving and replanning with a new operation ID; do not reuse the recorded ID with changed arguments. RESULT_UNKNOWN never permits blind replay. Use speak_to_user only for useful or requested audio, never automatically on completion; queued is not delivered. Recursive delegation is available with a shared concurrency cap. You may choose any discovered provider model and supported reasoning level for each nested spawn by first using subagent action=models (paginate with offset/limit or filter with query); leave model absent to inherit the main model and leave reasoning absent to inherit your current reasoning effort. Join child dependencies, and return concise verified results. If interrupted after process death inspect app state/receipts before any side-effect replay.`;
 const stripImages=(messages:any[])=>messages.map(m=>({...m,content:Array.isArray(m.content)?m.content.map((c:any)=>c.type==='image'?{type:'text',text:'[Previous screenshot omitted; observe again for current state]'}:c):m.content}));
+const DIRECT_STORE_LIMIT=1_500_000;
+const STORE_CHUNK_CHARS=180_000;
 const textMessages=(messages:any[],sanitize=(text:string)=>text)=>messages.filter(m=>m.role==='user'||m.role==='assistant').map((m,i)=>({id:`${m.timestamp}-${i}`,role:m.role,text:messageText(m)||(m.stopReason==='error'?`Request failed: ${sanitize(m.errorMessage??'Provider request failed')}`:''),timestamp:m.timestamp,...(m.stopReason?{stopReason:m.stopReason}:{}),...(m.errorMessage?{error:sanitize(m.errorMessage)}:{})})).filter(m=>m.text);
 const normalizeMode=(mode:string)=>mode==='api-key'?'openai':mode==='codex-relay'||mode==='codexRelay'?'codex':mode;
 
@@ -54,7 +56,12 @@ export class PocketRuntime {
   private catalogEpoch=0;
   private redact=(text:string)=>{for(const credentials of this.credentialHistory)text=redactProviderSecrets(text,credentials);return text;};
   private sanitize=(text:string)=>this.redact(text).slice(0,2000);
-  readonly reportError=(e:any)=>{this.lastError=this.sanitize(String(e?.message??e));this.emit({type:'error',error:this.lastError});};
+  readonly reportError=(e:any)=>{
+    let message='Pocket runtime error';
+    try {message=this.sanitize(String(e?.message??e));} catch {}
+    this.lastError=message;
+    this.emit({type:'error',error:message});
+  };
   constructor(readonly native:NativeBridge,limits={maxExecuting:4,maxConversations:12}) {
     const phoneTools=[...nativeTools(this,'placeholder').map(x=>x.name),...MEMORY_TOOL_NAMES,'speak_to_user'];
     this.registry.agents.set('phone-operator',{name:'phone-operator',description:'Performs bounded Android workflows and verifies native outcomes.',source:'project',systemPrompt:WORKER_PROMPT,tools:[...phoneTools,'subagent']});
@@ -118,11 +125,13 @@ export class PocketRuntime {
   }
   call(method:string,args:any):any {
     const serialized=JSON.stringify(args);
-    const result=JSON.parse(this.native.call(method,method==='store.save'?this.redact(serialized):serialized));
+    const result=JSON.parse(this.native.call(method,method.startsWith('store.save')?this.redact(serialized):serialized));
     if(!result.ok)throw new Error(result.error?.message??result.error??`${method} failed`);
     return result.result;
   }
-  emit(event:any):void {this.native.emit(this.redact(JSON.stringify(event)));}
+  emit(event:any):void {
+    try {this.native.emit(this.redact(JSON.stringify(event)));} catch {}
+  }
   private reloadCredentials():void {
     this.credentials=this.call('credentials.get',{})??{};
     this.credentialHistory.add(this.credentials);
@@ -438,12 +447,14 @@ export class PocketRuntime {
   }
   private async stopAll():Promise<void> {
     this.stoppingAll=true;this.mainPaused=true;this.inbox=[];this.main.agent.abort();this.observerSession?.abort();this.releaseScreen('main');
-    // Child ownership cancellation is explicit through each owning caller.
-    await Promise.allSettled(this.runtime.listConversations().filter(c=>c.currentGeneration).map(c=>{
-      const parent=c.parentConversationId?this.runtime.generationCaller({conversationId:c.parentConversationId,generation:this.runtime.conversation(c.parentConversationId).generations.at(-1)!.generation}):undefined;
-      return this.runtime.cancelSubagent(c.conversationId,parent);
-    }));
-    this.stoppingAll=false;this.save();this.publish();
+    try {
+      // Child ownership cancellation is explicit through each owning caller.
+      await Promise.allSettled(this.runtime.listConversations().filter(c=>c.currentGeneration).map(c=>{
+        const parent=c.parentConversationId?this.runtime.generationCaller({conversationId:c.parentConversationId,generation:this.runtime.conversation(c.parentConversationId).generations.at(-1)!.generation}):undefined;
+        return this.runtime.cancelSubagent(c.conversationId,parent);
+      }));
+    } catch(e) {this.reportError(e);}
+    finally {this.stoppingAll=false;this.save();this.publish();}
   }
   private queueObservation(text:string):void {
     if(this.config.mode==='scripted'||!text.trim()||text.startsWith('[Worker completion]'))return;
@@ -481,14 +492,31 @@ export class PocketRuntime {
   }
   save():void {
     if(this.restoring)return;
-    const workerMessages:any={};
-    for(const [id,s] of this.sessions)workerMessages[id]=stripImages(s.messages);
-    this.call('store.save',{state:{version:1,config:this.config,providerRevision:this.credentials.providerRevision,busy:this.busy,lastError:this.lastError,mainPaused:this.mainPaused,totalStarts:this.totalStarts,mainSystemPrompt:this.mainSystemPrompt,mainMessages:stripImages(this.main.messages),workers:this.runtime.listConversations(),workerMessages,workerReasoningProofs:Object.fromEntries(this.workerReasoningProofs),inbox:this.inbox,delivered:[...this.delivered],mainTurns:this.mainTurns,observationPending:this.observationPending}});
+    let chunked=false;
+    try {
+      const workerMessages:any={};
+      for(const [id,s] of this.sessions)workerMessages[id]=stripImages(s.messages);
+      const state={version:1,config:this.config,providerRevision:this.credentials.providerRevision,busy:this.busy,lastError:this.lastError,mainPaused:this.mainPaused,totalStarts:this.totalStarts,mainSystemPrompt:this.mainSystemPrompt,mainMessages:stripImages(this.main.messages),workers:this.runtime.listConversations(),workerMessages,workerReasoningProofs:Object.fromEntries(this.workerReasoningProofs),inbox:this.inbox,delivered:[...this.delivered],mainTurns:this.mainTurns,observationPending:this.observationPending};
+      const direct=JSON.stringify({state});
+      if(direct.length<=DIRECT_STORE_LIMIT) {this.call('store.save',{state});return;}
+      const serialized=this.redact(JSON.stringify(state));
+      this.call('store.save.begin',{chars:serialized.length});chunked=true;
+      for(let offset=0;offset<serialized.length;offset+=STORE_CHUNK_CHARS)
+        this.call('store.save.chunk',{chunk:serialized.slice(offset,offset+STORE_CHUNK_CHARS)});
+      this.call('store.save.commit',{});chunked=false;
+    } catch(e) {
+      if(chunked)try {this.call('store.save.abort',{});} catch {}
+      this.reportError(e);
+    }
   }
   state():any {
     const tasks=this.runtime.listConversations().map(c=>{const g=c.generations.at(-1)!;return {...c,generation:g.generation,status:g.status.kind==='done'?({error:'failed',aborted:'cancelled',skipped:'cancelled'} as any)[g.status.outcome]??g.status.outcome:g.status.kind,output:g.status.kind==='done'?g.status.output:undefined};});
     return {messages:textMessages(this.main.messages,this.sanitize),tasks,busy:this.busy,lastError:this.lastError,active:this.discoveringModels||hasPendingCodexRefresh(this.credentials)||this.observing||this.busy||tasks.some(t=>t.currentGeneration||t.isStopping)||(!this.mainPaused&&this.inbox.length>0)||Boolean(this.pendingSave),mainPaused:this.mainPaused,mainInterrupted:this.mainInterrupted,provider:{...this.config},mainTurns:this.mainTurns,mainSystemPrompt:this.mainSystemPrompt,defaultMainSystemPrompt:DEFAULT_MAIN_PROMPT,
       workerMessages:Object.fromEntries([...this.sessions].map(([id,s])=>[id,textMessages(s.messages,this.sanitize)]))};
   }
-  publish():void {if(!this.restoring){const state=this.state();this.emit({type:'state',state});this.emit({type:'activity',active:state.active});}}
+  publish():void {
+    if(this.restoring)return;
+    try {const state=this.state();this.emit({type:'state',state});this.emit({type:'activity',active:state.active});}
+    catch(e) {this.reportError(e);}
+  }
 }
