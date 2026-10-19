@@ -183,7 +183,7 @@ public final class JarvisEnrollmentActivity extends Activity {
                 String message=problem.getMessage();
                 runOnUiThread(()->{busy=false;render();info.setText("Recording failed: "+message);});
             } finally {
-                if(audio!=null){try{audio.stop();}catch(Exception ignored){}audio.release();}
+                if(audio!=null){try{audio.stop();}catch(Exception ignored){}try{audio.release();}catch(RuntimeException ignored){}}
                 activeRecorder = null;
             }
         });
@@ -225,11 +225,13 @@ public final class JarvisEnrollmentActivity extends Activity {
             try { held.stop(); } catch (RuntimeException ignored) { }
         }
         Thread cleanup = new Thread(() -> {
+            boolean terminated=false;
             try {
-                if (!worker.awaitTermination(5, java.util.concurrent.TimeUnit.SECONDS))
-                    android.util.Log.w("JarvisEnrollment","Enrollment worker did not stop within cleanup deadline");
+                terminated=worker.awaitTermination(5, java.util.concurrent.TimeUnit.SECONDS);
+                if (!terminated)
+                    android.util.Log.e("JarvisEnrollment","Enrollment worker did not stop; wake-word remains paused to prevent microphone/model overlap");
             } catch (InterruptedException ignored) { Thread.currentThread().interrupt(); }
-            finally { WakeWordService.resumeAfterEnrollment(); }
+            if(terminated)WakeWordService.resumeAfterEnrollment();
         }, "JarvisEnrollmentCleanup");
         cleanup.setDaemon(true);
         cleanup.start();
