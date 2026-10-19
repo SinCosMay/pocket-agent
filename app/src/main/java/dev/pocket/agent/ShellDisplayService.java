@@ -201,6 +201,32 @@ public final class ShellDisplayService extends IDisplayShell.Stub {
         if(keyCode!=4 && keyCode!=3 && keyCode!=187) throw new SecurityException("Key not permitted");
         return exec("/system/bin/input","-d",String.valueOf(id),"keyevent",String.valueOf(keyCode));
     }
+    @Override public synchronized boolean repairAccessibility(String componentName) {
+        android.content.ComponentName component=android.content.ComponentName.unflattenFromString(componentName);
+        if(component==null||!"dev.pocket.agent".equals(component.getPackageName())||!"dev.pocket.agent.AgentAccessibility".equals(component.getClassName()))
+            throw new SecurityException("Only Pocket Agent accessibility may be repaired");
+        String current=execOutput("/system/bin/settings","get","secure","enabled_accessibility_services").trim();
+        if(current.isEmpty()||"null".equals(current))return false;
+        java.util.List<String> services=new java.util.ArrayList<>();
+        boolean found=false;
+        for(String item:current.split(":")) {
+            if(item.isBlank())continue;
+            if(item.equals(componentName)){found=true;continue;}
+            services.add(item);
+        }
+        if(!found)return false;
+        boolean removed=services.isEmpty()
+            ? exec("/system/bin/settings","delete","secure","enabled_accessibility_services")
+            : exec("/system/bin/settings","put","secure","enabled_accessibility_services",String.join(":",services));
+        if(!removed)return false;
+        try {Thread.sleep(350);} catch(InterruptedException e) {Thread.currentThread().interrupt();return false;}
+        if(!"1".equals(execOutput("/system/bin/settings","get","secure","accessibility_enabled").trim()))return false;
+        String after=execOutput("/system/bin/settings","get","secure","enabled_accessibility_services").trim();
+        java.util.LinkedHashSet<String> restored=new java.util.LinkedHashSet<>();
+        if(!after.isEmpty()&&!"null".equals(after))for(String item:after.split(":"))if(!item.isBlank())restored.add(item);
+        restored.add(componentName);
+        return exec("/system/bin/settings","put","secure","enabled_accessibility_services",String.join(":",restored));
+    }
     @Override public synchronized String health() {
         return "uid="+Process.myUid()+";display_count="+displays.size()+";android="+Build.VERSION.SDK_INT;
     }
