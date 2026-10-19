@@ -53,11 +53,21 @@ final class AccessibilityProxyBackend implements ControlBackend {
     }
     enum ConnectionState {CONNECTED,DISCONNECTED,UNKNOWN}
     static ConnectionState connectionState(Context context) {
+        final Future<Bundle> pending;
         try {
-            Bundle out=providerCall(context.getApplicationContext(),"status",new Bundle(),false,STATUS_IPC_TIMEOUT_MS);
-            if(out==null)return ConnectionState.UNKNOWN;
-            return out.getBoolean("connected")?ConnectionState.CONNECTED:ConnectionState.DISCONNECTED;
-        } catch(ControlException ignored) {return ConnectionState.UNKNOWN;}
+            pending=IPC.submit(()->context.getApplicationContext().getContentResolver()
+                .call(AccessibilityBridgeProvider.uri(context),"status",null,new Bundle()));
+        } catch(java.util.concurrent.RejectedExecutionException saturated) {
+            return ConnectionState.UNKNOWN;
+        }
+        try {
+            Bundle out=pending.get(STATUS_IPC_TIMEOUT_MS,TimeUnit.MILLISECONDS);
+            return out!=null&&out.getBoolean("connected")?ConnectionState.CONNECTED:ConnectionState.DISCONNECTED;
+        } catch(TimeoutException|ExecutionException unavailable) {
+            pending.cancel(true);return ConnectionState.DISCONNECTED;
+        } catch(InterruptedException interrupted) {
+            pending.cancel(true);Thread.currentThread().interrupt();return ConnectionState.UNKNOWN;
+        }
     }
     static boolean connected(Context context) {return connectionState(context)==ConnectionState.CONNECTED;}
     private Bundle call(String method,Bundle extras) throws ControlException {
