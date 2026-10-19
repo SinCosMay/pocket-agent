@@ -2,7 +2,6 @@ package dev.pocket.agent;
 
 import android.content.Context;
 import android.content.ComponentName;
-import dev.pocket.android.AndroidScreenBackend;
 import dev.pocket.control.ControlException;
 import java.util.LinkedHashMap;
 import java.util.Map;
@@ -55,11 +54,12 @@ final class AgentDisplayCoordinator implements AutoCloseable {
         return id;
     }
 
-    synchronized AndroidScreenBackend screen(String owner) throws ControlException {
+    synchronized AccessibilityProxyBackend screen(String owner) throws ControlException {
         int id=display(owner);
-        AgentAccessibility observer=AgentAccessibility.connected;
-        if(observer==null) throw new ControlException(PERMISSION_REQUIRED,"Enable Pocket Agent accessibility to use virtual displays");
-        return observer.backend(id);
+        AccessibilityProxyBackend backend=new AccessibilityProxyBackend(context,id);
+        if(!AccessibilityProxyBackend.connected(context))
+            throw new ControlException(PERMISSION_REQUIRED,"Enable Pocket Agent accessibility to use virtual displays");
+        return backend;
     }
 
     synchronized void launch(String owner,String component) throws ControlException {client().launch(display(owner),component);}
@@ -70,19 +70,18 @@ final class AgentDisplayCoordinator implements AutoCloseable {
     synchronized void release(String owner) {
         Integer id=displays.remove(owner);
         if(id!=null) {
-            AgentAccessibility observer=AgentAccessibility.connected;
-            if(observer!=null) observer.release(id);
+            new AccessibilityProxyBackend(context,id).release();
             if(client!=null) client.removeDisplay(id);
         }
     }
 
     private synchronized void invalidate() {
-        AgentAccessibility observer=AgentAccessibility.connected;
-        if(observer!=null) for(int id:displays.values())observer.release(id);
+        for(int id:displays.values())new AccessibilityProxyBackend(context,id).release();
         displays.clear();
     }
 
     synchronized int activeCount() {return displays.size();}
+    boolean accessibilityConnected() {return AccessibilityProxyBackend.connected(context);}
     String backendStatus() {ShizukuDisplayClient present=client;return present==null?ShizukuDisplayClient.prerequisites():present.status();}
 
     @Override public synchronized void close() {
