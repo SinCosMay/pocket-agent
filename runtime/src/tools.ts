@@ -170,6 +170,8 @@ export function nativeTools(host:any,owner:string,grant?:readonly string[]):any[
         }
         if(args.action==='acquire'&&host.ensureDisplay)return toolResult(await host.ensureDisplay(owner,signal));
       }
+      const targets=s.name==='phone_batch'?args.calls?.filter((c:any)=>UI_TOOL_NAMES.has(c.name)).map((c:any)=>displayTarget(c.args)):undefined;
+      if(targets?.some((target:DisplayTarget)=>target!==targets[0]))return toolResult({isError:true,code:'INVALID_ARGUMENT',message:'All UI calls in one batch must use the same display_target'});
       const needsVirtualUi=(UI_TOOL_NAMES.has(s.name)&&displayTarget(args)==='virtual')||
         (s.name==='phone_batch'&&args.calls?.some((c:any)=>UI_TOOL_NAMES.has(c.name)&&displayTarget(c.args)==='virtual'));
       if(needsVirtualUi&&host.ensureDisplay){
