@@ -92,6 +92,11 @@ test('Codex account discovery uses fixed origin, account-scoped authorization an
    auth,
    async()=>{throw Error('No request expected');},
  ),/fixed provider endpoint/);
+
+ const largeCatalog=await discoverProviderModels({mode:'codex-account',model:'main-large'},auth,async()=>
+   json({models:[{slug:'codex-large-catalog',description:'X'.repeat(600*1024)}]})
+ );
+ assert.deepEqual(largeCatalog,[{id:'codex-large-catalog',name:'codex-large-catalog'}]);
 });
 
 

@@ -12,7 +12,8 @@ export const CODEX_MODELS_CLIENT_VERSION = CODEX_CATALOG_COMPAT_VERSION;
 export const CODEX_MODELS_ORIGINATOR = 'pi';
 export const CODEX_MODELS_URL = 'https://chatgpt.com/backend-api/codex/models';
 export const OPENCODE_MODELS_URL = 'https://opencode.ai/inference/v1/models';
-const MAX_CATALOG_BYTES = 512 * 1024;
+const MAX_PROVIDER_CATALOG_BYTES = 512 * 1024;
+const MAX_CODEX_CATALOG_BYTES = 4 * 1024 * 1024;
 const MODEL_ID = /^[A-Za-z0-9._:/+@-]{1,160}$/;
 const OPENCODE_NON_CHAT_FREE = new Set(['jev-1.13-free']);
 const REASONING_LEVEL_SET = new Set<string>(REASONING_EFFORTS);
@@ -49,6 +50,7 @@ export async function discoverProviderModels(
   if (config.mode === 'scripted') return [{id: 'scripted', name: 'Scripted model'}];
   const current = modelFor(config, credentials); // Validates scheme/host/credential-free base URL.
   const account = current.api === 'openai-codex-responses';
+  const maxCatalogBytes = account ? MAX_CODEX_CATALOG_BYTES : MAX_PROVIDER_CATALOG_BYTES;
   const mode = credentials.authMode || config.mode || 'openai';
   const auth = account ? await ensureCodexCredentials(credentials) : null;
   const token = account ? auth!.accessToken : credentials.apiKey;
@@ -77,7 +79,7 @@ export async function discoverProviderModels(
     throw new Error('Provider model discovery rejected the request (HTTP ' + response.status + ').');
   }
   const length = Number(response.headers.get('content-length'));
-  if (length > MAX_CATALOG_BYTES) {await response.body?.cancel();throw new Error('Provider model catalog exceeds size limit.');}
+  if (length > maxCatalogBytes) {await response.body?.cancel();throw new Error('Provider model catalog exceeds size limit.');}
   if (!response.body) throw new Error('Provider model catalog was empty.');
   const chunks: Uint8Array[] = [];
   const reader = response.body.getReader();
@@ -87,7 +89,7 @@ export async function discoverProviderModels(
       const next = await reader.read();
       if (next.done) break;
       count += next.value.byteLength;
-      if (count > MAX_CATALOG_BYTES) throw new Error('Provider model catalog exceeds size limit.');
+      if (count > maxCatalogBytes) throw new Error('Provider model catalog exceeds size limit.');
       chunks.push(next.value);
     }
   } catch (error) {

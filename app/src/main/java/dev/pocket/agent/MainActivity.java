@@ -19,7 +19,9 @@ import android.graphics.Typeface;
 import android.os.Build;
 import android.os.Bundle;
 import android.provider.Settings;
+import android.text.Editable;
 import android.text.InputType;
+import android.text.TextWatcher;
 import android.view.Gravity;
 import android.view.View;
 import android.widget.ArrayAdapter;
@@ -144,7 +146,7 @@ public final class MainActivity extends Activity implements AgentService.Observe
             modelIds = new String[models.length() + 1];
             modelReasoningEfforts.clear();
             modelDefaultReasoningEfforts.clear();
-            labels[0] = "Select discovered main model";
+            labels[0] = "Custom model ID (edit field above)";
             for (int i = 0; i < models.length(); i++) {
                 JSONObject entry = models.optJSONObject(i);
                 String id = entry == null ? "" : entry.optString("id");
@@ -400,7 +402,7 @@ public final class MainActivity extends Activity implements AgentService.Observe
         panel.addView(reasoningHelp);
         Spinner picker = new Spinner(this);
         modelPicker = picker;
-        picker.setAdapter(new ArrayAdapter<>(this, android.R.layout.simple_spinner_dropdown_item, new String[]{"Tap Discover models to choose"}));
+        picker.setAdapter(new ArrayAdapter<>(this, android.R.layout.simple_spinner_dropdown_item, new String[]{"Custom model ID (edit field above) · or Discover models"}));
         picker.setOnItemSelectedListener(new AdapterView.OnItemSelectedListener() {
             @Override public void onItemSelected(AdapterView<?> parent, View view, int position, long id) {
                 if (position > 0 && position < modelIds.length && modelIds[position] != null) {
@@ -421,6 +423,23 @@ public final class MainActivity extends Activity implements AgentService.Observe
             @Override public void onNothingSelected(AdapterView<?> parent) { }
         });
         panel.addView(picker);
+        model.addTextChangedListener(new TextWatcher() {
+            @Override public void beforeTextChanged(CharSequence value, int start, int count, int after) { }
+            @Override public void onTextChanged(CharSequence value, int start, int before, int count) { }
+            @Override public void afterTextChanged(Editable value) {
+                String selectedMode = modes[mode.getSelectedItemPosition()];
+                String currentModel = value.toString().trim();
+                int modelPosition = picker.getSelectedItemPosition();
+                if (modelPosition > 0 && (modelPosition >= modelIds.length
+                        || !currentModel.equals(modelIds[modelPosition]))) picker.setSelection(0);
+                String pickerPreference = selectedMode.equals(CredentialStore.CODEX_ACCOUNT)
+                        ? selectedReasoningEffort(reasoning) : preferredReasoning[0];
+                populateReasoningPicker(reasoning, currentModel, pickerPreference,
+                        selectedMode.equals(CredentialStore.CODEX_ACCOUNT),
+                        selectedMode.equals("codex") || selectedMode.equals(CredentialStore.CODEX_ACCOUNT),
+                        savedReasoningModel, savedReasoningLevels);
+            }
+        });
         final EditText[] newKey = new EditText[1];
         panel.addView(button("Discover models", () -> {
             if (activeWork()) { toast("Finish active work before discovering models"); return; }
@@ -520,7 +539,7 @@ public final class MainActivity extends Activity implements AgentService.Observe
                     modelReasoningEfforts.clear();
                     modelDefaultReasoningEfforts.clear();
                     picker.setAdapter(new ArrayAdapter<>(MainActivity.this, android.R.layout.simple_spinner_dropdown_item,
-                            new String[]{"Tap Discover models to choose"}));
+                            new String[]{"Custom model ID (edit field above) · or Discover models"}));
                     picker.setSelection(0);
                 }
                 lastProvider[0] = position;
