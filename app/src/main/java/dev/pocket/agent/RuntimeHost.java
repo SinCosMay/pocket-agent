@@ -56,7 +56,6 @@ public final class RuntimeHost implements AutoCloseable {
     }
     private void createRuntime() throws Exception {
         store.markInterrupted();
-        store.markDurableInterrupted();
         tools = new NativeTools(context);
         runtime = V8Host.getNodeI18nInstance().createV8Runtime();
         runtime.getNodeModule(NodeModuleModule.class).setRequireRootDirectory(context.getFilesDir());
