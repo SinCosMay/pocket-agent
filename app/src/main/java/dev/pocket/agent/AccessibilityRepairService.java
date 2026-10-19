@@ -27,14 +27,24 @@ public final class AccessibilityRepairService extends Service {
         if(running)return START_NOT_STICKY;
         running=true;
         Thread worker=new Thread(()->{
-            ShizukuDisplayClient client=null;
+            ShizukuDisplayClient client=null;String outcome="failed";
             try {
-                client=new ShizukuDisplayClient(this,()->{});
-                client.repairAccessibility(new ComponentName(this,AgentAccessibility.class).flattenToShortString());
+                String prerequisite=ShizukuDisplayClient.prerequisites();
+                if(!"idle".equals(prerequisite))outcome=prerequisite;
+                else {
+                    client=new ShizukuDisplayClient(this,()->{});
+                    boolean repaired=client.repairAccessibility(new ComponentName(this,AgentAccessibility.class).flattenToShortString());
+                    outcome=repaired?"triggered":"failed";
+                }
             } catch(Exception failure) {
                 android.util.Log.w("PocketAccessibility","Accessibility repair unavailable",failure);
             } finally {
                 if(client!=null)try {client.close();}catch(RuntimeException ignored){}
+                try {
+                    startService(new Intent(this,AccessibilityGuardianService.class)
+                        .setAction(AccessibilityGuardianService.ACTION_REPAIR_RESULT)
+                        .putExtra(AccessibilityGuardianService.EXTRA_REPAIR_RESULT,outcome));
+                } catch(RuntimeException ignored) {}
                 stopForeground(STOP_FOREGROUND_REMOVE);stopSelf();
             }
         },"PocketAccessibilityRepair");
