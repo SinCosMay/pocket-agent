@@ -54,25 +54,6 @@ public final class CrashResilienceDeviceTest {
     }
 
     @Test public void unlockedAccessibilityRecoveryDoesNotConsumeRetryBudget() {
-        assertEquals(AccessibilityGuardianService.RepairDecision.DEFER,
-            AccessibilityGuardianService.repairDecision(false,0));
-        assertEquals(AccessibilityGuardianService.RepairDecision.DEFER,
-            AccessibilityGuardianService.repairDecision(false,2));
-        assertEquals(AccessibilityGuardianService.RepairDecision.START,
-            AccessibilityGuardianService.repairDecision(true,0));
-        assertEquals(AccessibilityGuardianService.RepairDecision.EXHAUSTED,
-            AccessibilityGuardianService.repairDecision(true,3));
-        assertEquals(0,AccessibilityGuardianService.repairAttemptsAfterResult(1,"deferred_unlocked"));
-    }
-
-    @Test public void lostAccessibilityMutationResponseIsResultUnknown() {
-        assertEquals(dev.pocket.control.ControlException.Code.RESULT_UNKNOWN,
-            AccessibilityProxyBackend.missingResultCode(true));
-        assertEquals(dev.pocket.control.ControlException.Code.NOT_READY,
-            AccessibilityProxyBackend.missingResultCode(false));
-    }
-
-    @Test public void unlockedAccessibilityRecoveryDoesNotConsumeRetryBudget() {
         int attempts=0;
         for(int i=0;i<3;i++) {
             assertEquals(AccessibilityGuardianService.RepairDecision.DEFER,
@@ -81,7 +62,9 @@ public final class CrashResilienceDeviceTest {
         assertEquals(0,attempts);
         assertEquals(AccessibilityGuardianService.RepairDecision.START,
             AccessibilityGuardianService.repairDecision(true,attempts));
-        assertEquals(1,AccessibilityGuardianService.repairAttemptsAfterResult(2,"deferred_unlocked"));
+        assertEquals(AccessibilityGuardianService.RepairDecision.EXHAUSTED,
+            AccessibilityGuardianService.repairDecision(true,3));
+        assertEquals(0,AccessibilityGuardianService.repairAttemptsAfterResult(1,"deferred_unlocked"));
     }
 
     @Test public void missingMutationResponseRequiresStateObservationBeforeRetry() {
