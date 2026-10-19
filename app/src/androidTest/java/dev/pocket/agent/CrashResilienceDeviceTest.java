@@ -33,6 +33,13 @@ public final class CrashResilienceDeviceTest {
         assertTrue((flags&android.content.Intent.FLAG_ACTIVITY_EXCLUDE_FROM_RECENTS)!=0);
     }
 
+    @Test public void shellDisplayKeysFailClosedWhenPhysicalDeviceCannotAcceptThem() {
+        assertTrue(NativeTools.shellDisplayKeySupported(true,false));
+        assertFalse(NativeTools.shellDisplayKeySupported(false,false));
+        assertFalse(NativeTools.shellDisplayKeySupported(true,true));
+        assertFalse(NativeTools.shellDisplayKeySupported(false,true));
+    }
+
     @Test public void accessibilityAndGuardianHaveIndependentProcesses() throws Exception {
         Context c=context();String pkg=c.getPackageName();
         ServiceInfo accessibility=c.getPackageManager().getServiceInfo(new ComponentName(c,AgentAccessibility.class),0);
