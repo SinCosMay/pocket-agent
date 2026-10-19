@@ -14,8 +14,12 @@ import android.os.Process;
 import android.view.Display;
 import java.lang.reflect.Constructor;
 import java.util.LinkedHashMap;
+import java.util.LinkedHashSet;
 import java.util.Map;
+import java.util.Set;
 import java.util.concurrent.TimeUnit;
+import java.util.regex.Matcher;
+import java.util.regex.Pattern;
 
 /**
  * Shizuku UserService, executed under Android shell UID.
@@ -26,6 +30,8 @@ public final class ShellDisplayService extends IDisplayShell.Stub {
     private static final int TOUCH=1<<6, ROTATE=1<<7, DESTROY_CONTENT=1<<8;
     private static final int TRUSTED=1<<10, OWN_GROUP=1<<11, ALWAYS_UNLOCKED=1<<12;
     private static final int OWN_FOCUS=1<<14, DEVICE_GROUP=1<<15;
+    private static final int DISPLAY_IME_POLICY_HIDE=2;
+    private static final Pattern ROOT_TASK=Pattern.compile("(?:RootTask\\s+(?:id=|#)|Stack\\s+id=)(\\d+).*?displayId=(\\d+)");
     private final Context context;
     private final Map<Integer,OwnedDisplay> displays=new LinkedHashMap<>();
     private HandlerThread frameThread;
@@ -33,6 +39,7 @@ public final class ShellDisplayService extends IDisplayShell.Stub {
     private static final class OwnedDisplay {
         final VirtualDisplay display;
         final ImageReader reader;
+        final Set<Integer> rootTasks=new LinkedHashSet<>();
         OwnedDisplay(VirtualDisplay display,ImageReader reader) {this.display=display;this.reader=reader;}
         void close() {try {display.release();}finally {reader.close();}}
     }
@@ -81,6 +88,12 @@ public final class ShellDisplayService extends IDisplayShell.Stub {
                         throw new IllegalStateException("Android returned no independent display");
                     }
                     int id=display.getDisplay().getDisplayId();
+                    try {hideIme(id);}
+                    catch(Exception imeFailure) {
+                        display.release();
+                        last=imeFailure;
+                        continue;
+                    }
                     displays.put(id,new OwnedDisplay(display,reader));
                     return id;
                 } catch(Exception e) {last=e;}
@@ -95,8 +108,40 @@ public final class ShellDisplayService extends IDisplayShell.Stub {
     }
     @Override public synchronized void removeDisplay(int id) {
         owned(id);
-        displays.remove(id).close();
+        OwnedDisplay owned=displays.remove(id);
+        for(int rootTask:owned.rootTasks) exec("/system/bin/am","stack","remove",String.valueOf(rootTask));
+        owned.close();
         if(displays.isEmpty() && frameThread!=null) {frameThread.quitSafely();frameThread=null;}
+    }
+    private void hideIme(int displayId) throws Exception {
+        Class<?> serviceManager=Class.forName("android.os.ServiceManager");
+        android.os.IBinder binder=(android.os.IBinder)serviceManager.getMethod("getService",String.class).invoke(null,"window");
+        if(binder==null)throw new IllegalStateException("Window manager unavailable");
+        Class<?> stub=Class.forName("android.view.IWindowManager$Stub");
+        Object windowManager=stub.getMethod("asInterface",android.os.IBinder.class).invoke(null,binder);
+        Class<?> iWindowManager=Class.forName("android.view.IWindowManager");
+        iWindowManager.getMethod("setDisplayImePolicy",int.class,int.class).invoke(windowManager,displayId,DISPLAY_IME_POLICY_HIDE);
+    }
+    static Set<Integer> parseRootTasks(String output,int displayId) {
+        Set<Integer> result=new LinkedHashSet<>();
+        for(String line:output.split("\\R")) {
+            Matcher match=ROOT_TASK.matcher(line);
+            if(match.find()&&Integer.parseInt(match.group(2))==displayId)result.add(Integer.parseInt(match.group(1)));
+        }
+        return result;
+    }
+    private static String execOutput(String... command) {
+        ProcessBuilder builder=new ProcessBuilder(command).redirectErrorStream(true);
+        java.lang.Process child=null;
+        try {
+            child=builder.start();
+            byte[] output=child.getInputStream().readAllBytes();
+            if(!child.waitFor(8,TimeUnit.SECONDS)) {child.destroyForcibly();return "";}
+            return child.exitValue()==0?new String(output,java.nio.charset.StandardCharsets.UTF_8):"";
+        } catch(Exception e) {
+            if(child!=null) child.destroyForcibly();
+            return "";
+        }
     }
     private static boolean exec(String... command) {
         ProcessBuilder builder=new ProcessBuilder(command).redirectErrorStream(true);
@@ -110,11 +155,27 @@ public final class ShellDisplayService extends IDisplayShell.Stub {
             return false;
         }
     }
+    private boolean launchTracked(int id,String... command) {
+        Set<Integer> before=parseRootTasks(execOutput("/system/bin/am","stack","list"),id);
+        if(!exec(command))return false;
+        long deadline=android.os.SystemClock.elapsedRealtime()+1200;
+        do {
+            Set<Integer> after=parseRootTasks(execOutput("/system/bin/am","stack","list"),id);
+            after.removeAll(before);
+            if(!after.isEmpty()) {
+                OwnedDisplay owned=displays.get(id);
+                if(owned!=null)owned.rootTasks.addAll(after);
+                break;
+            }
+            try {Thread.sleep(60);} catch(InterruptedException e) {Thread.currentThread().interrupt();break;}
+        } while(android.os.SystemClock.elapsedRealtime()<deadline);
+        return true;
+    }
     @Override public synchronized boolean launchActivity(int id,String componentName) {
         owned(id);
         android.content.ComponentName component=android.content.ComponentName.unflattenFromString(componentName);
         if(component==null || component.getPackageName().isBlank()) throw new IllegalArgumentException("Expected component name");
-        return exec("/system/bin/am","start","--display",String.valueOf(id),"-f","0x18000000","-n",component.flattenToString());
+        return launchTracked(id,"/system/bin/am","start","--display",String.valueOf(id),"-f","0x18000000","-n",component.flattenToString());
     }
     @Override public synchronized boolean openUrl(int id,String url) {
         owned(id);
@@ -123,7 +184,7 @@ public final class ShellDisplayService extends IDisplayShell.Stub {
         if(uri.getHost()==null || uri.getHost().isBlank() || uri.getUserInfo()!=null ||
             (!"https".equalsIgnoreCase(scheme) && !"http".equalsIgnoreCase(scheme)))
             throw new IllegalArgumentException("Only ordinary HTTP(S) URLs without embedded credentials are supported");
-        return exec("/system/bin/am","start","--display",String.valueOf(id),"-f","0x18000000",
+        return launchTracked(id,"/system/bin/am","start","--display",String.valueOf(id),"-f","0x18000000",
             "-a",android.content.Intent.ACTION_VIEW,"-d",uri.toString());
     }
     @Override public synchronized boolean showClock(int id,String screen) {
@@ -133,7 +194,7 @@ public final class ShellDisplayService extends IDisplayShell.Stub {
             case "timers" -> android.provider.AlarmClock.ACTION_SHOW_TIMERS;
             default -> throw new IllegalArgumentException("Expected alarms or timers");
         };
-        return exec("/system/bin/am","start","--display",String.valueOf(id),"-f","0x18000000","-a",action);
+        return launchTracked(id,"/system/bin/am","start","--display",String.valueOf(id),"-f","0x18000000","-a",action);
     }
     @Override public synchronized boolean injectKey(int id,int keyCode) {
         owned(id);
@@ -144,7 +205,10 @@ public final class ShellDisplayService extends IDisplayShell.Stub {
         return "uid="+Process.myUid()+";display_count="+displays.size()+";android="+Build.VERSION.SDK_INT;
     }
     @Override public synchronized void destroy() {
-        for(OwnedDisplay d:displays.values()) try {d.close();}catch(Exception ignored){}
+        for(OwnedDisplay d:displays.values()) {
+            for(int rootTask:d.rootTasks) exec("/system/bin/am","stack","remove",String.valueOf(rootTask));
+            try {d.close();}catch(Exception ignored){}
+        }
         displays.clear();
         if(frameThread!=null) {frameThread.quitSafely();frameThread=null;}
         System.exit(0);
