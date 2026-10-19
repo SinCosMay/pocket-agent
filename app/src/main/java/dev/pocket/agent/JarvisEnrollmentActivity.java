@@ -228,8 +228,11 @@ public final class JarvisEnrollmentActivity extends Activity {
             boolean terminated=false;
             try {
                 terminated=worker.awaitTermination(5, java.util.concurrent.TimeUnit.SECONDS);
-                if (!terminated)
-                    android.util.Log.e("JarvisEnrollment","Enrollment worker did not stop; wake-word remains paused to prevent microphone/model overlap");
+                if (!terminated) {
+                    android.util.Log.e("JarvisEnrollment","Enrollment worker did not stop; recycling isolated voice process to prevent microphone/model overlap");
+                    android.os.Process.killProcess(android.os.Process.myPid());
+                    return;
+                }
             } catch (InterruptedException ignored) { Thread.currentThread().interrupt(); }
             if(terminated)WakeWordService.resumeAfterEnrollment();
         }, "JarvisEnrollmentCleanup");
