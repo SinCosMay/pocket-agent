@@ -351,6 +351,15 @@ final class NativeTools implements AutoCloseable {
                 ControlBackend.Result result;
                 if(action.kind()==ControlBackend.Kind.KEY && !"enter".equals(action.key())) {
                     screen(owner).validateAction(action);
+                    // Real-device MIUI A/B testing showed /system/bin/input -d is filtered while
+                    // the physical phone is asleep/keyguard-locked, even though the leased
+                    // ALWAYS_UNLOCKED virtual display remains alive. There is no display-scoped
+                    // Accessibility global Home/Back/Recents API, so fail closed rather than
+                    // report a key as dispatched when the platform is known to discard it.
+                    boolean physicalInteractive=context.getSystemService(PowerManager.class).isInteractive();
+                    boolean physicalLocked=context.getSystemService(KeyguardManager.class).isKeyguardLocked();
+                    if(!physicalInteractive||physicalLocked)
+                        throw new ControlException(UNSUPPORTED,"Virtual-display Home/Back/Recents are unavailable while the physical device is asleep or locked; use in-app semantic or gesture navigation");
                     int key=switch(action.key()==null?"":action.key()) {case "back"->4;case "home"->3;case "recents"->187;default->throw new ControlException(UNSUPPORTED,"Key must be home, back, recents or enter");};
                     displays.key(owner,key);
                     result=new ControlBackend.Result("dispatched","Display-targeted key accepted; task outcome not yet verified");
