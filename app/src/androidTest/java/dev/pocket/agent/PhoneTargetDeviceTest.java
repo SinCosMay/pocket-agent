@@ -116,13 +116,9 @@ public class PhoneTargetDeviceTest {
             return new String(output.toByteArray(),StandardCharsets.UTF_8);
         }
     }
-    private static Integer decimalField(String text,String name) {
-        Matcher match=Pattern.compile(Pattern.quote(name)+"=([0-9]+)").matcher(text);
-        return match.find()?Integer.parseInt(match.group(1)):null;
-    }
-    private static Integer hexField(String text,String name) {
-        Matcher match=Pattern.compile(Pattern.quote(name)+"=0x([0-9a-fA-F]+)").matcher(text);
-        return match.find()?Integer.parseUnsignedInt(match.group(1),16):null;
+    private static Boolean booleanField(String text,String name) {
+        Matcher match=Pattern.compile(Pattern.quote(name)+"=(true|false)").matcher(text);
+        return match.find()?Boolean.parseBoolean(match.group(1)):null;
     }
     private int chooserDisplayCount() {
         int count=0;
@@ -140,6 +136,9 @@ public class PhoneTargetDeviceTest {
             if(tasks.isEmpty())tasks=ShellDisplayService.parseRootTasks(shell("dumpsys activity activities"),displayId);
             assertFalse("Fixture must own a root task on the worker display before cleanup",tasks.isEmpty());
             for(int task:tasks)shell("am stack remove "+task);
+            Thread.sleep(250);
+            java.util.Set<Integer> remaining=ShellDisplayService.parseRootTasks(shell("dumpsys activity activities"),displayId);
+            for(int task:remaining)shell("am task remove "+task);
             Thread.sleep(250);
             assertTrue("Worker root tasks must be gone before virtual-display teardown",
                 ShellDisplayService.parseRootTasks(shell("dumpsys activity activities"),displayId).isEmpty());
@@ -159,10 +158,9 @@ public class PhoneTargetDeviceTest {
             assertEquals("dispatched",receipt.status());
             Thread.sleep(800);
             String ime=shell("dumpsys input_method");
-            Integer visibility=hexField(ime,"mImeWindowVis"),tokenDisplay=decimalField(ime,"mCurTokenDisplayId");
-            assertNotNull("Could not parse IME visibility from dumpsys input_method",visibility);
-            assertNotNull("Could not parse IME token display from dumpsys input_method",tokenDisplay);
-            if(visibility!=0)assertNotEquals("Visible worker IME surfaced on physical display 0",Integer.valueOf(0),tokenDisplay);
+            Boolean inputShown=booleanField(ime,"mInputShown");
+            assertNotNull("Could not parse mInputShown from dumpsys input_method",inputShown);
+            assertFalse("Virtual-display focus must not show the software IME",inputShown);
             automation.adoptShellPermissionIdentity();
             try {
                 Class<?> serviceManager=Class.forName("android.os.ServiceManager");

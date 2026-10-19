@@ -244,8 +244,14 @@ public final class ShellDisplayService extends IDisplayShell.Stub {
                 if(pass<2)try {Thread.sleep(80);} catch(InterruptedException e){Thread.currentThread().interrupt();break;}
                 continue;
             }
-            for(int rootTask:java.util.List.copyOf(owned.rootTasks))
-                if(exec("/system/bin/am","stack","remove",String.valueOf(rootTask)))owned.rootTasks.remove(rootTask);
+            for(int rootTask:java.util.List.copyOf(owned.rootTasks)) {
+                boolean removed=exec("/system/bin/am","stack","remove",String.valueOf(rootTask));
+                // AOSP emulator/newer ActivityManager builds can accept the legacy stack
+                // command without actually removing the task. Keep the MIUI-proven stack
+                // path first, then fall back to task remove on reconciliation passes.
+                if(pass>0)removed=exec("/system/bin/am","task","remove",String.valueOf(rootTask))||removed;
+                if(removed)owned.rootTasks.remove(rootTask);
+            }
             if(rootTasksOnDisplay(id).isEmpty())break;
         }
     }
