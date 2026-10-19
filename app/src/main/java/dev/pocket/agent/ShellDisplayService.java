@@ -169,39 +169,26 @@ public final class ShellDisplayService extends IDisplayShell.Stub {
     }
     private static String execOutput(String... command) {CommandResult result=run(command);return result.ok?result.output:"";}
     private static boolean exec(String... command) {return run(command).ok;}
-    private static Set<String> accessibilityServices(String raw) {
-        Set<String> services=new LinkedHashSet<>();
-        if(raw==null)return services;
-        String value=raw.trim();
-        if(value.isEmpty()||"null".equalsIgnoreCase(value))return services;
-        for(String item:value.split(":"))if(!item.isBlank())services.add(item.trim());
-        return services;
-    }
-    private static boolean putAccessibilityServices(Set<String> services) {
-        String value=String.join(":",services);
-        if(value.isEmpty())return exec("/system/bin/settings","delete","secure","enabled_accessibility_services");
-        return exec("/system/bin/settings","put","secure","enabled_accessibility_services",value);
-    }
     @Override public synchronized boolean repairAccessibility(String componentName) {
         android.content.ComponentName component=android.content.ComponentName.unflattenFromString(componentName);
         if(component==null||!"dev.pocket.agent".equals(component.getPackageName())
             ||!"dev.pocket.agent.AgentAccessibility".equals(component.getClassName()))
             throw new SecurityException("Only Pocket Agent accessibility may be repaired");
         if(!"1".equals(execOutput("/system/bin/settings","get","secure","accessibility_enabled").trim()))return false;
-        Set<String> original=accessibilityServices(execOutput("/system/bin/settings","get","secure","enabled_accessibility_services"));
-        boolean found=false;Set<String> withoutTarget=new LinkedHashSet<>();
-        for(String item:original) {
-            android.content.ComponentName parsed=android.content.ComponentName.unflattenFromString(item);
-            if(component.equals(parsed)){found=true;continue;}
-            withoutTarget.add(item);
-        }
-        if(!found||!putAccessibilityServices(withoutTarget))return false;
-        try {Thread.sleep(400);} catch(InterruptedException interrupted) {Thread.currentThread().interrupt();return false;}
-        if(!"1".equals(execOutput("/system/bin/settings","get","secure","accessibility_enabled").trim()))return false;
-        Set<String> current=accessibilityServices(execOutput("/system/bin/settings","get","secure","enabled_accessibility_services"));
-        for(String item:current)if(component.equals(android.content.ComponentName.unflattenFromString(item)))return true;
-        current.add(component.flattenToShortString());
-        return putAccessibilityServices(current);
+        String enabled=execOutput("/system/bin/settings","get","secure","enabled_accessibility_services");
+        boolean found=false;
+        for(String item:enabled.split(":"))
+            if(component.equals(android.content.ComponentName.unflattenFromString(item.trim()))){found=true;break;}
+        if(!found)return false;
+        String processName=component.getPackageName()+":accessibility";
+        String rawPid=execOutput("/system/bin/pidof",processName).trim();
+        if(rawPid.isEmpty())return false;
+        String pid=rawPid.split("\\s+")[0];
+        if(!pid.matches("[0-9]+"))return false;
+        // Crash only the isolated accessibility process. Android's existing enabled-service
+        // binding is then free to reconnect it; no secure setting is rewritten, so a user
+        // disable racing recovery cannot be undone by the repair path.
+        return exec("/system/bin/am","crash","--user","current",pid);
     }
     private Set<Integer> rootTasksOnDisplay(int id) {
         Set<Integer> result=parseRootTasks(execOutput("/system/bin/am","stack","list"),id);
@@ -235,13 +222,16 @@ public final class ShellDisplayService extends IDisplayShell.Stub {
             if(!created.isEmpty())return true;
             try {Thread.sleep(75);} catch(InterruptedException e) {Thread.currentThread().interrupt();return false;}
         } while(android.os.SystemClock.elapsedRealtime()<deadline);
+        OwnedDisplay owned=displays.get(id);
+        if(owned!=null)owned.rootTasks.addAll(rootTasksOnDisplay(id));
         return false;
     }
+    private static final String WORKER_ACTIVITY_FLAGS="0x18800000";
     @Override public synchronized boolean launchActivity(int id,String componentName) {
         owned(id);
         android.content.ComponentName component=android.content.ComponentName.unflattenFromString(componentName);
         if(component==null || component.getPackageName().isBlank()) throw new IllegalArgumentException("Expected component name");
-        return launchTracked(id,"/system/bin/am","start","--display",String.valueOf(id),"-f","0x18000000","-n",component.flattenToString());
+        return launchTracked(id,"/system/bin/am","start","--display",String.valueOf(id),"-f",WORKER_ACTIVITY_FLAGS,"-n",component.flattenToString());
     }
     @Override public synchronized boolean openUrl(int id,String url) {
         owned(id);
@@ -250,7 +240,7 @@ public final class ShellDisplayService extends IDisplayShell.Stub {
         if(uri.getHost()==null || uri.getHost().isBlank() || uri.getUserInfo()!=null ||
             (!"https".equalsIgnoreCase(scheme) && !"http".equalsIgnoreCase(scheme)))
             throw new IllegalArgumentException("Only ordinary HTTP(S) URLs without embedded credentials are supported");
-        return launchTracked(id,"/system/bin/am","start","--display",String.valueOf(id),"-f","0x18000000",
+        return launchTracked(id,"/system/bin/am","start","--display",String.valueOf(id),"-f",WORKER_ACTIVITY_FLAGS,
             "-a",android.content.Intent.ACTION_VIEW,"-d",uri.toString());
     }
     @Override public synchronized boolean showClock(int id,String screen) {
@@ -260,7 +250,7 @@ public final class ShellDisplayService extends IDisplayShell.Stub {
             case "timers" -> android.provider.AlarmClock.ACTION_SHOW_TIMERS;
             default -> throw new IllegalArgumentException("Expected alarms or timers");
         };
-        return launchTracked(id,"/system/bin/am","start","--display",String.valueOf(id),"-f","0x18000000","-a",action);
+        return launchTracked(id,"/system/bin/am","start","--display",String.valueOf(id),"-f",WORKER_ACTIVITY_FLAGS,"-a",action);
     }
     @Override public synchronized boolean injectKey(int id,int keyCode) {
         owned(id);

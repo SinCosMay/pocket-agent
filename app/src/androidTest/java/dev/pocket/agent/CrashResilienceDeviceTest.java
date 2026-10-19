@@ -23,6 +23,16 @@ public final class CrashResilienceDeviceTest {
         assertEquals(Set.of(11),ShellDisplayService.parseRootTasks(sample,0));
     }
 
+
+    @Test public void workerActivityFlagsExcludeTasksFromRecents() throws Exception {
+        java.lang.reflect.Field field=ShellDisplayService.class.getDeclaredField("WORKER_ACTIVITY_FLAGS");
+        field.setAccessible(true);
+        int flags=Integer.decode((String)field.get(null));
+        assertTrue((flags&android.content.Intent.FLAG_ACTIVITY_NEW_TASK)!=0);
+        assertTrue((flags&android.content.Intent.FLAG_ACTIVITY_MULTIPLE_TASK)!=0);
+        assertTrue((flags&android.content.Intent.FLAG_ACTIVITY_EXCLUDE_FROM_RECENTS)!=0);
+    }
+
     @Test public void accessibilityAndGuardianHaveIndependentProcesses() throws Exception {
         Context c=context();String pkg=c.getPackageName();
         ServiceInfo accessibility=c.getPackageManager().getServiceInfo(new ComponentName(c,AgentAccessibility.class),0);
