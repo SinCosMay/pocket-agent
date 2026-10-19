@@ -20,6 +20,7 @@ export interface ProviderCredentials extends CodexCredentialInput {
   model?: string;
   authMode?: string;
   reasoningEffortModel?: string;
+  reasoningEfforts?: string[];
 }
 type ProviderModel = Model<'openai-responses'> | Model<'openai-codex-responses'> | Model<'openai-completions'>;
 export const OPENCODE_BASE_URL = 'https://opencode.ai/inference/openai/v1';
@@ -233,8 +234,12 @@ export function makeStream(config: ProviderConfig, credentials: ProviderCredenti
       const requestedReasoning = owner === 'main' && configurableReasoningMode(mode)
         ? normalizeReasoningEffort(config.reasoningEffort)
         : DEFAULT_REASONING_EFFORT;
+      const advertisedReasoning = Array.isArray(credentials.reasoningEfforts)
+        ? credentials.reasoningEfforts.filter(value => REASONING_EFFORT_SET.has(value))
+        : [];
       const reasoning = account && requestedReasoning !== DEFAULT_REASONING_EFFORT
-        && credentials.reasoningEffortModel !== model.id ? DEFAULT_REASONING_EFFORT : requestedReasoning;
+        && (credentials.reasoningEffortModel !== model.id || !advertisedReasoning.includes(requestedReasoning))
+        ? DEFAULT_REASONING_EFFORT : requestedReasoning;
       const shared = {...options,apiKey,transport:'sse' as const,maxRetries:0,timeoutMs:120000,reasoning};
       const source = model.api === 'openai-codex-responses'
         ? codexStreamSimple(model,context,{

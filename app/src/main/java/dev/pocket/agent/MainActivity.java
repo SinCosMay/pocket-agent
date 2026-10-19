@@ -298,16 +298,28 @@ public final class MainActivity extends Activity implements AgentService.Observe
         for (String value : values) if (value.equals(effort)) return true;
         return false;
     }
+    private static String[] reasoningEfforts(JSONArray values) {
+        if (values == null) return new String[0];
+        java.util.ArrayList<String> allowed = new java.util.ArrayList<>();
+        for (int i = 0; i < values.length(); i++) {
+            String value = values.optString(i);
+            if (isReasoningEffort(value) && !allowed.contains(value)) allowed.add(value);
+        }
+        return allowed.toArray(new String[0]);
+    }
+    private static JSONArray reasoningEffortsJson(String[] values) {
+        JSONArray result = new JSONArray();
+        if (values != null) for (String value : values) if (isReasoningEffort(value)) result.put(value);
+        return result;
+    }
     private void populateReasoningPicker(Spinner picker, String modelId, String preferred,
-            boolean codexAccount, boolean codexLike, String verifiedModel) {
+            boolean codexAccount, boolean codexLike, String verifiedModel, String[] verifiedLevels) {
         String[] advertised = modelReasoningEfforts.get(modelId);
         String[] fallback = codexLike ? CODEX_REASONING_CHOICES : DEFAULT_REASONING_CHOICES;
         String[] values;
         if (advertised != null && advertised.length > 0) values = advertised;
-        else if (codexAccount) values = modelId.equals(verifiedModel)
-                && isReasoningEffort(preferred) && !CredentialStore.DEFAULT_REASONING_EFFORT.equals(preferred)
-                ? new String[]{CredentialStore.DEFAULT_REASONING_EFFORT, preferred}
-                : new String[]{CredentialStore.DEFAULT_REASONING_EFFORT};
+        else if (codexAccount && modelId.equals(verifiedModel) && verifiedLevels.length > 0) values = verifiedLevels;
+        else if (codexAccount) values = new String[]{CredentialStore.DEFAULT_REASONING_EFFORT};
         else values = fallback;
         String[] labels = new String[values.length];
         int selection = -1;
@@ -359,7 +371,8 @@ public final class MainActivity extends Activity implements AgentService.Observe
         reasoningPicker = reasoning;
         populateReasoningPicker(reasoning, model.getText().toString(),
                 saved.optString("reasoningEffort", CredentialStore.DEFAULT_REASONING_EFFORT),
-                selected == 5, selected == 4 || selected == 5, saved.optString("reasoningEffortModel"));
+                selected == 5, selected == 4 || selected == 5, saved.optString("reasoningEffortModel"),
+                reasoningEfforts(saved.optJSONArray("reasoningEfforts")));
         panel.addView(reasoning);
         TextView reasoningHelp = text("");
         panel.addView(reasoningHelp);
@@ -375,7 +388,7 @@ public final class MainActivity extends Activity implements AgentService.Observe
                     populateReasoningPicker(reasoning, modelIds[position], preferred,
                             selectedMode.equals(CredentialStore.CODEX_ACCOUNT),
                             selectedMode.equals("codex") || selectedMode.equals(CredentialStore.CODEX_ACCOUNT),
-                            saved.optString("reasoningEffortModel"));
+                            saved.optString("reasoningEffortModel"), reasoningEfforts(saved.optJSONArray("reasoningEfforts")));
                 }
             }
             @Override public void onNothingSelected(AdapterView<?> parent) { }
@@ -460,7 +473,8 @@ public final class MainActivity extends Activity implements AgentService.Observe
             else if (selectedMode.equals("openai")) { endpoint.setText("https://api.openai.com/v1"); model.setText("gpt-4.1-mini"); }
             else { endpoint.setText("https://api.openai.com/v1"); model.setText("scripted"); }
             populateReasoningPicker(reasoning, model.getText().toString(), selectedReasoningEffort(reasoning),
-                    account, account || selectedMode.equals("codex"), saved.optString("reasoningEffortModel"));
+                    account, account || selectedMode.equals("codex"), saved.optString("reasoningEffortModel"),
+                    reasoningEfforts(saved.optJSONArray("reasoningEfforts")));
         };
         final int[] lastProvider = {selected};
         mode.setOnItemSelectedListener(new AdapterView.OnItemSelectedListener() {
@@ -653,13 +667,18 @@ public final class MainActivity extends Activity implements AgentService.Observe
                     if (selectedMode.equals(CredentialStore.CODEX_ACCOUNT)
                             && !CredentialStore.DEFAULT_REASONING_EFFORT.equals(selectedEffort)) {
                         String[] advertised = modelReasoningEfforts.get(selectedModel);
+                        String[] savedLevels = reasoningEfforts(saved.optJSONArray("reasoningEfforts"));
                         boolean persistedProof = selectedModel.equals(saved.optString("reasoningEffortModel"))
-                                && selectedEffort.equals(saved.optString("reasoningEffort"));
-                        if (!containsReasoningEffort(advertised, selectedEffort) && !persistedProof) {
+                                && selectedEffort.equals(saved.optString("reasoningEffort"))
+                                && containsReasoningEffort(savedLevels, selectedEffort);
+                        String[] verifiedLevels = containsReasoningEffort(advertised, selectedEffort)
+                                ? advertised : persistedProof ? savedLevels : null;
+                        if (verifiedLevels == null) {
                             toast("Discover this model before using that reasoning effort");
                             return;
                         }
                         config.put("reasoningEffortModel", selectedModel);
+                        config.put("reasoningEfforts", reasoningEffortsJson(verifiedLevels));
                     }
                     if (!selectedMode.equals(CredentialStore.CODEX_ACCOUNT)) {
                         config.put("endpoint", endpoint.getText().toString().trim());

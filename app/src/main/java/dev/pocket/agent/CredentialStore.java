@@ -48,11 +48,19 @@ public final class CredentialStore {
         if (!current.has("providerRevision")) { current.put("providerRevision", UUID.randomUUID().toString()); changed = true; }
         String effort = reasoningEffort(current.optString("reasoningEffort", DEFAULT_REASONING_EFFORT));
         if (!effort.equals(current.optString("reasoningEffort"))) { current.put("reasoningEffort", effort); changed = true; }
+        JSONArray supported = reasoningEfforts(current.optJSONArray("reasoningEfforts"));
         if (CODEX_ACCOUNT.equals(current.optString("authMode")) && !DEFAULT_REASONING_EFFORT.equals(effort)
-                && !current.optString("model").equals(current.optString("reasoningEffortModel"))) {
-            current.put("reasoningEffort", DEFAULT_REASONING_EFFORT); current.remove("reasoningEffortModel"); changed = true;
-        } else if (DEFAULT_REASONING_EFFORT.equals(effort) && current.has("reasoningEffortModel")) {
-            current.remove("reasoningEffortModel"); changed = true;
+                && (!current.optString("model").equals(current.optString("reasoningEffortModel"))
+                || !containsReasoningEffort(supported, effort))) {
+            current.put("reasoningEffort", DEFAULT_REASONING_EFFORT);
+            current.remove("reasoningEffortModel"); current.remove("reasoningEfforts"); changed = true;
+        } else if (CODEX_ACCOUNT.equals(current.optString("authMode")) && !DEFAULT_REASONING_EFFORT.equals(effort)) {
+            JSONArray existing = current.optJSONArray("reasoningEfforts");
+            if (existing == null || !supported.toString().equals(existing.toString())) {
+                current.put("reasoningEfforts", supported); changed = true;
+            }
+        } else if (current.has("reasoningEffortModel") || current.has("reasoningEfforts")) {
+            current.remove("reasoningEffortModel"); current.remove("reasoningEfforts"); changed = true;
         }
         if (changed) write(current);
         return current;
@@ -95,9 +103,12 @@ public final class CredentialStore {
                 String selectedModel = model(settings.optString("model", CODEX_MODEL));
                 allowed.put("model", selectedModel);
                 if (!DEFAULT_REASONING_EFFORT.equals(effort)) {
-                    if (!selectedModel.equals(settings.optString("reasoningEffortModel")))
+                    JSONArray supported = reasoningEfforts(settings.optJSONArray("reasoningEfforts"));
+                    if (!selectedModel.equals(settings.optString("reasoningEffortModel"))
+                            || !containsReasoningEffort(supported, effort))
                         throw new IllegalArgumentException("Discover this model before using that reasoning effort");
                     allowed.put("reasoningEffortModel", selectedModel);
+                    allowed.put("reasoningEfforts", supported);
                 }
             } else {
                 allowed.put("endpoint", endpoint);
@@ -121,11 +132,16 @@ public final class CredentialStore {
             if (!current.optString("accountId").equals(account.getString("accountId"))) throw new IllegalArgumentException("Refreshed account does not match the signed-in account");
             String selectedModel = model(current.optString("model", CODEX_MODEL));
             String effort = reasoningEffort(current.optString("reasoningEffort", DEFAULT_REASONING_EFFORT));
+            JSONArray supported = reasoningEfforts(current.optJSONArray("reasoningEfforts"));
             if (!DEFAULT_REASONING_EFFORT.equals(effort)
-                    && !selectedModel.equals(current.optString("reasoningEffortModel"))) effort = DEFAULT_REASONING_EFFORT;
+                    && (!selectedModel.equals(current.optString("reasoningEffortModel"))
+                    || !containsReasoningEffort(supported, effort))) effort = DEFAULT_REASONING_EFFORT;
             JSONObject allowed = new JSONObject().put("authMode", CODEX_ACCOUNT)
                     .put("model", selectedModel).put("reasoningEffort", effort);
-            if (!DEFAULT_REASONING_EFFORT.equals(effort)) allowed.put("reasoningEffortModel", selectedModel);
+            if (!DEFAULT_REASONING_EFFORT.equals(effort)) {
+                allowed.put("reasoningEffortModel", selectedModel);
+                allowed.put("reasoningEfforts", supported);
+            }
             for (String field : new String[]{"accessToken", "refreshToken", "accountId", "expiresAt", "idToken"})
                 if (account.has(field)) allowed.put(field, account.get(field));
             String revision = current.optString("providerRevision");

@@ -77,19 +77,22 @@ test('direct Codex wire has fixed destination, explicit strict:false and a struc
 });
 
 test('direct Codex wires main reasoning effort, preserves low for workers, and sanitizes invalid values',async()=>{
- for(const [configured,owner,proof,expected] of [
-   ['minimal','main','gpt-6-luna','minimal'],
-   ['low','main',undefined,'low'],
-   ['medium','main','gpt-6-luna','medium'],
-   ['high','main','gpt-6-luna','high'],
-   ['xhigh','main','gpt-6-luna','xhigh'],
-   ['max','main','gpt-6-luna','max'],
-   ['high','main','different-model','low'],
-   ['high','main',undefined,'low'],
-   ['not-a-level','main',undefined,'low'],
-   ['xhigh','worker-fixture','gpt-6-luna','low'],
+ for(const [configured,owner,proof,withLevels,expected] of [
+   ['minimal','main','gpt-6-luna',true,'minimal'],
+   ['low','main',undefined,false,'low'],
+   ['medium','main','gpt-6-luna',true,'medium'],
+   ['high','main','gpt-6-luna',true,'high'],
+   ['xhigh','main','gpt-6-luna',true,'xhigh'],
+   ['max','main','gpt-6-luna',true,'max'],
+   ['high','main','different-model',true,'low'],
+   ['high','main','gpt-6-luna',false,'low'],
+   ['high','main',undefined,false,'low'],
+   ['not-a-level','main',undefined,false,'low'],
+   ['xhigh','worker-fixture','gpt-6-luna',true,'low'],
  ] as const) {
-   const credentials={...accountCredential(),...(proof?{reasoningEffortModel:proof}:{})};let wire:any;
+   const credentials={...accountCredential(),...(proof?{
+     reasoningEffortModel:proof,...(withLevels?{reasoningEfforts:['minimal','low','medium','high','xhigh','max']}:{})
+   }:{})};let wire:any;
    const config:any={...accountConfig,reasoningEffort:configured};
    const stream=makeStream(config,credentials,owner);
    const agent=new Agent({streamFn:(model,context,options)=>stream(model,context,{...options,fetch:async(_input,init)=>{
