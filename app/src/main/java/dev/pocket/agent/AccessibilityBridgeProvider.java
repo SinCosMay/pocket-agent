@@ -16,6 +16,8 @@ import org.json.JSONObject;
 
 public final class AccessibilityBridgeProvider extends ContentProvider {
     private static final long STALE_BRIDGE_FILE_MS=10*60_000L;
+    private static final int MAX_BRIDGE_FILES=12;
+    private static final int MAX_BRIDGE_FILE_BYTES=8*1024*1024;
     static String authority(android.content.Context context) {return context.getPackageName()+".accessibility-bridge";}
     static Uri uri(android.content.Context context) {return Uri.parse("content://"+authority(context));}
     @Override public boolean onCreate() {return true;}
@@ -40,14 +42,24 @@ public final class AccessibilityBridgeProvider extends ContentProvider {
         if(displayId<0)throw new IllegalArgumentException("Display ID required");
         return displayId==android.view.Display.DEFAULT_DISPLAY?service.backend():service.backend(displayId);
     }
-    private File bridgeFile(String prefix,byte[] bytes) throws Exception {
+    private synchronized File bridgeFile(String prefix,byte[] bytes) throws Exception {
+        if(bytes==null||bytes.length>MAX_BRIDGE_FILE_BYTES)throw new IllegalStateException("Accessibility bridge payload exceeds limit");
         File dir=new File(getContext().getCacheDir(),"accessibility-bridge");
         if(!dir.exists()&&!dir.mkdirs())throw new IllegalStateException("Could not create accessibility bridge cache");
         File[] existing=dir.listFiles();
         long cutoff=System.currentTimeMillis()-STALE_BRIDGE_FILE_MS;
-        if(existing!=null)for(File file:existing)if(file.isFile()&&file.lastModified()<cutoff)try {file.delete();}catch(RuntimeException ignored){}
+        java.util.ArrayList<File> live=new java.util.ArrayList<>();
+        if(existing!=null)for(File file:existing)if(file.isFile()) {
+            if(file.lastModified()<cutoff)try {file.delete();}catch(RuntimeException ignored){}
+            else live.add(file);
+        }
+        live.sort(java.util.Comparator.comparingLong(File::lastModified));
+        while(live.size()>=MAX_BRIDGE_FILES) {
+            File oldest=live.remove(0);
+            try {oldest.delete();}catch(RuntimeException ignored){}
+        }
         File file=File.createTempFile(prefix,".bin",dir);
-        try(FileOutputStream output=new FileOutputStream(file)){output.write(bytes);}
+        try(FileOutputStream output=new FileOutputStream(file)){output.write(bytes);output.getFD().sync();}
         return file;
     }
     private Bundle observation(ControlBackend.Observation observation) throws Exception {
