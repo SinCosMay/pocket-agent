@@ -46,3 +46,51 @@ test('URL and Clock intents use private-display lease and mutation IDs',async()=
  await clock.execute('c',{screen:'alarms',operation_id:op+'_clock'});
  assert.equal(acquired,2);assert.equal(dispatched,2);
 });
+
+
+test('physical display UI calls bypass the virtual-display lease',async()=>{
+ let acquisitions=0;const calls:any[]=[];
+ const host={
+  ensureDisplay:async()=>{acquisitions++;return {status:'acquired',display_id:77};},
+  releaseScreen:()=>{},
+  dropPriorImages:()=>{},
+  call:(_method:string,args:any)=>{
+   calls.push(args);
+   if(args.name==='phone_observe')return {snapshot_id:'physical-1',package_name:'dev.pocket.agent.fixture',window_id:1,nodes:[],display_target:'physical',display_id:0};
+   return {status:'requested',package_name:args.args?.package_name,display_target:args.args?.display_target,display_id:0};
+  },
+ };
+ const all=nativeTools(host,'visible-worker');
+ const op='123456789-abcdef1234567890_visible01';
+ const open=all.find((x:any)=>x.name==='phone_open_app')!;
+ const observe=all.find((x:any)=>x.name==='phone_observe')!;
+ assert.deepEqual(validateToolArguments(open,{type:'toolCall',id:'open',name:open.name,arguments:{package_name:'dev.pocket.agent.fixture',display_target:'physical',operation_id:op}}),
+  {package_name:'dev.pocket.agent.fixture',display_target:'physical',operation_id:op});
+ await open.execute('open',{package_name:'dev.pocket.agent.fixture',display_target:'physical',operation_id:op});
+ await observe.execute('observe',{display_target:'physical'});
+ assert.equal(acquisitions,0);
+ assert.equal(calls.length,2);
+ assert.equal(calls[0].args.display_target,'physical');
+ assert.equal(calls[1].args.display_target,'physical');
+
+ await open.execute('private',{package_name:'dev.pocket.agent.fixture',operation_id:op+'_private'});
+ assert.equal(acquisitions,1,'default virtual UI behavior must remain unchanged');
+});
+
+test('physical-only batch does not reserve a virtual display',async()=>{
+ let acquisitions=0,dispatched=0;
+ const host={
+  ensureDisplay:async()=>{acquisitions++;return {status:'acquired'};},
+  dropPriorImages:()=>{},
+  call:(_method:string,args:any)=>{assert.equal(args.name,'phone_batch');dispatched++;return {status:'completed',results:[]};},
+ };
+ const batch=nativeTools(host,'visible-batch').find((x:any)=>x.name==='phone_batch')!;
+ const op='123456789-abcdef1234567890_batchvis1';
+ const args={calls:[
+  {name:'phone_open_app',args:{package_name:'dev.pocket.agent.fixture',display_target:'physical',operation_id:op}},
+  {name:'phone_observe',args:{display_target:'physical'}},
+ ]};
+ await batch.execute('batch',args);
+ assert.equal(dispatched,1);
+ assert.equal(acquisitions,0);
+});

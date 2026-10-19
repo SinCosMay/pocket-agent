@@ -40,15 +40,23 @@ type ObservationState={packageName:string,windowId:number,signature:string};
 type UiTransition={startedAt:number,deadline:number,expectedPackage?:string,previous?:ObservationState};
 type OwnerUiState={last?:ObservationState,transition?:UiTransition};
 const uiStates=new WeakMap<object,Map<string,OwnerUiState>>();
+type DisplayTarget='virtual'|'physical';
+function displayTarget(args:any):DisplayTarget {return args?.display_target==='physical'?'physical':'virtual';}
+function uiStateKey(owner:string,target:DisplayTarget):string{return owner+'\u0000'+target;}
 
-function ownerUiState(host:any,owner:string):OwnerUiState {
+function ownerUiState(host:any,owner:string,target:DisplayTarget='virtual'):OwnerUiState {
   let owners=uiStates.get(host);
   if(!owners){owners=new Map();uiStates.set(host,owners);}
-  let state=owners.get(owner);
-  if(!state){state={};owners.set(owner,state);}
+  const key=uiStateKey(owner,target);
+  let state=owners.get(key);
+  if(!state){state={};owners.set(key,state);}
   return state;
 }
-export function clearNativeToolUiState(host:any,owner:string):void {uiStates.get(host)?.delete(owner);}
+export function clearNativeToolUiState(host:any,owner:string,target?:DisplayTarget):void {
+  const owners=uiStates.get(host);if(!owners)return;
+  if(target){owners.delete(uiStateKey(owner,target));return;}
+  owners.delete(uiStateKey(owner,'virtual'));owners.delete(uiStateKey(owner,'physical'));
+}
 function observationState(result:any):ObservationState {
   const nodes=Array.isArray(result?.nodes)?result.nodes.slice(0,40).map((n:any)=>[n?.resource_id,n?.text,n?.description,n?.role,n?.bounds]):[];
   return {packageName:String(result?.package_name??''),windowId:Number(result?.window_id??-1),signature:JSON.stringify(nodes)};
@@ -73,23 +81,24 @@ async function pauseForUi(ms:number,signal?:AbortSignal):Promise<void> {
     signal?.addEventListener('abort',abort,{once:true});
   });
 }
-function markUiTransition(host:any,owner:string,expectedPackage?:string):void {
-  const state=ownerUiState(host,owner),now=Date.now();
+function markUiTransition(host:any,owner:string,args:any,expectedPackage?:string):void {
+  const state=ownerUiState(host,owner,displayTarget(args)),now=Date.now();
   state.transition={startedAt:now,deadline:now+2500,expectedPackage,previous:state.last};
 }
 async function observeReady(host:any,owner:string,args:any,signal?:AbortSignal):Promise<any> {
-  let state=ownerUiState(host,owner);
+  const target=displayTarget(args);
+  let state=ownerUiState(host,owner,target);
   let readinessDeadline=Date.now()+2000;
   let recoveredLease=false,last:any;
   for(;;) {
     if(signal?.aborted)throw new Error('Display request cancelled');
     last=host.call('tool',{name:'phone_observe',args,owner});
-    if((backendLeaseLost(last)||observationBackendTimedOut(last))&&!recoveredLease&&host.ensureDisplay) {
-      host.releaseScreen?.(owner);clearNativeToolUiState(host,owner);
+    if(target==='virtual'&&(backendLeaseLost(last)||observationBackendTimedOut(last))&&!recoveredLease&&host.ensureDisplay) {
+      host.releaseScreen?.(owner);clearNativeToolUiState(host,owner,'virtual');
       await pauseForUi(100,signal);
       const acquired=await host.ensureDisplay(owner,signal);
       if(acquired?.isError)return acquired;
-      recoveredLease=true;state=ownerUiState(host,owner);
+      recoveredLease=true;state=ownerUiState(host,owner,'virtual');
       readinessDeadline=Date.now()+2000;
       continue;
     }
@@ -124,21 +133,23 @@ function firstBatchUiCall(args:any):any {
   return Array.isArray(args?.calls)?args.calls.find((call:any)=>UI_TOOL_NAMES.has(call?.name)):undefined;
 }
 async function settlePendingBatchObservation(host:any,owner:string,args:any,signal?:AbortSignal):Promise<any> {
-  const state=ownerUiState(host,owner),firstUi=firstBatchUiCall(args);
+  const firstUi=firstBatchUiCall(args);
+  if(!firstUi)return null;
+  const target=displayTarget(firstUi.args),state=ownerUiState(host,owner,target);
   if(!state.transition||!['phone_observe','phone_act'].includes(firstUi?.name))return null;
-  const observeArgs=firstUi?.name==='phone_observe'?{...(firstUi.args??{}),include_image:false}:{include_image:false};
+  const observeArgs=firstUi?.name==='phone_observe'?{...(firstUi.args??{}),include_image:false}:{include_image:false,display_target:target};
   return observeReady(host,owner,observeArgs,signal);
 }
 function recordBatchUiState(host:any,owner:string,args:any,result:any):void {
   const calls=Array.isArray(args?.calls)?args.calls:[],entries=Array.isArray(result?.results)?result.results:[];
   for(const entry of entries) {
     const call=calls[Number(entry?.index)],nested=entry?.result;
-    if(nested?.display_replaced)clearNativeToolUiState(host,owner);
+    if(nested?.display_replaced)clearNativeToolUiState(host,owner,'virtual');
     if(!call||nested?.isError)break;
-    if(call.name==='phone_open_app')markUiTransition(host,owner,call.args?.package_name);
-    else if(call.name==='phone_open_url'||call.name==='phone_clock_screen')markUiTransition(host,owner);
+    if(call.name==='phone_open_app')markUiTransition(host,owner,call.args,call.args?.package_name);
+    else if(call.name==='phone_open_url'||call.name==='phone_clock_screen')markUiTransition(host,owner,call.args);
     else if(call.name==='phone_observe') {
-      const state=ownerUiState(host,owner);
+      const state=ownerUiState(host,owner,displayTarget(call.args));
       state.transition=undefined;state.last=observationState(nested);
     }
   }
@@ -159,9 +170,9 @@ export function nativeTools(host:any,owner:string,grant?:readonly string[]):any[
         }
         if(args.action==='acquire'&&host.ensureDisplay)return toolResult(await host.ensureDisplay(owner,signal));
       }
-      const needsUi=s.name==='phone_observe'||s.name==='phone_act'||s.name==='phone_open_app'||s.name==='phone_open_url'||s.name==='phone_clock_screen'||
-        (s.name==='phone_batch'&&args.calls?.some((c:any)=>UI_TOOL_NAMES.has(c.name)));
-      if(needsUi&&host.ensureDisplay){
+      const needsVirtualUi=(UI_TOOL_NAMES.has(s.name)&&displayTarget(args)==='virtual')||
+        (s.name==='phone_batch'&&args.calls?.some((c:any)=>UI_TOOL_NAMES.has(c.name)&&displayTarget(c.args)==='virtual'));
+      if(needsVirtualUi&&host.ensureDisplay){
         const result=await host.ensureDisplay(owner,signal);
         if(result?.isError)return toolResult(result);
       }
@@ -175,12 +186,12 @@ export function nativeTools(host:any,owner:string,grant?:readonly string[]):any[
       const result=s.name==='phone_observe'?await observeReady(host,owner,args,signal):host.call('tool',{name:s.name,args,owner});
       if(s.name==='phone_batch')recordBatchUiState(host,owner,args,result);
       else if(!result?.isError) {
-        if(s.name==='phone_open_app')markUiTransition(host,owner,args.package_name);
-        else if(s.name==='phone_open_url'||s.name==='phone_clock_screen')markUiTransition(host,owner);
+        if(s.name==='phone_open_app')markUiTransition(host,owner,args,args.package_name);
+        else if(s.name==='phone_open_url'||s.name==='phone_clock_screen')markUiTransition(host,owner,args);
       }
-      if(needsUi&&result?.isError&&result.code==='NOT_READY'&&
+      if(needsVirtualUi&&result?.isError&&result.code==='NOT_READY'&&
         /virtual display|no virtual display|shizuku backend|display service/i.test(String(result.message??''))) {
-        host.releaseScreen?.(owner);clearNativeToolUiState(host,owner);
+        host.releaseScreen?.(owner);clearNativeToolUiState(host,owner,'virtual');
       }
       return toolResult(result);
     },

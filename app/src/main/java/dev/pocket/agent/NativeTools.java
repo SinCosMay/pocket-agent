@@ -53,6 +53,11 @@ final class NativeTools implements AutoCloseable {
         if(action.equals("release")) {releaseOwner(owner);return Json.obj("status","released");}
         return Json.failure("INVALID_ARGUMENT","action must be acquire or release");
     }
+    private static boolean uiTool(String name) {
+        return name.equals("phone_observe")||name.equals("phone_act")||name.equals("phone_open_app")||name.equals("phone_open_url")||name.equals("phone_clock_screen");
+    }
+    private static String displayTarget(JSONObject args) {return args.optString("display_target","virtual");}
+    private static boolean physical(JSONObject args) {return "physical".equals(displayTarget(args));}
     static int textLengthWithoutImages(Object value) {
         if(value==null||value==JSONObject.NULL)return 4;
         if(value instanceof JSONObject object) {
@@ -99,12 +104,18 @@ final class NativeTools implements AutoCloseable {
             return Json.failure("INVALID_ARGUMENT","calls must contain 1..8 direct calls");
         try {
             // Validate the whole batch before the first dispatch. Nested batches and leases are excluded.
+            String batchDisplayTarget=null;
             for(int i=0;i<calls.length();i++) {
                 JSONObject call=calls.getJSONObject(i);
                 if(call.length()!=2) throw new ControlException(INVALID_ARGUMENT,"Each call needs only name and args");
-                String name=call.getString("name");
+                String name=call.getString("name");JSONObject callArgs=call.getJSONObject("args");
                 if(name.equals("phone_batch") || name.equals("phone_screen")) throw new ControlException(INVALID_ARGUMENT,"Nested batches and lease changes are not allowed");
-                validate(call.getJSONObject("args"),definition(name).getJSONObject("inputSchema"));
+                validate(callArgs,definition(name).getJSONObject("inputSchema"));
+                if(uiTool(name)) {
+                    String target=displayTarget(callArgs);
+                    if(batchDisplayTarget==null)batchDisplayTarget=target;
+                    else if(!batchDisplayTarget.equals(target))throw new ControlException(INVALID_ARGUMENT,"All UI calls in one batch must use the same display_target");
+                }
             }
             JSONArray results=new JSONArray();JSONObject previousObservation=null;String expectedPackage=null;
             boolean transitionPending=false;long transitionStartedMs=0;
@@ -183,7 +194,7 @@ final class NativeTools implements AutoCloseable {
             if(result.optBoolean("isError")) {
                 String code=result.optString("code"),message=result.optString("message");
                 String lower=message.toLowerCase(java.util.Locale.ROOT);
-                if(!displayReplaced&&observationLeaseReplacementNeeded(result)) {
+                if(!physical(args)&&!displayReplaced&&observationLeaseReplacementNeeded(result)) {
                     JSONObject replacement=replaceObservationLease(owner);
                     if(replacement.optBoolean("isError"))return replacement;
                     displayReplaced=true;transitionPending=false;expectedPackage=null;previousObservation=null;
@@ -267,7 +278,7 @@ final class NativeTools implements AutoCloseable {
         if(value==null)return "";
         return value.length()>max?value.substring(0,max):value;
     }
-    private AndroidScreenBackend screen(String owner) throws ControlException {return displays.screen(owner);}
+    private AndroidScreenBackend screen(String owner,JSONObject args) throws ControlException {return displays.screen(owner,physical(args));}
     private static Integer integer(JSONObject a,String name) throws Exception {return a.has(name)?a.getInt(name):null;}
     private static String string(JSONObject a,String name) throws Exception {return a.has(name)?a.getString(name):null;}
     private JSONObject outcome(AndroidSystemActions.Outcome value) {return Json.tool(Json.obj("status",value.status(),"reference",value.reference(),"message",value.message()));}
@@ -291,9 +302,9 @@ final class NativeTools implements AutoCloseable {
     }
     private JSONObject observation(JSONObject a,String owner) throws Exception {return observation(a,owner,OBSERVATION_TEXT_BUDGET);}
     private JSONObject observation(JSONObject a,String owner,int textBudget) throws Exception {
-        ControlBackend.Observation o=screen(owner).observe(a.optBoolean("include_image",false),a.optInt("max_image_dimension",1280),a.optInt("max_nodes",DEFAULT_OBSERVATION_NODES));
+        ControlBackend.Observation o=screen(owner,a).observe(a.optBoolean("include_image",false),a.optInt("max_image_dimension",1280),a.optInt("max_nodes",DEFAULT_OBSERVATION_NODES));
         JSONObject bounded=boundedObservationNodes(o.nodes(),textBudget);JSONArray nodes=bounded.getJSONArray("nodes");
-        JSONObject data=Json.obj("snapshot_id",o.snapshotId(),"captured_at_ms",o.capturedAtMs(),"package_name",o.packageName(),"window_id",o.windowId(),"coordinate_width",o.coordinateWidth(),"coordinate_height",o.coordinateHeight(),"interactive",o.interactive(),"locked",o.locked(),"nodes",nodes,"nodes_truncated",o.nodesTruncated()||bounded.getBoolean("nodes_truncated"),"image_width",o.imageWidth(),"image_height",o.imageHeight());
+        JSONObject data=Json.obj("snapshot_id",o.snapshotId(),"captured_at_ms",o.capturedAtMs(),"package_name",o.packageName(),"window_id",o.windowId(),"display_target",displayTarget(a),"display_id",displays.display(owner,physical(a)),"coordinate_width",o.coordinateWidth(),"coordinate_height",o.coordinateHeight(),"interactive",o.interactive(),"locked",o.locked(),"nodes",nodes,"nodes_truncated",o.nodesTruncated()||bounded.getBoolean("nodes_truncated"),"image_width",o.imageWidth(),"image_height",o.imageHeight());
         JSONObject result=Json.tool(data);byte[] image=o.image();if(image!=null) result.put("images",Json.arr(Json.obj("data",Base64.encodeToString(image,Base64.NO_WRAP),"mimeType",o.imageMime())));
         return result;
     }
@@ -339,7 +350,7 @@ final class NativeTools implements AutoCloseable {
                 int state=context.getSystemService(android.telephony.TelephonyManager.class).getCallState();callState=switch(state) {case 0 -> "idle";case 1 -> "ringing";case 2 -> "offhook";default -> "unknown";};
             }catch(Exception denied) {}
         }
-        return Json.tool(Json.obj("version",BuildConfig.VERSION_NAME,"operation_prefix",operations.prefix(),"operation_nonce_min_length",8,"operation_nonce_max_length",48,"accessibility_connected",AgentAccessibility.connected!=null,"notification_listener_connected",PhoneNotifications.connected!=null,"interactive",context.getSystemService(PowerManager.class).isInteractive(),"locked",context.getSystemService(KeyguardManager.class).isKeyguardLocked(),"permissions",permissions,"phone_accounts",accounts,"sms_subscriptions",subscriptions,"media_sessions",media,"call_state",callState,"call_state_note","offhook includes dialing; it is not connection proof","preferred_order",Json.arr("direct_android_api","app_provided_action","semantic_accessibility","screen_gesture"),"virtual_displays",Json.obj("backend",displays.backendStatus(),"active",displays.activeCount(),"maximum",AgentDisplayCoordinator.MAX_DISPLAYS,"requires_shizuku",true)));
+        return Json.tool(Json.obj("version",BuildConfig.VERSION_NAME,"operation_prefix",operations.prefix(),"operation_nonce_min_length",8,"operation_nonce_max_length",48,"accessibility_connected",AgentAccessibility.connected!=null,"notification_listener_connected",PhoneNotifications.connected!=null,"interactive",context.getSystemService(PowerManager.class).isInteractive(),"locked",context.getSystemService(KeyguardManager.class).isKeyguardLocked(),"permissions",permissions,"phone_accounts",accounts,"sms_subscriptions",subscriptions,"media_sessions",media,"call_state",callState,"call_state_note","offhook includes dialing; it is not connection proof","preferred_order",Json.arr("direct_android_api","app_provided_action","semantic_accessibility","screen_gesture"),"physical_display",Json.obj("available",AgentAccessibility.connected!=null,"display_id",0,"requires_explicit_target",true,"launch_via_accessibility",true),"virtual_displays",Json.obj("backend",displays.backendStatus(),"active",displays.activeCount(),"maximum",AgentDisplayCoordinator.MAX_DISPLAYS,"requires_shizuku",true)));
     }
     private JSONObject dispatch(String name,JSONObject a,String owner) throws Exception {
         switch(name) {
@@ -348,14 +359,14 @@ final class NativeTools implements AutoCloseable {
             case "phone_act": {
                 JSONObject s=a.optJSONObject("selector");ControlBackend.Selector selector=s==null?null:new ControlBackend.Selector(string(s,"resource_id"),string(s,"text"),string(s,"description"));
                 ControlBackend.Action action=new ControlBackend.Action(ControlBackend.Kind.valueOf(a.getString("kind").toUpperCase(java.util.Locale.ROOT)),a.getString("snapshot_id"),integer(a,"x"),integer(a,"y"),integer(a,"end_x"),integer(a,"end_y"),a.optInt("duration_ms",600),string(a,"text"),a.optBoolean("replace",true),string(a,"key"),string(a,"direction"),selector);
-                ControlBackend.Result result;
-                if(action.kind()==ControlBackend.Kind.KEY && !"enter".equals(action.key())) {
-                    screen(owner).validateAction(action);
+                ControlBackend.Result result;AndroidScreenBackend target=screen(owner,a);
+                if(action.kind()==ControlBackend.Kind.KEY && !"enter".equals(action.key()) && !physical(a)) {
+                    target.validateAction(action);
                     int key=switch(action.key()==null?"":action.key()) {case "back"->4;case "home"->3;case "recents"->187;default->throw new ControlException(UNSUPPORTED,"Key must be home, back, recents or enter");};
                     displays.key(owner,key);
                     result=new ControlBackend.Result("dispatched","Display-targeted key accepted; task outcome not yet verified");
-                }else result=screen(owner).execute(action);
-                return Json.tool(Json.obj("status",result.status(),"message",result.message()));
+                }else result=target.execute(action);
+                return Json.tool(Json.obj("status",result.status(),"message",result.message(),"display_target",displayTarget(a),"display_id",displays.display(owner,physical(a))));
             }
             case "phone_apps": {
                 JSONArray apps=new JSONArray();List<ResolveInfo> found=context.getPackageManager().queryIntentActivities(new Intent(Intent.ACTION_MAIN).addCategory(Intent.CATEGORY_LAUNCHER),0);
@@ -364,8 +375,8 @@ final class NativeTools implements AutoCloseable {
             case "phone_open_app": {
                 String pkg=a.getString("package_name");Intent launch=context.getPackageManager().getLaunchIntentForPackage(pkg);
                 if(launch==null||launch.getComponent()==null) throw new ControlException(UNSUPPORTED,"No launcher component visible for this package");
-                displays.launch(owner,launch.getComponent().flattenToString());
-                return Json.tool(Json.obj("status","requested","package_name",pkg,"display_id",displays.display(owner),"message","Launch requested on the private virtual display; verify with phone_observe."));
+                boolean physicalTarget=physical(a);displays.launch(owner,launch,physicalTarget);
+                return Json.tool(Json.obj("status","requested","package_name",pkg,"display_target",displayTarget(a),"display_id",displays.display(owner,physicalTarget),"message",physicalTarget?"Launch requested on the visible physical display; verify with phone_observe using display_target=physical.":"Launch requested on the private virtual display; verify with phone_observe."));
             }
             case "phone_open_url": {
                 String raw=a.getString("url");
@@ -374,15 +385,15 @@ final class NativeTools implements AutoCloseable {
                     uri.getHost()==null || uri.getHost().isBlank() || uri.getUserInfo()!=null ||
                     raw.length()>2048 || raw.contains("\n") || raw.contains("\r"))
                     throw new ControlException(INVALID_ARGUMENT,"Provide an HTTP(S) URL without embedded credentials or control characters");
-                displays.openUrl(owner,uri.toString());
-                return Json.tool(Json.obj("status","requested","display_id",displays.display(owner),
-                    "message","URL launch requested on the virtual display; verify in phone_observe."));
+                boolean physicalTarget=physical(a);displays.openUrl(owner,uri.toString(),physicalTarget);
+                return Json.tool(Json.obj("status","requested","display_target",displayTarget(a),"display_id",displays.display(owner,physicalTarget),
+                    "message",physicalTarget?"URL launch requested on the visible physical display; verify with phone_observe using display_target=physical.":"URL launch requested on the virtual display; verify in phone_observe."));
             }
             case "phone_clock_screen": {
-                String screen=a.getString("screen");
-                displays.showClock(owner,screen);
-                return Json.tool(Json.obj("status","requested","display_id",displays.display(owner),
-                    "message","Clock screen requested; read alarms/timers from the UI, not from an unsupported provider API."));
+                String screen=a.getString("screen");boolean physicalTarget=physical(a);
+                displays.showClock(owner,screen,physicalTarget);
+                return Json.tool(Json.obj("status","requested","display_target",displayTarget(a),"display_id",displays.display(owner,physicalTarget),
+                    "message",physicalTarget?"Clock screen requested on the visible physical display; verify with phone_observe using display_target=physical.":"Clock screen requested; read alarms/timers from the UI, not from an unsupported provider API."));
             }
             case "phone_contacts": {
                 JSONArray contacts=new JSONArray();for(AndroidSystemActions.Contact c:system.findContacts(a.getString("query"),a.optInt("limit",20))) contacts.put(Json.obj("contact_id",c.contactId(),"name",c.name(),"number",c.number()));return Json.tool(Json.obj("contacts",contacts));

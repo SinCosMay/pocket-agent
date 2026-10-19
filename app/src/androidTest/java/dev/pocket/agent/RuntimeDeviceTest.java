@@ -276,6 +276,57 @@ public class RuntimeDeviceTest {
             assertEquals(unknown.toString(),duplicateUnknown.toString());
         }
     }
+    @Test public void physicalDisplayCanLaunchObserveAndActWithoutVirtualLease() throws Exception {
+        DeviceTestAccess.ensureAccessibility();
+        try(NativeTools tools=new NativeTools(context())) {
+            String owner="physical-display";JSONObject caps=tools.execute("phone_capabilities",new JSONObject(),owner);
+            assertEquals(caps.toString(),0,caps.getJSONObject("virtual_displays").optInt("active",-1));
+            assertTrue(caps.toString(),caps.getJSONObject("physical_display").optBoolean("available"));
+            String prefix=caps.getString("operation_prefix"),nonce=Long.toString(System.nanoTime());
+            JSONObject opened=tools.execute("phone_open_app",new JSONObject()
+                .put("package_name","dev.pocket.agent.fixture").put("display_target","physical")
+                .put("operation_id",prefix+"_physicalopen"+nonce),owner);
+            assertFalse(opened.toString(),opened.optBoolean("isError"));
+            assertEquals(opened.toString(),0,opened.optInt("display_id",-1));
+            assertEquals(opened.toString(),"physical",opened.optString("display_target"));
+
+            JSONObject observeArgs=new JSONObject().put("display_target","physical").put("max_nodes",120);
+            long deadline=System.currentTimeMillis()+10000;JSONObject observation=new JSONObject();
+            while(System.currentTimeMillis()<deadline) {
+                observation=tools.execute("phone_observe",observeArgs,owner);
+                if("dev.pocket.agent.fixture".equals(observation.optString("package_name")) && observation.optJSONArray("nodes")!=null && observation.getJSONArray("nodes").length()>0)break;
+                Thread.sleep(200);
+            }
+            assertFalse(observation.toString(),observation.optBoolean("isError"));
+            assertEquals(observation.toString(),"dev.pocket.agent.fixture",observation.optString("package_name"));
+            assertEquals(observation.toString(),0,observation.optInt("display_id",-1));
+            assertEquals(observation.toString(),"physical",observation.optString("display_target"));
+            requireText(observation,"STATUS_READY");
+
+            JSONObject click=new JSONObject().put("kind","click").put("snapshot_id",observation.getString("snapshot_id"))
+                .put("selector",new JSONObject().put("text","AGENT_CLICK")).put("display_target","physical")
+                .put("operation_id",prefix+"_physicalclick"+nonce);
+            JSONObject clicked=tools.execute("phone_act",click,owner);
+            assertFalse(clicked.toString(),clicked.optBoolean("isError"));
+            assertEquals(clicked.toString(),0,clicked.optInt("display_id",-1));
+            assertEquals(clicked.toString(),"physical",clicked.optString("display_target"));
+
+            deadline=System.currentTimeMillis()+5000;JSONObject verified=new JSONObject();
+            while(System.currentTimeMillis()<deadline) {
+                verified=tools.execute("phone_observe",observeArgs,owner);
+                JSONArray nodes=verified.optJSONArray("nodes");boolean found=false;
+                if(nodes!=null)for(int i=0;i<nodes.length();i++)if(nodes.getJSONObject(i).optString("text").startsWith("STATUS_CLICKED:")){found=true;break;}
+                if(found)break;
+                Thread.sleep(150);
+            }
+            boolean clickedVisible=false;JSONArray nodes=verified.optJSONArray("nodes");
+            if(nodes!=null)for(int i=0;i<nodes.length();i++)if(nodes.getJSONObject(i).optString("text").startsWith("STATUS_CLICKED:"))clickedVisible=true;
+            assertTrue("Physical-display click was not visible in fixture: "+verified,clickedVisible);
+            JSONObject after=tools.execute("phone_capabilities",new JSONObject(),owner);
+            assertEquals("Physical-only UI work must not allocate a private display: "+after,0,after.getJSONObject("virtual_displays").optInt("active",-1));
+        }
+    }
+
     @Test public void directNativeFixtureAndMutationLedger() throws Exception {
         DeviceTestAccess.ensureAccessibility();Context c=context();NativeTools tools=new NativeTools(c);String owner="instrumentation-fixture";
         JSONObject caps=tools.execute("phone_capabilities",new JSONObject(),owner);
