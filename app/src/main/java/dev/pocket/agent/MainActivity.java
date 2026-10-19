@@ -54,7 +54,7 @@ public final class MainActivity extends Activity implements AgentService.Observe
     private final java.util.Map<String, String> modelDefaultReasoningEfforts = new java.util.HashMap<>();
     private static final String[] REASONING_EFFORTS = {"minimal", "low", "medium", "high", "xhigh", "max"};
     private static final String[] DEFAULT_REASONING_CHOICES = {"minimal", "low", "medium", "high", "xhigh"};
-    private static final String[] CODEX_REASONING_CHOICES = {"low", "medium", "high", "xhigh", "max"};
+    private static final String[] CODEX_REASONING_CHOICES = {"low", "medium", "high", "xhigh"};
     private StateStore store;
     private static final int IMPORT_CODEX = 90;
     private final ExecutorService accountFiles = Executors.newSingleThreadExecutor();
@@ -293,10 +293,18 @@ public final class MainActivity extends Activity implements AgentService.Observe
         }
         return CredentialStore.DEFAULT_REASONING_EFFORT;
     }
+    private static String[] reasoningChoicesWithPreferred(String[] fallback, String preferred) {
+        if (!isReasoningEffort(preferred)) return fallback;
+        for (String value : fallback) if (value.equals(preferred)) return fallback;
+        String[] values = java.util.Arrays.copyOf(fallback, fallback.length + 1);
+        values[fallback.length] = preferred;
+        return values;
+    }
     private void populateReasoningPicker(Spinner picker, String modelId, String preferred, boolean codexLike) {
         String[] advertised = modelReasoningEfforts.get(modelId);
         String[] fallback = codexLike ? CODEX_REASONING_CHOICES : DEFAULT_REASONING_CHOICES;
-        String[] values = advertised != null && advertised.length > 0 ? advertised : fallback;
+        String[] values = advertised != null && advertised.length > 0 ? advertised
+                : reasoningChoicesWithPreferred(fallback, preferred);
         String[] labels = new String[values.length];
         int selection = -1;
         for (int i = 0; i < values.length; i++) {
