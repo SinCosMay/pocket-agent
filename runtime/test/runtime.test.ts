@@ -34,7 +34,7 @@ test('Pi validates the full mutation ID contract before dispatch; historical rec
 
 test('mobile spawn schema omits unsupported overrides while upstream actions and inherited grants stay intact',()=>{
  const mobile:any=MobileSubagentParams,upstream:any=SubagentParams;
- assert.deepEqual(Object.keys(mobile.properties.spawns.items.properties).sort(),['agent','label','model','prompt']);
+ assert.deepEqual(Object.keys(mobile.properties.spawns.items.properties).sort(),['agent','label','model','prompt','reasoning']);
  assert.deepEqual(mobile.properties.spawns.items.required,['agent','prompt','label']);
  assert.equal(mobile.properties.spawns.items.additionalProperties,false);
  for(const field of ['cwd','skills','thinking'])assert.ok(field in upstream.properties.spawns.items.properties,'upstream schema must remain unmodified');
@@ -43,10 +43,23 @@ test('mobile spawn schema omits unsupported overrides while upstream actions and
  const runtime=new PocketRuntime(new Bridge());
  const tool=runtime.main.agent.state.tools.find((t:any)=>t.name==='subagent')!;
  assert.equal(tool.parameters,MobileSubagentParams);
+ assert.match(tool.description,/omitting reasoning inherits the caller reasoning effort/);
  assert.match(tool.description,/Tools are inherited by children/);
  assert.ok(runtime.registry.agents.get('phone-operator')!.tools!.includes('phone_act'));
  assert.ok(!runtime.registry.agents.get('researcher')!.tools!.includes('phone_act'));
  assert.ok(runtime.registry.agents.get('researcher')!.tools!.includes('phone_calendar_events'));
+});
+
+test('mobile subagents inherit main reasoning and accept an explicit per-spawn reasoning override',async()=>{
+ const bridge=new Bridge();bridge.credentials={authMode:'scripted',model:'scripted',reasoningEffort:'high'};
+ const runtime=new PocketRuntime(bridge);
+ const tool=runtime.main.agent.state.tools.find((t:any)=>t.name==='subagent')!;
+ await tool.execute('reasoning-explicit',{action:'spawn',spawns:[{agent:'researcher',label:'Explicit reasoning',prompt:'Read state',reasoning:'medium'}]});
+ await until(()=>runtime.state().tasks[0]?.status==='completed');
+ assert.equal(runtime.state().tasks[0].requestedConfig.thinking,'medium');
+ await tool.execute('reasoning-inherited',{action:'spawn',spawns:[{agent:'researcher',label:'Inherited reasoning',prompt:'Read state'}]});
+ await until(()=>runtime.state().tasks[1]?.status==='completed');
+ assert.equal(runtime.state().tasks[1].requestedConfig.thinking,'high');
 });
 
 test('batch vision keeps only latest bounded image and preserves image-free operation receipts',()=>{
