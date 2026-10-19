@@ -1,5 +1,6 @@
 package dev.pocket.agent;
 
+import android.app.KeyguardManager;
 import android.app.Notification;
 import android.app.NotificationChannel;
 import android.app.NotificationManager;
@@ -8,11 +9,28 @@ import android.content.ComponentName;
 import android.content.Intent;
 import android.content.pm.ServiceInfo;
 import android.os.IBinder;
+import android.os.PowerManager;
+import android.provider.Settings;
 
 public final class AccessibilityRepairService extends Service {
     private static final int NOTIFICATION=62;
     private static final String CHANNEL="accessibility-repair";
     private volatile boolean running;
+
+    private boolean enabledByUser(ComponentName target) {
+        try {
+            if(Settings.Secure.getInt(getContentResolver(),Settings.Secure.ACCESSIBILITY_ENABLED,0)!=1)return false;
+            String raw=Settings.Secure.getString(getContentResolver(),Settings.Secure.ENABLED_ACCESSIBILITY_SERVICES);
+            if(raw==null)return false;
+            for(String item:raw.split(":"))if(target.equals(ComponentName.unflattenFromString(item.trim())))return true;
+        } catch(RuntimeException ignored) {}
+        return false;
+    }
+    private boolean safeForAutomaticRepair() {
+        PowerManager power=getSystemService(PowerManager.class);
+        KeyguardManager keyguard=getSystemService(KeyguardManager.class);
+        return !power.isInteractive()||keyguard.isKeyguardLocked();
+    }
     @Override public void onCreate() {
         super.onCreate();
         NotificationManager manager=getSystemService(NotificationManager.class);
@@ -28,18 +46,43 @@ public final class AccessibilityRepairService extends Service {
         running=true;
         Thread worker=new Thread(()->{
             ShizukuDisplayClient client=null;String outcome="failed";
+            ComponentName component=new ComponentName(this,AgentAccessibility.class);
+            boolean pending=AccessibilityRepairState.pending(this);
+            boolean enabled=enabledByUser(component);
             try {
-                String prerequisite=ShizukuDisplayClient.prerequisites();
-                if(!"idle".equals(prerequisite))outcome=prerequisite;
-                else {
-                    // Recovery borrows the shared display UserService. Closing this temporary
-                    // client must only drop its binding, never remove active worker displays.
-                    client=new ShizukuDisplayClient(this,()->{},false);
-                    boolean repaired=client.repairAccessibility(new ComponentName(this,AgentAccessibility.class).flattenToShortString());
-                    outcome=repaired?"triggered":"failed";
+                if(!enabled&&!pending)outcome="disabled";
+                else if(!safeForAutomaticRepair()) {
+                    // Never rewrite Accessibility settings while an unlocked user can be
+                    // changing them. If an interrupted repair left the component absent,
+                    // abandon automatic restoration rather than undo a possible user disable.
+                    if(!enabled&&pending)AccessibilityRepairState.clear(this);
+                    outcome="deferred_unlocked";
+                } else {
+                    String prerequisite=ShizukuDisplayClient.prerequisites();
+                    if(!"idle".equals(prerequisite))outcome=prerequisite;
+                    else {
+                        if(enabled&&!pending)AccessibilityRepairState.begin(this);
+                        client=new ShizukuDisplayClient(this,()->{},false);
+                        boolean repaired=client.repairAccessibility(component.flattenToShortString(),!enabled&&pending);
+                        outcome=repaired?"triggered":"failed";
+                        long deadline=android.os.SystemClock.elapsedRealtime()+4000;
+                        while(repaired&&android.os.SystemClock.elapsedRealtime()<deadline) {
+                            if(AccessibilityProxyBackend.connected(this)) {AccessibilityRepairState.clear(this);outcome="restored";break;}
+                            try {Thread.sleep(100);} catch(InterruptedException interrupted) {Thread.currentThread().interrupt();break;}
+                        }
+                        if(!enabledByUser(component)&&!AccessibilityRepairState.pending(this))outcome="disabled";
+                        else if(!enabledByUser(component)&&!"triggered".equals(outcome)) {
+                            // The marker deliberately survives a failed mid-repair attempt so
+                            // the independent guardian can retry once Shizuku is available.
+                            outcome="repair_pending";
+                        } else if(enabledByUser(component)&&!"restored".equals(outcome)) {
+                            AccessibilityRepairState.clear(this);
+                        }
+                    }
                 }
             } catch(Exception failure) {
                 android.util.Log.w("PocketAccessibility","Accessibility repair unavailable",failure);
+                if(enabledByUser(component))AccessibilityRepairState.clear(this);
             } finally {
                 if(client!=null)try {client.close();}catch(RuntimeException ignored){}
                 try {

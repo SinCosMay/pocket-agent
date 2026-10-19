@@ -75,12 +75,16 @@ final class AgentDisplayCoordinator implements AutoCloseable {
     }
     private void recoverAccessibility() throws ControlException {
         ComponentName component=new ComponentName(context,AgentAccessibility.class);
-        String target=component.flattenToShortString();
-        if(!accessibilityEnabledByUser(component))
+        boolean enabled=accessibilityEnabledByUser(component);
+        boolean pending=AccessibilityRepairState.pending(context);
+        if(!enabled&&!pending)
             throw new ControlException(PERMISSION_REQUIRED,"Enable Pocket Agent accessibility to use virtual displays");
-        if(!client().repairAccessibility(target))
+        try {
+            context.startForegroundService(new android.content.Intent(context,AccessibilityRepairService.class));
+        } catch(RuntimeException failure) {
             throw new ControlException(NOT_READY,"Pocket Agent accessibility recovery could not be started");
-        long deadline=android.os.SystemClock.elapsedRealtime()+2500;
+        }
+        long deadline=android.os.SystemClock.elapsedRealtime()+4500;
         while(android.os.SystemClock.elapsedRealtime()<deadline) {
             if(AccessibilityProxyBackend.connected(context))return;
             try {Thread.sleep(100);} catch(InterruptedException interrupted) {
@@ -88,6 +92,8 @@ final class AgentDisplayCoordinator implements AutoCloseable {
                 throw new ControlException(RESULT_UNKNOWN,"Interrupted while waiting for accessibility recovery");
             }
         }
+        if(!accessibilityEnabledByUser(component)&&!AccessibilityRepairState.pending(context))
+            throw new ControlException(PERMISSION_REQUIRED,"Pocket Agent accessibility is disabled");
     }
 
     synchronized void launch(String owner,String component) throws ControlException {client().launch(display(owner),component);}

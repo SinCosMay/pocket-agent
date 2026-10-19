@@ -22,19 +22,22 @@ final class AccessibilityProxyBackend implements ControlBackend {
     private static final ThreadPoolExecutor IPC=new ThreadPoolExecutor(0,2,20,TimeUnit.SECONDS,
         new SynchronousQueue<>(),r->{Thread t=new Thread(r,"PocketAccessibilityIpc");t.setDaemon(true);return t;},
         new ThreadPoolExecutor.AbortPolicy());
-    private static final long IPC_TIMEOUT_MS=3500;
+    private static final long STATUS_IPC_TIMEOUT_MS=3500;
+    private static final long OBSERVE_IPC_TIMEOUT_MS=18_000;
+    private static final long VALIDATE_IPC_TIMEOUT_MS=7_000;
+    private static final long EXECUTE_IPC_BASE_TIMEOUT_MS=8_000;
     private final Context context;
     private final int displayId;
     AccessibilityProxyBackend(Context context,int displayId) {this.context=context.getApplicationContext();this.displayId=displayId;}
 
-    private static Bundle providerCall(Context context,String method,Bundle extras,boolean mutation) throws ControlException {
+    private static Bundle providerCall(Context context,String method,Bundle extras,boolean mutation,long timeoutMs) throws ControlException {
         final Future<Bundle> pending;
         try {
             pending=IPC.submit(()->context.getContentResolver().call(AccessibilityBridgeProvider.uri(context),method,null,extras));
         } catch(java.util.concurrent.RejectedExecutionException saturated) {
             throw new ControlException(ControlException.Code.NOT_READY,"Accessibility bridge is busy; retry after recovery");
         }
-        try {return pending.get(IPC_TIMEOUT_MS,TimeUnit.MILLISECONDS);}
+        try {return pending.get(timeoutMs,TimeUnit.MILLISECONDS);}
         catch(TimeoutException timeout) {
             pending.cancel(true);
             throw new ControlException(mutation?ControlException.Code.RESULT_UNKNOWN:ControlException.Code.NOT_READY,
@@ -50,13 +53,20 @@ final class AccessibilityProxyBackend implements ControlBackend {
     }
     static boolean connected(Context context) {
         try {
-            Bundle out=providerCall(context.getApplicationContext(),"status",new Bundle(),false);
+            Bundle out=providerCall(context.getApplicationContext(),"status",new Bundle(),false,STATUS_IPC_TIMEOUT_MS);
             return out!=null&&out.getBoolean("connected");
         } catch(ControlException ignored) {return false;}
     }
     private Bundle call(String method,Bundle extras) throws ControlException {
         extras.putInt("displayId",displayId);
-        final Bundle out=providerCall(context,method,extras,"execute".equals(method));
+        boolean mutation="execute".equals(method);
+        long timeout=switch(method) {
+            case "observe" -> extras.getBoolean("includeImage")?OBSERVE_IPC_TIMEOUT_MS:VALIDATE_IPC_TIMEOUT_MS;
+            case "validate" -> VALIDATE_IPC_TIMEOUT_MS;
+            case "execute" -> Math.max(VALIDATE_IPC_TIMEOUT_MS,EXECUTE_IPC_BASE_TIMEOUT_MS+Math.max(0,extras.getInt("durationMs",0)));
+            default -> STATUS_IPC_TIMEOUT_MS;
+        };
+        final Bundle out=providerCall(context,method,extras,mutation,timeout);
         if(out==null)throw new ControlException(ControlException.Code.NOT_READY,"Accessibility bridge returned no result");
         String code=out.getString("errorCode");
         if(code!=null) {

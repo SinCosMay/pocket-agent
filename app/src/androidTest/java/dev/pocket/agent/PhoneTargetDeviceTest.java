@@ -109,7 +109,10 @@ public class PhoneTargetDeviceTest {
     private String shell(String command) throws Exception {
         try(android.os.ParcelFileDescriptor.AutoCloseInputStream input=
                 new android.os.ParcelFileDescriptor.AutoCloseInputStream(automation.executeShellCommand(command))) {
-            return new String(input.readAllBytes(),StandardCharsets.UTF_8);
+            java.io.ByteArrayOutputStream output=new java.io.ByteArrayOutputStream();
+            byte[] buffer=new byte[4096];int count;
+            while((count=input.read(buffer))!=-1)output.write(buffer,0,count);
+            return new String(output.toByteArray(),StandardCharsets.UTF_8);
         }
     }
     private static Integer decimalField(String text,String name) {

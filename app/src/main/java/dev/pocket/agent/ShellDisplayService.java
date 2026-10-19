@@ -34,7 +34,9 @@ public final class ShellDisplayService extends IDisplayShell.Stub {
     private static final int TRUSTED=1<<10, OWN_GROUP=1<<11, ALWAYS_UNLOCKED=1<<12;
     private static final int OWN_FOCUS=1<<14, DEVICE_GROUP=1<<15;
     private static final int DISPLAY_IME_POLICY_HIDE=2;
-    private static final Pattern ROOT_TASK=Pattern.compile("(?i)(?:RootTask\\s+(?:id=|#)|Stack\\s+id=|Task\\{[^#]*#)(\\d+).*?(?:m?displayId|displayId)\\s*[=:]\\s*(\\d+)");
+    private static final Pattern ROOT_TASK=Pattern.compile("(?i)(?:RootTask\\s+(?:id=|#)|Stack\\s+id=|Task\\{[^#\\r\\n]*#)(\\d+)");
+    private static final Pattern INLINE_DISPLAY=Pattern.compile("(?i)(?:m?displayId)\\s*[=:]\\s*(\\d+)");
+    private static final Pattern DISPLAY_HEADER=Pattern.compile("(?i)^\\s*Display\\s+#(\\d+)\\b");
     private final Context context;
     private final Map<Integer,OwnedDisplay> displays=new LinkedHashMap<>();
     private HandlerThread frameThread;
@@ -127,9 +129,15 @@ public final class ShellDisplayService extends IDisplayShell.Stub {
     }
     static Set<Integer> parseRootTasks(String output,int displayId) {
         Set<Integer> result=new LinkedHashSet<>();
+        int sectionDisplay=-1;
         for(String line:output.split("\\R")) {
-            Matcher match=ROOT_TASK.matcher(line);
-            if(match.find()&&Integer.parseInt(match.group(2))==displayId)result.add(Integer.parseInt(match.group(1)));
+            Matcher header=DISPLAY_HEADER.matcher(line);
+            if(header.find())sectionDisplay=Integer.parseInt(header.group(1));
+            Matcher task=ROOT_TASK.matcher(line);
+            if(!task.find())continue;
+            Matcher inline=INLINE_DISPLAY.matcher(line);
+            int taskDisplay=inline.find()?Integer.parseInt(inline.group(1)):sectionDisplay;
+            if(taskDisplay==displayId)result.add(Integer.parseInt(task.group(1)));
         }
         return result;
     }
@@ -159,7 +167,7 @@ public final class ShellDisplayService extends IDisplayShell.Stub {
                 return new CommandResult(false,"");
             }
             if(reader!=null)reader.join(250);
-            return new CommandResult(child.exitValue()==0,bytes.toString(StandardCharsets.UTF_8));
+            return new CommandResult(child.exitValue()==0,new String(bytes.toByteArray(),StandardCharsets.UTF_8));
         } catch(Exception e) {
             if(child!=null)child.destroyForcibly();
             return new CommandResult(false,"");
@@ -169,26 +177,57 @@ public final class ShellDisplayService extends IDisplayShell.Stub {
     }
     private static String execOutput(String... command) {CommandResult result=run(command);return result.ok?result.output:"";}
     private static boolean exec(String... command) {return run(command).ok;}
-    @Override public synchronized boolean repairAccessibility(String componentName) {
+    private static Set<String> accessibilityServices(String raw) {
+        Set<String> result=new LinkedHashSet<>();
+        if(raw==null||raw.trim().isEmpty()||"null".equals(raw.trim()))return result;
+        for(String item:raw.split(":"))if(!item.trim().isEmpty())result.add(item.trim());
+        return result;
+    }
+    private static boolean containsComponent(Set<String> services,android.content.ComponentName target) {
+        for(String item:services)if(target.equals(android.content.ComponentName.unflattenFromString(item)))return true;
+        return false;
+    }
+    private static void removeComponent(Set<String> services,android.content.ComponentName target) {
+        services.removeIf(item->target.equals(android.content.ComponentName.unflattenFromString(item)));
+    }
+    private static boolean putAccessibilityServices(Set<String> services) {
+        return services.isEmpty()
+            ? exec("/system/bin/settings","delete","secure","enabled_accessibility_services")
+            : exec("/system/bin/settings","put","secure","enabled_accessibility_services",String.join(":",services));
+    }
+    private boolean safeForAccessibilityRepair() {
+        if(context==null)return false;
+        android.os.PowerManager power=context.getSystemService(android.os.PowerManager.class);
+        android.app.KeyguardManager keyguard=context.getSystemService(android.app.KeyguardManager.class);
+        return power!=null&&keyguard!=null&&(!power.isInteractive()||keyguard.isKeyguardLocked());
+    }
+    @Override public synchronized boolean repairAccessibility(String componentName,boolean restoreMissing) {
         android.content.ComponentName component=android.content.ComponentName.unflattenFromString(componentName);
         if(component==null||!"dev.pocket.agent".equals(component.getPackageName())
             ||!"dev.pocket.agent.AgentAccessibility".equals(component.getClassName()))
             throw new SecurityException("Only Pocket Agent accessibility may be repaired");
         if(!"1".equals(execOutput("/system/bin/settings","get","secure","accessibility_enabled").trim()))return false;
-        String enabled=execOutput("/system/bin/settings","get","secure","enabled_accessibility_services");
-        boolean found=false;
-        for(String item:enabled.split(":"))
-            if(component.equals(android.content.ComponentName.unflattenFromString(item.trim()))){found=true;break;}
-        if(!found)return false;
-        String processName=component.getPackageName()+":accessibility";
-        String rawPid=execOutput("/system/bin/pidof",processName).trim();
-        if(rawPid.isEmpty())return false;
-        String pid=rawPid.split("\\s+")[0];
-        if(!pid.matches("[0-9]+"))return false;
-        // Crash only the isolated accessibility process. Android's existing enabled-service
-        // binding is then free to reconnect it; no secure setting is rewritten, so a user
-        // disable racing recovery cannot be undone by the repair path.
-        return exec("/system/bin/am","crash","--user","current",pid);
+        Set<String> current=accessibilityServices(execOutput("/system/bin/settings","get","secure","enabled_accessibility_services"));
+        if(!containsComponent(current,component)) {
+            if(!restoreMissing)return false;
+            current.add(component.flattenToShortString());
+            return putAccessibilityServices(current);
+        }
+
+        // The real-device recovery path is a scoped remove/wait/re-add. Preserve every
+        // unrelated service and never toggle the global accessibility switch.
+        removeComponent(current,component);
+        if(!putAccessibilityServices(current))return false;
+        try {Thread.sleep(450);} catch(InterruptedException interrupted) {Thread.currentThread().interrupt();return false;}
+        // If the phone became unlocked while our own temporary removal was in flight,
+        // refuse to re-add the service. That transition creates a real opportunity for
+        // the user to have intentionally disabled Pocket Agent during recovery.
+        if(!safeForAccessibilityRepair())return false;
+        if(!"1".equals(execOutput("/system/bin/settings","get","secure","accessibility_enabled").trim()))return false;
+        Set<String> after=accessibilityServices(execOutput("/system/bin/settings","get","secure","enabled_accessibility_services"));
+        if(containsComponent(after,component))return true;
+        after.add(component.flattenToShortString());
+        return putAccessibilityServices(after);
     }
     private Set<Integer> rootTasksOnDisplay(int id) {
         Set<Integer> result=parseRootTasks(execOutput("/system/bin/am","stack","list"),id);
@@ -230,14 +269,14 @@ public final class ShellDisplayService extends IDisplayShell.Stub {
     @Override public synchronized boolean launchActivity(int id,String componentName) {
         owned(id);
         android.content.ComponentName component=android.content.ComponentName.unflattenFromString(componentName);
-        if(component==null || component.getPackageName().isBlank()) throw new IllegalArgumentException("Expected component name");
+        if(component==null || component.getPackageName().trim().isEmpty()) throw new IllegalArgumentException("Expected component name");
         return launchTracked(id,"/system/bin/am","start","--display",String.valueOf(id),"-f",WORKER_ACTIVITY_FLAGS,"-n",component.flattenToString());
     }
     @Override public synchronized boolean openUrl(int id,String url) {
         owned(id);
         android.net.Uri uri=android.net.Uri.parse(url);
         String scheme=uri.getScheme();
-        if(uri.getHost()==null || uri.getHost().isBlank() || uri.getUserInfo()!=null ||
+        if(uri.getHost()==null || uri.getHost().trim().isEmpty() || uri.getUserInfo()!=null ||
             (!"https".equalsIgnoreCase(scheme) && !"http".equalsIgnoreCase(scheme)))
             throw new IllegalArgumentException("Only ordinary HTTP(S) URLs without embedded credentials are supported");
         return launchTracked(id,"/system/bin/am","start","--display",String.valueOf(id),"-f",WORKER_ACTIVITY_FLAGS,

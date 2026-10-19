@@ -1,5 +1,6 @@
 package dev.pocket.agent;
 
+import android.app.KeyguardManager;
 import android.app.Notification;
 import android.app.NotificationChannel;
 import android.app.NotificationManager;
@@ -10,6 +11,7 @@ import android.content.pm.ServiceInfo;
 import android.os.Handler;
 import android.os.IBinder;
 import android.os.Looper;
+import android.os.PowerManager;
 import android.provider.Settings;
 
 public final class AccessibilityGuardianService extends Service {
@@ -23,11 +25,20 @@ public final class AccessibilityGuardianService extends Service {
     private long startedAt,nextRepairAt;
     private final Runnable check=new Runnable() {
         @Override public void run() {
-            if(!stillEnabled()) {
+            boolean enabled=stillEnabled(),pending=AccessibilityRepairState.pending(AccessibilityGuardianService.this);
+            if(!enabled&&!pending) {
+                stopForeground(STOP_FOREGROUND_REMOVE);stopSelf();return;
+            }
+            if(!enabled&&pending&&!safeForAutomaticRepair()) {
+                // A user can only change the Accessibility toggle while the device is
+                // interactive/unlocked. Prefer preserving that possible user intent over
+                // resurrecting an interrupted automatic repair.
+                AccessibilityRepairState.clear(AccessibilityGuardianService.this);
                 stopForeground(STOP_FOREGROUND_REMOVE);stopSelf();return;
             }
             long now=android.os.SystemClock.elapsedRealtime();
             if(AccessibilityProxyBackend.connected(AccessibilityGuardianService.this)) {
+                AccessibilityRepairState.clear(AccessibilityGuardianService.this);
                 misses=0;repairAttempts=0;nextRepairAt=0;
                 updateNotification("Accessibility connected");
             } else if(now-startedAt>=12_000 && ++misses>=3 && now>=nextRepairAt) {
@@ -45,9 +56,13 @@ public final class AccessibilityGuardianService extends Service {
             main.postDelayed(this,2000);
         }
     };
+    private boolean safeForAutomaticRepair() {
+        return !getSystemService(PowerManager.class).isInteractive()
+            ||getSystemService(KeyguardManager.class).isKeyguardLocked();
+    }
     private boolean stillEnabled() {
         String raw=Settings.Secure.getString(getContentResolver(),Settings.Secure.ENABLED_ACCESSIBILITY_SERVICES);
-        if(raw==null||raw.isBlank())return false;
+        if(raw==null||raw.trim().isEmpty())return false;
         ComponentName expected=new ComponentName(this,AgentAccessibility.class);
         for(String item:raw.split(":")) {
             ComponentName parsed=ComponentName.unflattenFromString(item);
@@ -77,6 +92,9 @@ public final class AccessibilityGuardianService extends Service {
             String result=intent.getStringExtra(EXTRA_REPAIR_RESULT);
             if("shizuku_unavailable".equals(result)||"permission_required".equals(result))
                 updateNotification("Recovery blocked by Shizuku · start Shizuku and grant Pocket Agent");
+            else if("deferred_unlocked".equals(result))updateNotification("Recovery deferred while phone is unlocked");
+            else if("disabled".equals(result))updateNotification("Accessibility was disabled by the user");
+            else if("repair_pending".equals(result))updateNotification("Accessibility repair interrupted · retrying safely");
             else if("failed".equals(result))updateNotification("Accessibility recovery attempt failed");
         }
         main.removeCallbacks(check);main.post(check);return START_STICKY;

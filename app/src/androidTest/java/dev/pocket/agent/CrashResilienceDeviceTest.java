@@ -21,6 +21,13 @@ public final class CrashResilienceDeviceTest {
             +"Stack id=42 bounds=[0,0][720,1280] displayId=7 userId=0\n";
         assertEquals(Set.of(41,42),ShellDisplayService.parseRootTasks(sample,7));
         assertEquals(Set.of(11),ShellDisplayService.parseRootTasks(sample,0));
+        String dumpsys="Display #0 (activities from top to bottom):\n"
+            +"  * Task{abc #11 type=standard A=physical}\n"
+            +"Display #7 (activities from top to bottom):\n"
+            +"  * Task{def #41 type=standard A=worker}\n"
+            +"  RootTask #42: type=standard\n";
+        assertEquals(Set.of(41,42),ShellDisplayService.parseRootTasks(dumpsys,7));
+        assertEquals(Set.of(11),ShellDisplayService.parseRootTasks(dumpsys,0));
     }
 
 

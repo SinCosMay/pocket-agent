@@ -139,8 +139,8 @@ final class ShizukuDisplayClient implements AutoCloseable {
             throw new ControlException(ControlException.Code.ACTION_REJECTED,"Android rejected the virtual display key event");}
         catch(RemoteException e) {loseService();throw new ControlException(ControlException.Code.NOT_READY,"Virtual display backend disconnected");}
     }
-    boolean repairAccessibility(String componentName) throws ControlException {
-        try {return require().repairAccessibility(componentName);}
+    boolean repairAccessibility(String componentName,boolean restoreMissing) throws ControlException {
+        try {return require().repairAccessibility(componentName,restoreMissing);}
         catch(RemoteException e) {loseService();throw new ControlException(ControlException.Code.NOT_READY,"Virtual display backend disconnected");}
     }
     @Override public synchronized void close() {

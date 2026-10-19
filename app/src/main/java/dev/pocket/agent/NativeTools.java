@@ -242,7 +242,7 @@ final class NativeTools implements AutoCloseable {
         }
     }
     JSONObject execute(String name,JSONObject args,String owner) {
-        if (owner==null || owner.isBlank() || owner.length()>160) return Json.failure("INVALID_ARGUMENT","Valid conversation owner required");
+        if (owner==null || owner.trim().isEmpty() || owner.length()>160) return Json.failure("INVALID_ARGUMENT","Valid conversation owner required");
         if (name.equals("phone_batch")) return batch(args,owner);
         if (name.equals("phone_screen")) return screenLease(args,owner);
         try {
@@ -376,7 +376,7 @@ final class NativeTools implements AutoCloseable {
                 String raw=a.getString("url");
                 Uri uri=Uri.parse(raw);
                 if(!("https".equalsIgnoreCase(uri.getScheme())||"http".equalsIgnoreCase(uri.getScheme())) ||
-                    uri.getHost()==null || uri.getHost().isBlank() || uri.getUserInfo()!=null ||
+                    uri.getHost()==null || uri.getHost().trim().isEmpty() || uri.getUserInfo()!=null ||
                     raw.length()>2048 || raw.contains("\n") || raw.contains("\r"))
                     throw new ControlException(INVALID_ARGUMENT,"Provide an HTTP(S) URL without embedded credentials or control characters");
                 displays.openUrl(owner,uri.toString());
