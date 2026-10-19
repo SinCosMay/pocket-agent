@@ -14,7 +14,6 @@ import android.os.Handler;
 import android.os.Looper;
 import androidx.test.ext.junit.runners.AndroidJUnit4;
 import androidx.test.platform.app.InstrumentationRegistry;
-import dev.pocket.android.AndroidScreenBackend;
 import dev.pocket.control.ControlBackend.*;
 import dev.pocket.control.ControlException;
 import org.junit.Test;
@@ -31,7 +30,7 @@ public class PhoneTargetDeviceTest {
     private final class Chooser implements AutoCloseable {
         ImageReader reader;
         VirtualDisplay display;
-        AndroidScreenBackend screen;
+        AccessibilityProxyBackend screen;
         Chooser(String mode) throws Exception {
             try {
                 DeviceTestAccess.ensureAccessibility();
@@ -44,7 +43,7 @@ public class PhoneTargetDeviceTest {
                         1|8|64|1024|2048|4096|16384|32768);
                 } finally {automation.dropShellPermissionIdentity();}
                 assertNotNull(display);
-                screen=AgentAccessibility.connected.backend(display.getDisplay().getDisplayId());
+                screen=new AccessibilityProxyBackend(context,display.getDisplay().getDisplayId());
                 String fixtureClass="launch_failure".equals(mode)
                     ?"dev.pocket.agent.fixture.MissingActivity":"dev.pocket.agent.fixture.FixtureActivity";
                 context.startActivity(new Intent().setClassName("dev.pocket.agent.fixture",fixtureClass)
@@ -96,7 +95,7 @@ public class PhoneTargetDeviceTest {
                 byte[] buffer=new byte[64];while(input.read(buffer)!=-1) {}
             } catch(Exception ignored) {}
             if(display!=null) {
-                if(AgentAccessibility.connected!=null)AgentAccessibility.connected.release(display.getDisplay().getDisplayId());
+                if(screen!=null)screen.release();
                 display.release();display=null;
             }
             if(reader!=null) {reader.close();reader=null;}
