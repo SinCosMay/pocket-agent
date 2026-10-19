@@ -9,7 +9,11 @@ public final class AgentAccessibility extends AccessibilityService {
     static volatile AgentAccessibility connected;
     private AndroidScreenBackend backend;
     private final ConcurrentHashMap<Integer,AndroidScreenBackend> virtualBackends=new ConcurrentHashMap<>();
-    @Override protected void onServiceConnected() {backend=new AndroidScreenBackend(this);connected=this;}
+    @Override protected void onServiceConnected() {
+        backend=new AndroidScreenBackend(this);connected=this;
+        try {startForegroundService(new android.content.Intent(this,AccessibilityGuardianService.class));}
+        catch(RuntimeException failure) {android.util.Log.w("PocketAccessibility","Could not start recovery guardian",failure);}
+    }
     AndroidScreenBackend backend() {return backend;}
     AndroidScreenBackend backend(int displayId) {
         if(displayId<=0)throw new IllegalArgumentException("Virtual display required");

@@ -17,6 +17,7 @@ final class ShizukuDisplayClient implements AutoCloseable {
     private final Shizuku.UserServiceArgs args;
     private final Object readyLock=new Object();
     private final Runnable disconnected;
+    private final boolean removeServiceOnClose;
     private volatile IDisplayShell remote;
     private volatile boolean binding;
     private volatile long bindingStartedMs;
@@ -24,7 +25,7 @@ final class ShizukuDisplayClient implements AutoCloseable {
     private final ServiceConnection connection=new ServiceConnection() {
         @Override public void onServiceConnected(ComponentName name,IBinder binder) {
             if(closed) {
-                try {Shizuku.unbindUserService(args,connection,true);}catch(Exception ignored){}
+                try {Shizuku.unbindUserService(args,connection,removeServiceOnClose);}catch(Exception ignored){}
                 return;
             }
             IDisplayShell shell=IDisplayShell.Stub.asInterface(binder);
@@ -39,8 +40,10 @@ final class ShizukuDisplayClient implements AutoCloseable {
     private final Shizuku.OnBinderReceivedListener received=this::tryBind;
     private final Shizuku.OnBinderDeadListener died=this::loseService;
 
-    ShizukuDisplayClient(Context context,Runnable disconnected) {
+    ShizukuDisplayClient(Context context,Runnable disconnected) {this(context,disconnected,true);}
+    ShizukuDisplayClient(Context context,Runnable disconnected,boolean removeServiceOnClose) {
         this.disconnected=disconnected;
+        this.removeServiceOnClose=removeServiceOnClose;
         args=new Shizuku.UserServiceArgs(new ComponentName(context,ShellDisplayService.class))
             .daemon(false).tag("pocket-agent-displays").processNameSuffix("display").version(1);
         Shizuku.addBinderReceivedListenerSticky(received);
@@ -81,6 +84,20 @@ final class ShizukuDisplayClient implements AutoCloseable {
             binding=false;bindingStartedMs=0;
             Log.e(TAG,"Shizuku UserService binding call failed",e);
         }
+    }
+    boolean awaitReady(long timeoutMs) throws ControlException {
+        if(timeoutMs<0)throw new IllegalArgumentException("timeoutMs");
+        if(!"ready".equals(status()))tryBind();
+        long end=SystemClock.elapsedRealtime()+timeoutMs;
+        synchronized(readyLock) {
+            while(!"ready".equals(status())&&!closed&&SystemClock.elapsedRealtime()<end) {
+                String state=status();
+                if(!"binding".equals(state))break;
+                try {readyLock.wait(Math.max(1,end-SystemClock.elapsedRealtime()));}
+                catch(InterruptedException e) {Thread.currentThread().interrupt();throw new ControlException(ControlException.Code.RESULT_UNKNOWN,"Interrupted binding Shizuku service");}
+            }
+        }
+        return "ready".equals(status());
     }
     private IDisplayShell require() throws ControlException {
         if(!"ready".equals(status())) {
@@ -136,11 +153,15 @@ final class ShizukuDisplayClient implements AutoCloseable {
             throw new ControlException(ControlException.Code.ACTION_REJECTED,"Android rejected the virtual display key event");}
         catch(RemoteException e) {loseService();throw new ControlException(ControlException.Code.NOT_READY,"Virtual display backend disconnected");}
     }
+    boolean repairAccessibility(String componentName,boolean restoreMissing) throws ControlException {
+        try {return require().repairAccessibility(componentName,restoreMissing);}
+        catch(RemoteException e) {loseService();throw new ControlException(ControlException.Code.NOT_READY,"Virtual display backend disconnected");}
+    }
     @Override public synchronized void close() {
         closed=true;remote=null;
         synchronized(readyLock) {readyLock.notifyAll();}
         Shizuku.removeBinderReceivedListener(received);
         Shizuku.removeBinderDeadListener(died);
-        try {if(available()) Shizuku.unbindUserService(args,connection,true);}catch(Exception ignored){}
+        try {if(available()) Shizuku.unbindUserService(args,connection,removeServiceOnClose);}catch(Exception ignored){}
     }
 }

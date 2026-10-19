@@ -5,6 +5,8 @@ import android.content.Context;
 import android.database.Cursor;
 import android.database.sqlite.SQLiteDatabase;
 import android.database.sqlite.SQLiteOpenHelper;
+import java.io.ByteArrayOutputStream;
+import java.nio.charset.StandardCharsets;
 import org.json.JSONArray;
 import org.json.JSONObject;
 
@@ -25,17 +27,64 @@ public final class StateStore extends SQLiteOpenHelper {
     }
     public synchronized void save(JSONObject state) {
         ContentValues values = new ContentValues(); values.put("id", 1); values.put("json", state.toString());
-        getWritableDatabase().insertWithOnConflict("snapshot", null, values, SQLiteDatabase.CONFLICT_REPLACE);
+        if(getWritableDatabase().insertWithOnConflict("snapshot", null, values, SQLiteDatabase.CONFLICT_REPLACE)==-1)
+            throw new IllegalStateException("Snapshot persistence failed");
+    }
+    private String loadDurableRaw() {
+        SQLiteDatabase db=getReadableDatabase();String type;int length;
+        try(Cursor meta=db.rawQuery("SELECT typeof(json), length(json) FROM runtime_state WHERE id=1",null)) {
+            if(!meta.moveToFirst())return null;
+            type=meta.getString(0);length=meta.getInt(1);
+        }
+        if("blob".equals(type)) {
+            ByteArrayOutputStream bytes=new ByteArrayOutputStream(Math.max(0,length));
+            final int chunk=256*1024;
+            for(int offset=0;offset<length;offset+=chunk) {
+                try(Cursor part=db.rawQuery("SELECT substr(json, ?, ?) FROM runtime_state WHERE id=1",
+                    new String[]{String.valueOf(offset+1),String.valueOf(Math.min(chunk,length-offset))})) {
+                    if(!part.moveToFirst())throw new IllegalStateException("Durable runtime state disappeared during read");
+                    byte[] value=part.getBlob(0);if(value!=null)bytes.write(value,0,value.length);
+                }
+            }
+            return new String(bytes.toByteArray(),StandardCharsets.UTF_8);
+        }
+        StringBuilder text=new StringBuilder(Math.max(0,length));final int chunk=128*1024;
+        for(int offset=0;offset<length;offset+=chunk) {
+            try(Cursor part=db.rawQuery("SELECT substr(json, ?, ?) FROM runtime_state WHERE id=1",
+                new String[]{String.valueOf(offset+1),String.valueOf(Math.min(chunk,length-offset))})) {
+                if(!part.moveToFirst())throw new IllegalStateException("Durable runtime state disappeared during read");
+                String value=part.getString(0);if(value!=null)text.append(value);
+            }
+        }
+        return text.toString();
     }
     public synchronized JSONObject loadDurable() {
-        try (Cursor cursor = getReadableDatabase().rawQuery("SELECT json FROM runtime_state WHERE id=1", null)) {
-            if (cursor.moveToFirst()) return new JSONObject(cursor.getString(0));
+        try {
+            String raw=loadDurableRaw();return raw==null?new JSONObject():new JSONObject(raw);
         } catch (org.json.JSONException e) { throw new IllegalStateException("Invalid saved runtime state", e); }
-        return new JSONObject();
     }
     public synchronized void saveDurable(JSONObject state) {
         ContentValues values = new ContentValues(); values.put("id", 1); values.put("json", state.toString());
-        getWritableDatabase().insertWithOnConflict("runtime_state", null, values, SQLiteDatabase.CONFLICT_REPLACE);
+        if(getWritableDatabase().insertWithOnConflict("runtime_state", null, values, SQLiteDatabase.CONFLICT_REPLACE)==-1)
+            throw new IllegalStateException("Runtime state persistence failed");
+    }
+    public synchronized void saveDurableBytes(byte[] utf8Json) {
+        if(utf8Json==null||utf8Json.length==0)throw new IllegalArgumentException("Durable state bytes are empty");
+        ContentValues values=new ContentValues();values.put("id",1);values.put("json",utf8Json);
+        if(getWritableDatabase().insertWithOnConflict("runtime_state",null,values,SQLiteDatabase.CONFLICT_REPLACE)<0)
+            throw new IllegalStateException("Unable to persist durable state");
+    }
+    public synchronized void markDurableInterrupted() {
+        try {
+            JSONObject state=loadDurable();
+            JSONArray inbox=state.optJSONArray("inbox");
+            if(!state.optBoolean("busy")&&(inbox==null||inbox.length()==0))return;
+            state.put("inbox",new JSONArray()).put("busy",false).put("mainPaused",true);
+            saveDurableBytes(state.toString().getBytes(StandardCharsets.UTF_8));
+        } catch(Exception failure) {
+            if(getWritableDatabase().delete("runtime_state","id=1",null)<0)
+                throw new IllegalStateException("Could not neutralize interrupted durable runtime state",failure);
+        }
     }
     public synchronized void record(JSONObject event) {
         ContentValues values = new ContentValues(); values.put("at", System.currentTimeMillis()); values.put("json", event.toString());

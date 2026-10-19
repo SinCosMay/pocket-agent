@@ -253,7 +253,7 @@ final class NativeTools implements AutoCloseable {
         }
     }
     JSONObject execute(String name,JSONObject args,String owner) {
-        if (owner==null || owner.isBlank() || owner.length()>160) return Json.failure("INVALID_ARGUMENT","Valid conversation owner required");
+        if (owner==null || owner.trim().isEmpty() || owner.length()>160) return Json.failure("INVALID_ARGUMENT","Valid conversation owner required");
         if (name.equals("phone_batch")) return batch(args,owner);
         if (name.equals("phone_screen")) return screenLease(args,owner);
         try {
@@ -278,7 +278,7 @@ final class NativeTools implements AutoCloseable {
         if(value==null)return "";
         return value.length()>max?value.substring(0,max):value;
     }
-    private AndroidScreenBackend screen(String owner,JSONObject args) throws ControlException {return displays.screen(owner,physical(args));}
+    private AccessibilityProxyBackend screen(String owner,JSONObject args) throws ControlException {return displays.screen(owner,physical(args));}
     private static Integer integer(JSONObject a,String name) throws Exception {return a.has(name)?a.getInt(name):null;}
     private static String string(JSONObject a,String name) throws Exception {return a.has(name)?a.getString(name):null;}
     private JSONObject outcome(AndroidSystemActions.Outcome value) {return Json.tool(Json.obj("status",value.status(),"reference",value.reference(),"message",value.message()));}
@@ -350,7 +350,8 @@ final class NativeTools implements AutoCloseable {
                 int state=context.getSystemService(android.telephony.TelephonyManager.class).getCallState();callState=switch(state) {case 0 -> "idle";case 1 -> "ringing";case 2 -> "offhook";default -> "unknown";};
             }catch(Exception denied) {}
         }
-        return Json.tool(Json.obj("version",BuildConfig.VERSION_NAME,"operation_prefix",operations.prefix(),"operation_nonce_min_length",8,"operation_nonce_max_length",48,"accessibility_connected",AgentAccessibility.connected!=null,"notification_listener_connected",PhoneNotifications.connected!=null,"interactive",context.getSystemService(PowerManager.class).isInteractive(),"locked",context.getSystemService(KeyguardManager.class).isKeyguardLocked(),"permissions",permissions,"phone_accounts",accounts,"sms_subscriptions",subscriptions,"media_sessions",media,"call_state",callState,"call_state_note","offhook includes dialing; it is not connection proof","preferred_order",Json.arr("direct_android_api","app_provided_action","semantic_accessibility","screen_gesture"),"physical_display",Json.obj("available",AgentAccessibility.connected!=null,"display_id",0,"requires_explicit_target",true,"launch_via_accessibility",true),"virtual_displays",Json.obj("backend",displays.backendStatus(),"active",displays.activeCount(),"maximum",AgentDisplayCoordinator.MAX_DISPLAYS,"requires_shizuku",true)));
+        boolean accessibility=displays.accessibilityConnected();
+        return Json.tool(Json.obj("version",BuildConfig.VERSION_NAME,"operation_prefix",operations.prefix(),"operation_nonce_min_length",8,"operation_nonce_max_length",48,"accessibility_connected",accessibility,"notification_listener_connected",PhoneNotifications.connected!=null,"interactive",context.getSystemService(PowerManager.class).isInteractive(),"locked",context.getSystemService(KeyguardManager.class).isKeyguardLocked(),"permissions",permissions,"phone_accounts",accounts,"sms_subscriptions",subscriptions,"media_sessions",media,"call_state",callState,"call_state_note","offhook includes dialing; it is not connection proof","preferred_order",Json.arr("direct_android_api","app_provided_action","semantic_accessibility","screen_gesture"),"physical_display",Json.obj("available",accessibility,"display_id",0,"requires_explicit_target",true,"launch_via_accessibility",true),"virtual_displays",Json.obj("backend",displays.backendStatus(),"active",displays.activeCount(),"maximum",AgentDisplayCoordinator.MAX_DISPLAYS,"requires_shizuku",true)));
     }
     private JSONObject dispatch(String name,JSONObject a,String owner) throws Exception {
         switch(name) {
@@ -359,9 +360,18 @@ final class NativeTools implements AutoCloseable {
             case "phone_act": {
                 JSONObject s=a.optJSONObject("selector");ControlBackend.Selector selector=s==null?null:new ControlBackend.Selector(string(s,"resource_id"),string(s,"text"),string(s,"description"));
                 ControlBackend.Action action=new ControlBackend.Action(ControlBackend.Kind.valueOf(a.getString("kind").toUpperCase(java.util.Locale.ROOT)),a.getString("snapshot_id"),integer(a,"x"),integer(a,"y"),integer(a,"end_x"),integer(a,"end_y"),a.optInt("duration_ms",600),string(a,"text"),a.optBoolean("replace",true),string(a,"key"),string(a,"direction"),selector);
-                ControlBackend.Result result;AndroidScreenBackend target=screen(owner,a);
+                ControlBackend.Result result;AccessibilityProxyBackend target=screen(owner,a);
                 if(action.kind()==ControlBackend.Kind.KEY && !"enter".equals(action.key()) && !physical(a)) {
                     target.validateAction(action);
+                    // Real-device MIUI A/B testing showed /system/bin/input -d is filtered while
+                    // the physical phone is asleep/keyguard-locked, even though the leased
+                    // ALWAYS_UNLOCKED virtual display remains alive. There is no display-scoped
+                    // Accessibility global Home/Back/Recents API, so fail closed rather than
+                    // report a key as dispatched when the platform is known to discard it.
+                    boolean physicalInteractive=context.getSystemService(PowerManager.class).isInteractive();
+                    boolean physicalLocked=context.getSystemService(KeyguardManager.class).isKeyguardLocked();
+                    if(!physicalInteractive||physicalLocked)
+                        throw new ControlException(UNSUPPORTED,"Virtual-display Home/Back/Recents are unavailable while the physical device is asleep or locked; use in-app semantic or gesture navigation");
                     int key=switch(action.key()==null?"":action.key()) {case "back"->4;case "home"->3;case "recents"->187;default->throw new ControlException(UNSUPPORTED,"Key must be home, back, recents or enter");};
                     displays.key(owner,key);
                     result=new ControlBackend.Result("dispatched","Display-targeted key accepted; task outcome not yet verified");
@@ -382,7 +392,7 @@ final class NativeTools implements AutoCloseable {
                 String raw=a.getString("url");
                 Uri uri=Uri.parse(raw);
                 if(!("https".equalsIgnoreCase(uri.getScheme())||"http".equalsIgnoreCase(uri.getScheme())) ||
-                    uri.getHost()==null || uri.getHost().isBlank() || uri.getUserInfo()!=null ||
+                    uri.getHost()==null || uri.getHost().trim().isEmpty() || uri.getUserInfo()!=null ||
                     raw.length()>2048 || raw.contains("\n") || raw.contains("\r"))
                     throw new ControlException(INVALID_ARGUMENT,"Provide an HTTP(S) URL without embedded credentials or control characters");
                 boolean physicalTarget=physical(a);displays.openUrl(owner,uri.toString(),physicalTarget);

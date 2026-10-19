@@ -59,9 +59,15 @@ public final class AgentService extends Service {
             stopSelf(); return START_NOT_STICKY;
         }
         if (stopping) return START_NOT_STICKY;
+        if (ACTION_START.equals(intent.getAction()) && host != null && host.terminalFailure()) {
+            startup=host.recover();
+            startup.exceptionally(error->{Log.w("PocketAgent","Runtime recovery failed after explicit restart request");return null;});
+            return START_NOT_STICKY;
+        }
         if (ACTION_COMMAND.equals(intent.getAction())) {
             String value = intent.getStringExtra("command");
             try {
+                if(host!=null&&host.terminalFailure())startup=host.recover();
                 JSONObject command = new JSONObject(value == null ? "{}" : value);
                 String voiceSessionId = command.optString("voiceSessionId", "");
                 startup.thenCompose(ignored -> host.dispatch(command)).whenComplete((response, failure) -> {
@@ -113,7 +119,10 @@ public final class AgentService extends Service {
                         "Speech service could not start; check Pocket Agent voice permissions");
                 }
             }
-            for (Observer observer : observers) observer.onAgentEvent(event);
+            for (Observer observer : observers) {
+                try {observer.onAgentEvent(event);}
+                catch (Throwable failure) {Log.w("PocketAgent","Observer callback failed; continuing other observers",failure);}
+            }
         });
     }
     @Override public void onDestroy() {
