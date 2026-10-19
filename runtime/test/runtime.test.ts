@@ -474,7 +474,7 @@ test('stop all always clears its stopping latch when cancellation setup fails',a
  internal.runtime.listConversations=()=>{throw new Error('forced cancellation setup failure');};
  await internal.stopAll();
  assert.equal(internal.stoppingAll,false);
- assert.match(runtime.state().lastError,/forced cancellation setup failure/);
+ assert.match(internal.lastError,/forced cancellation setup failure/);
 });
 
 test('voice-scoped interruption aborts only its matching turn and removes stale queued speech',()=>{
