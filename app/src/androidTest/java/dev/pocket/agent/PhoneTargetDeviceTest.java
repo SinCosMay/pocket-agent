@@ -160,6 +160,11 @@ public class PhoneTargetDeviceTest {
                 c.rejected(a,ControlException.Code.AMBIGUOUS_TARGET);
             }
     }
+    @Test public void excessiveCoordinateHitsRemainAmbiguous() throws Exception {
+        for(Kind kind:new Kind[]{Kind.CLICK,Kind.LONG_CLICK})try(Chooser c=new Chooser("many_overlaps")) {
+            c.rejected(c.action(kind,null,true),ControlException.Code.AMBIGUOUS_TARGET);
+        }
+    }
     @Test public void rawGesturesReachChooserOnRequestedVirtualDisplayWithDispatchOnlyReceipts() throws Exception {
         for(Kind kind:new Kind[]{Kind.TAP,Kind.LONG_PRESS})try(Chooser c=new Chooser("normal")) {
             Result receipt=c.screen.execute(c.action(kind,null,true));
