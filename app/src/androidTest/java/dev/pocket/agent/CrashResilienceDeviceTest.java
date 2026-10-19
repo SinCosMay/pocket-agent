@@ -72,6 +72,25 @@ public final class CrashResilienceDeviceTest {
             AccessibilityProxyBackend.missingResultCode(false));
     }
 
+    @Test public void unlockedAccessibilityRecoveryDoesNotConsumeRetryBudget() {
+        int attempts=0;
+        for(int i=0;i<3;i++) {
+            assertEquals(AccessibilityGuardianService.RepairDecision.DEFER,
+                AccessibilityGuardianService.repairDecision(false,attempts));
+        }
+        assertEquals(0,attempts);
+        assertEquals(AccessibilityGuardianService.RepairDecision.START,
+            AccessibilityGuardianService.repairDecision(true,attempts));
+        assertEquals(1,AccessibilityGuardianService.repairAttemptsAfterResult(2,"deferred_unlocked"));
+    }
+
+    @Test public void missingMutationResponseRequiresStateObservationBeforeRetry() {
+        assertEquals(dev.pocket.control.ControlException.Code.RESULT_UNKNOWN,
+            AccessibilityProxyBackend.missingResultCode(true));
+        assertEquals(dev.pocket.control.ControlException.Code.NOT_READY,
+            AccessibilityProxyBackend.missingResultCode(false));
+    }
+
     @Test public void accessibilityAndGuardianHaveIndependentProcesses() throws Exception {
         Context c=context();String pkg=c.getPackageName();
         ServiceInfo accessibility=c.getPackageManager().getServiceInfo(new ComponentName(c,AgentAccessibility.class),0);
