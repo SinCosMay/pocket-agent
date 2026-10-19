@@ -353,6 +353,20 @@ test('reasoning effort survives restart and provider reconfiguration while inval
  assert.equal(restored.state().provider.reasoningEffort,'low');
 });
 
+test('retained workers keep reasoning on same-provider reconfigure and drop it on provider change',async()=>{
+ const bridge=new Bridge();bridge.credentials={authMode:'scripted',model:'scripted',reasoningEffort:'high'};
+ const runtime=new PocketRuntime(bridge);
+ const handle=runtime.startTasks([{kind:'spawn',agent:'researcher',label:'Pinned reasoning',prompt:'Read state',thinking:'medium'}],{initiatedBy:'user'});
+ await handle.completion;await until(()=>runtime.state().tasks[0]?.status==='completed');
+ assert.equal(runtime.state().tasks[0].requestedConfig.thinking,'medium');
+ bridge.credentials={authMode:'scripted',model:'scripted',reasoningEffort:'low'};
+ command(runtime,{action:'configure'});
+ assert.equal(runtime.state().tasks[0].requestedConfig.thinking,'medium','same provider preserves the worker reasoning snapshot');
+ bridge.credentials={authMode:'openai',endpoint:'https://example.test/v1',apiKey:'provider-key',model:'next-model',reasoningEffort:'low'};
+ command(runtime,{action:'configure'});
+ assert.equal(runtime.state().tasks[0].requestedConfig.thinking,undefined,'provider changes clear stale worker reasoning overrides');
+});
+
 test('paused main with retained inbox can still apply provider and prompt settings',()=>{
  const bridge=new Bridge(),runtime=new PocketRuntime(bridge),internal=runtime as any;
  internal.mainPaused=true;internal.inbox=[{type:'user',text:'retained while context is full'}];

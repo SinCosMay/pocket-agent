@@ -307,6 +307,7 @@ export class Conversation {
   }
   get isStopping(): boolean { return this.stopping !== undefined; }
   clearRequestedModel(): void { delete (this.requestedConfig as { model?: string }).model; }
+  clearRequestedThinking(): void { delete (this.requestedConfig as { thinking?: RequestedExecutionConfig["thinking"] }).thinking; }
 
   private newGeneration(number: number, prompt: string, initiatedBy: GenerationInitiator, startedInParentGeneration?: number): Generation {
     return new Generation(number, prompt, initiatedBy, update => this.listener(this, update), startedInParentGeneration);

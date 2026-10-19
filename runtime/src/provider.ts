@@ -242,9 +242,9 @@ export function makeStream(config: ProviderConfig, credentials: ProviderCredenti
           : [];
       const reasoningVerified = hasCatalogReasoning
         ? advertisedReasoning.includes(requestedReasoning)
-        : owner !== 'main' && reasoningOverride !== undefined
+        : credentials.reasoningEffortModel === model.id && advertisedReasoning.includes(requestedReasoning)
           ? true
-          : credentials.reasoningEffortModel === model.id && advertisedReasoning.includes(requestedReasoning);
+          : owner !== 'main' && reasoningOverride !== undefined && model.id !== modelFor(config,credentials).id;
       const reasoning = account && requestedReasoning !== DEFAULT_REASONING_EFFORT && !reasoningVerified
         ? DEFAULT_REASONING_EFFORT : requestedReasoning;
       const shared = {...options,apiKey,transport:'sse' as const,maxRetries:0,timeoutMs:120000,reasoning};

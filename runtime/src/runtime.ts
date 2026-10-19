@@ -354,12 +354,13 @@ export class PocketRuntime {
         const sameCredential=previousRevision!==undefined||this.credentials.providerRevision!==undefined
           ? previousRevision===this.credentials.providerRevision : previousApiKey===this.credentials.apiKey;
         const sameProvider=previous.mode===this.config.mode && previous.endpoint===this.config.endpoint && previousAccount===this.credentials.accountId && previousApiKey===this.credentials.apiKey && sameCredential;
-        // Resume a worker with its pinned model only while the provider credential identity is unchanged.
+        // Resume a worker with its pinned model/reasoning only while the provider credential identity is unchanged.
         for(const c of this.runtime.listConversations()) {
           const session=this.sessions.get(c.conversationId)!;
-          session.agent.streamFunction=makeStream(this.config,this.credentials,session.owner);
-          if(!sameProvider)this.runtime.clearRequestedModel(c.conversationId);
+          if(!sameProvider){this.runtime.clearRequestedModel(c.conversationId);this.runtime.clearRequestedThinking(c.conversationId);}
           const requested=sameProvider?c.requestedConfig?.model:undefined;
+          const reasoning=normalizeReasoningEffort(sameProvider?c.requestedConfig?.thinking??this.config.reasoningEffort:this.config.reasoningEffort);
+          session.agent.streamFunction=makeStream(this.config,this.credentials,session.owner,reasoning);
           session.agent.state.model=modelFor(this.config,this.credentials,requested);
         }
       } else if(cmd.action==='set_system_prompt') {
