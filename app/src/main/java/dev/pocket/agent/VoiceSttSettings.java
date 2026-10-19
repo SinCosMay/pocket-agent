@@ -36,8 +36,12 @@ final class VoiceSttSettings {
     private static final String PREFS = "voice_stt";
     private static final String MODE_KEY = "mode";
     private static final String SHORT_UTTERANCE_KEY = "short_utterance_ms";
+    private static volatile Mode processMode;
+    private static volatile Integer processShortMs;
 
     static Mode mode(Context context) {
+        Mode override=processMode;
+        if(override!=null)return override;
         String value = prefs(context).getString(MODE_KEY, Mode.HYBRID_THRESHOLD.storedValue);
         if (Mode.ANDROID_DEFAULT_ONLY.storedValue.equals(value)) return Mode.ANDROID_DEFAULT_ONLY;
         if (Mode.DEEPGRAM_ONLY.storedValue.equals(value)) return Mode.DEEPGRAM_ONLY;
@@ -46,7 +50,15 @@ final class VoiceSttSettings {
 
     static void setMode(Context context, Mode mode) {
         if (mode == null) throw new IllegalArgumentException("STT mode is required");
+        processMode=mode;
         prefs(context).edit().putString(MODE_KEY, mode.storedValue).apply();
+        try {context.sendBroadcast(VoiceSettingsReceiver.intent(context)
+            .putExtra(VoiceSettingsReceiver.EXTRA_STT_MODE,mode.storedValue));} catch(RuntimeException ignored) {}
+    }
+    static void applyProcessMode(String value) {
+        if(Mode.ANDROID_DEFAULT_ONLY.storedValue.equals(value))processMode=Mode.ANDROID_DEFAULT_ONLY;
+        else if(Mode.DEEPGRAM_ONLY.storedValue.equals(value))processMode=Mode.DEEPGRAM_ONLY;
+        else processMode=Mode.HYBRID_THRESHOLD;
     }
 
     static boolean usesThreshold(Context context) {
@@ -58,9 +70,11 @@ final class VoiceSttSettings {
     }
 
     static int shortUtteranceMs(Context context) {
-        int value = prefs(context).getInt(SHORT_UTTERANCE_KEY, DEFAULT_SHORT_UTTERANCE_MS);
+        Integer override=processShortMs;
+        int value=override==null?prefs(context).getInt(SHORT_UTTERANCE_KEY, DEFAULT_SHORT_UTTERANCE_MS):override;
         return clamp(value);
     }
+    static void applyProcessShortMs(int value) {processShortMs=clamp(value);}
 
     static void setShortUtteranceMs(Context context, int value) {
         if (value < MIN_SHORT_UTTERANCE_MS || value > MAX_SHORT_UTTERANCE_MS)
@@ -68,7 +82,10 @@ final class VoiceSttSettings {
         int snapped = MIN_SHORT_UTTERANCE_MS
             + Math.round((value - MIN_SHORT_UTTERANCE_MS) / (float) SHORT_UTTERANCE_STEP_MS)
                 * SHORT_UTTERANCE_STEP_MS;
-        prefs(context).edit().putInt(SHORT_UTTERANCE_KEY, clamp(snapped)).apply();
+        int stored=clamp(snapped);processShortMs=stored;
+        prefs(context).edit().putInt(SHORT_UTTERANCE_KEY, stored).apply();
+        try {context.sendBroadcast(VoiceSettingsReceiver.intent(context)
+            .putExtra(VoiceSettingsReceiver.EXTRA_SHORT_MS,stored));} catch(RuntimeException ignored) {}
     }
 
     static int progressForMs(int value) {
