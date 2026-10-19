@@ -42,10 +42,11 @@
         </service>
         <service android:name=".PocketVoiceSessionService" android:exported="true"
             android:permission="android.permission.BIND_VOICE_INTERACTION" />
-        <activity android:name=".JarvisEnrollmentActivity" android:exported="false" />
-        <service android:name=".WakeWordService" android:exported="false" android:foregroundServiceType="microphone" />
-        <service android:name=".VoiceListeningService" android:exported="false"
+        <activity android:name=".JarvisEnrollmentActivity" android:exported="false" android:process=":voice" />
+        <service android:name=".WakeWordService" android:exported="false" android:process=":voice" android:foregroundServiceType="microphone" />
+        <service android:name=".VoiceListeningService" android:exported="false" android:process=":voice"
             android:foregroundServiceType="microphone|mediaPlayback" />
+        <receiver android:name=".VoiceAgentEventReceiver" android:exported="false" android:process=":voice" />
         <service android:name=".AgentService" android:exported="false" android:foregroundServiceType="specialUse">
             <property android:name="android.app.PROPERTY_SPECIAL_USE_FGS_SUBTYPE" android:value="User-started conversational agent completing explicitly requested background phone tasks, with ongoing notification and Stop all control" />
         </service>
