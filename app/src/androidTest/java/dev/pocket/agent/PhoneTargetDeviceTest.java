@@ -160,8 +160,9 @@ public class PhoneTargetDeviceTest {
             Thread.sleep(800);
             String ime=shell("dumpsys input_method");
             Integer visibility=hexField(ime,"mImeWindowVis"),tokenDisplay=decimalField(ime,"mCurTokenDisplayId");
-            if(visibility!=null&&visibility!=0&&tokenDisplay!=null)
-                assertNotEquals("Visible worker IME surfaced on physical display 0",Integer.valueOf(0),tokenDisplay);
+            assertNotNull("Could not parse IME visibility from dumpsys input_method",visibility);
+            assertNotNull("Could not parse IME token display from dumpsys input_method",tokenDisplay);
+            if(visibility!=0)assertNotEquals("Visible worker IME surfaced on physical display 0",Integer.valueOf(0),tokenDisplay);
             automation.adoptShellPermissionIdentity();
             try {
                 Class<?> serviceManager=Class.forName("android.os.ServiceManager");
