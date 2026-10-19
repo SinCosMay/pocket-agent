@@ -89,20 +89,20 @@ final class AgentDisplayCoordinator implements AutoCloseable {
     synchronized void launch(String owner,Intent launch,boolean physical) throws ControlException {
         if(physical){startPhysical(launch);return;}
         if(launch.getComponent()==null)throw new ControlException(UNSUPPORTED,"No launcher component visible for this package");
-        client().launch(display(owner),launch.getComponent().flattenToString());
+        int id=display(owner);client().launch(id,launch.getComponent().flattenToString());
     }
     synchronized void openUrl(String owner,String url,boolean physical) throws ControlException {
         if(physical){startPhysical(new Intent(Intent.ACTION_VIEW,Uri.parse(url)));return;}
-        client().openUrl(display(owner),url);
+        int id=display(owner);client().openUrl(id,url);
     }
     synchronized void showClock(String owner,String screen,boolean physical) throws ControlException {
         if(physical) {
             String action=switch(screen) {case "alarms"->AlarmClock.ACTION_SHOW_ALARMS;case "timers"->AlarmClock.ACTION_SHOW_TIMERS;default->throw new ControlException(INVALID_ARGUMENT,"Expected alarms or timers");};
             startPhysical(new Intent(action));return;
         }
-        client().showClock(display(owner),screen);
+        int id=display(owner);client().showClock(id,screen);
     }
-    synchronized void key(String owner,int code) throws ControlException {client().key(display(owner),code);}
+    synchronized void key(String owner,int code) throws ControlException {int id=display(owner);client().key(id,code);}
 
     synchronized void release(String owner) {
         Integer id=displays.remove(owner);
