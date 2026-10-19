@@ -108,7 +108,8 @@ public final class AgentService extends Service {
     private void publish(JSONObject event) {
         main.post(() -> {
             if (stopping && "voice_announce".equals(event.optString("type"))) return;
-            if ("voice_announce".equals(event.optString("type"))) {
+            String type=event.optString("type");
+            if ("voice_announce".equals(type)) {
                 try {
                     VoiceAnnouncement request = VoiceAnnouncement.fromEvent(event);
                     startForegroundService(VoiceAnnouncement.intent(this, request));
@@ -116,6 +117,15 @@ public final class AgentService extends Service {
                     Log.w("PocketVoice", "Agent-initiated speech could not be started", failure);
                     reportVoiceFailure(this, event.optString("id"),
                         "Speech service could not start; check Pocket Agent voice permissions");
+                }
+            }
+            if ("voice_delta".equals(type)||"voice_end".equals(type)||"voice_error".equals(type)) {
+                try {
+                    sendBroadcast(new Intent(this,VoiceAgentEventReceiver.class)
+                        .setAction(VoiceAgentEventReceiver.ACTION_AGENT_EVENT)
+                        .putExtra(VoiceAgentEventReceiver.EXTRA_EVENT,event.toString()));
+                } catch(RuntimeException failure) {
+                    Log.w("PocketVoice","Could not deliver agent event to isolated voice process",failure);
                 }
             }
             for (Observer observer : observers) {
