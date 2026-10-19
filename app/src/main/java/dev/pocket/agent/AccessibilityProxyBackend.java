@@ -9,25 +9,54 @@ import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.util.ArrayList;
 import java.util.List;
+import java.util.concurrent.ExecutionException;
+import java.util.concurrent.Future;
+import java.util.concurrent.SynchronousQueue;
+import java.util.concurrent.ThreadPoolExecutor;
+import java.util.concurrent.TimeUnit;
+import java.util.concurrent.TimeoutException;
 import org.json.JSONArray;
 import org.json.JSONObject;
 
 final class AccessibilityProxyBackend implements ControlBackend {
+    private static final ThreadPoolExecutor IPC=new ThreadPoolExecutor(0,2,20,TimeUnit.SECONDS,
+        new SynchronousQueue<>(),r->{Thread t=new Thread(r,"PocketAccessibilityIpc");t.setDaemon(true);return t;},
+        new ThreadPoolExecutor.AbortPolicy());
+    private static final long IPC_TIMEOUT_MS=3500;
     private final Context context;
     private final int displayId;
     AccessibilityProxyBackend(Context context,int displayId) {this.context=context.getApplicationContext();this.displayId=displayId;}
 
+    private static Bundle providerCall(Context context,String method,Bundle extras,boolean mutation) throws ControlException {
+        final Future<Bundle> pending;
+        try {
+            pending=IPC.submit(()->context.getContentResolver().call(AccessibilityBridgeProvider.uri(context),method,null,extras));
+        } catch(java.util.concurrent.RejectedExecutionException saturated) {
+            throw new ControlException(ControlException.Code.NOT_READY,"Accessibility bridge is busy; retry after recovery");
+        }
+        try {return pending.get(IPC_TIMEOUT_MS,TimeUnit.MILLISECONDS);}
+        catch(TimeoutException timeout) {
+            pending.cancel(true);
+            throw new ControlException(mutation?ControlException.Code.RESULT_UNKNOWN:ControlException.Code.NOT_READY,
+                mutation?"Accessibility action timed out; observe current state before retrying":"Accessibility bridge timed out; wait for recovery");
+        } catch(InterruptedException interrupted) {
+            pending.cancel(true);Thread.currentThread().interrupt();
+            throw new ControlException(mutation?ControlException.Code.RESULT_UNKNOWN:ControlException.Code.NOT_READY,
+                "Accessibility request was interrupted");
+        } catch(ExecutionException failure) {
+            throw new ControlException(mutation?ControlException.Code.RESULT_UNKNOWN:ControlException.Code.NOT_READY,
+                "Accessibility bridge process unavailable; wait for recovery");
+        }
+    }
     static boolean connected(Context context) {
         try {
-            Bundle out=context.getContentResolver().call(AccessibilityBridgeProvider.uri(context),"status",null,new Bundle());
+            Bundle out=providerCall(context.getApplicationContext(),"status",new Bundle(),false);
             return out!=null&&out.getBoolean("connected");
-        } catch(Throwable ignored) {return false;}
+        } catch(ControlException ignored) {return false;}
     }
     private Bundle call(String method,Bundle extras) throws ControlException {
         extras.putInt("displayId",displayId);
-        final Bundle out;
-        try {out=context.getContentResolver().call(AccessibilityBridgeProvider.uri(context),method,null,extras);}
-        catch(Throwable failure) {throw new ControlException(ControlException.Code.NOT_READY,"Accessibility bridge process unavailable; wait for recovery");}
+        final Bundle out=providerCall(context,method,extras,"execute".equals(method));
         if(out==null)throw new ControlException(ControlException.Code.NOT_READY,"Accessibility bridge returned no result");
         String code=out.getString("errorCode");
         if(code!=null) {
