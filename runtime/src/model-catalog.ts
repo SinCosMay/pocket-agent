@@ -62,7 +62,6 @@ export async function discoverProviderModels(
     // own identity for both and never accept a caller-controlled discovery URL.
     headers.originator = CODEX_MODELS_ORIGINATOR;
     headers['User-Agent'] = getPiUserAgent();
-    headers.version = CODEX_MODELS_CLIENT_VERSION;
   }
   let response: Response;
   try {
