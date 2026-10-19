@@ -19,6 +19,7 @@ import dev.pocket.control.ControlException;
 import java.nio.charset.StandardCharsets;
 import java.util.regex.Matcher;
 import java.util.regex.Pattern;
+import org.junit.Assume;
 import org.junit.Test;
 import org.junit.runner.RunWith;
 import static org.junit.Assert.*;
@@ -120,6 +121,14 @@ public class PhoneTargetDeviceTest {
         Matcher match=Pattern.compile(Pattern.quote(name)+"=(true|false)").matcher(text);
         return match.find()?Boolean.parseBoolean(match.group(1)):null;
     }
+    private static boolean emulator() {
+        return android.os.Build.FINGERPRINT.startsWith("generic")
+            ||android.os.Build.FINGERPRINT.contains("emulator")
+            ||android.os.Build.MODEL.contains("Emulator")
+            ||android.os.Build.HARDWARE.contains("ranchu")
+            ||android.os.Build.PRODUCT.contains("sdk");
+    }
+
     private int chooserDisplayCount() {
         int count=0;
         for(android.view.Display item:context.getSystemService(DisplayManager.class).getDisplays())
@@ -128,6 +137,7 @@ public class PhoneTargetDeviceTest {
     }
 
     @Test public void workerTaskDoesNotMigrateIntoPhysicalRecentsWhenDisplayIsReleased() throws Exception {
+        Assume.assumeFalse("Real-device regression check; emulator task/IME plumbing differs from the Xiaomi finding",emulator());
         shell("am force-stop dev.pocket.agent.fixture");
         Chooser c=new Chooser("recents_regression");
         try {
@@ -150,6 +160,7 @@ public class PhoneTargetDeviceTest {
     }
 
     @Test public void focusingVirtualEditTextDoesNotShowImeOnPhysicalDisplay() throws Exception {
+        Assume.assumeFalse("Real-device regression check; emulator task/IME plumbing differs from the Xiaomi finding",emulator());
         try(Chooser c=new Chooser("editable")) {
             Observation o=c.observed("POCKET_AGENT_FIXTURE");
             Node input=o.nodes().stream().filter(n->n.description().equals("AGENT_INPUT")).findFirst().orElseThrow();
