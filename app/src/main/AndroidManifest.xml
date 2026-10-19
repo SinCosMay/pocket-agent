@@ -54,6 +54,13 @@
             <intent-filter><action android:name="android.accessibilityservice.AccessibilityService" /></intent-filter>
             <meta-data android:name="android.accessibilityservice" android:resource="@xml/accessibility_service" />
         </service>
+        <service android:name=".AccessibilityGuardianService" android:exported="false" android:process=":guardian"
+            android:foregroundServiceType="specialUse">
+            <property android:name="android.app.PROPERTY_SPECIAL_USE_FGS_SUBTYPE" android:value="Crash recovery for the user-enabled Pocket Agent accessibility service" />
+        </service>
+        <service android:name=".AccessibilityRepairService" android:exported="false" android:foregroundServiceType="specialUse">
+            <property android:name="android.app.PROPERTY_SPECIAL_USE_FGS_SUBTYPE" android:value="Scoped repair of the still-enabled Pocket Agent accessibility service after a crash" />
+        </service>
         <service android:name=".PhoneNotifications" android:permission="android.permission.BIND_NOTIFICATION_LISTENER_SERVICE" android:exported="true" android:label="Pocket Agent notification tools">
             <intent-filter><action android:name="android.service.notification.NotificationListenerService" /></intent-filter>
         </service>
