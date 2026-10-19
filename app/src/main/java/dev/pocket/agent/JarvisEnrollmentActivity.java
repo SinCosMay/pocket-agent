@@ -29,6 +29,7 @@ public final class JarvisEnrollmentActivity extends Activity {
     };
     private final float[][] samples = new float[PROMPTS.length][];
     private final ExecutorService worker = Executors.newSingleThreadExecutor();
+    private final java.util.concurrent.atomic.AtomicBoolean enrollmentPauseReleased=new java.util.concurrent.atomic.AtomicBoolean();
     private TextView prompt, info;
     private Button record, back, next, train;
     private int position;
@@ -183,8 +184,12 @@ public final class JarvisEnrollmentActivity extends Activity {
                 String message=problem.getMessage();
                 runOnUiThread(()->{busy=false;render();info.setText("Recording failed: "+message);});
             } finally {
-                if(audio!=null){try{audio.stop();}catch(Exception ignored){}audio.release();}
+                if(audio!=null) {
+                    try {audio.stop();} catch(RuntimeException ignored) {}
+                    try {audio.release();} catch(RuntimeException ignored) {}
+                }
                 activeRecorder = null;
+                if(destroying)releaseEnrollmentPause();
             }
         });
     }
@@ -206,6 +211,8 @@ public final class JarvisEnrollmentActivity extends Activity {
                 runOnUiThread(()->{busy=false;render();info.setText("Wake-phrase calibration saved locally. It is not secure speaker identification. Exit to test activation.");});
             }catch(Exception issue){
                 runOnUiThread(()->{busy=false;render();info.setText("Training failed: "+issue.getMessage());});
+            } finally {
+                if(destroying)releaseEnrollmentPause();
             }
         });
     }
@@ -217,6 +224,10 @@ public final class JarvisEnrollmentActivity extends Activity {
         super.onSaveInstanceState(out);
     }
 
+    private void releaseEnrollmentPause() {
+        if(enrollmentPauseReleased.compareAndSet(false,true))WakeWordService.resumeAfterEnrollment();
+    }
+
     @Override protected void onDestroy() {
         destroying = true;
         worker.shutdownNow();
@@ -226,9 +237,9 @@ public final class JarvisEnrollmentActivity extends Activity {
         }
         Thread cleanup = new Thread(() -> {
             try {
-                while (!worker.awaitTermination(5, java.util.concurrent.TimeUnit.SECONDS)) { }
+                if (worker.awaitTermination(5, java.util.concurrent.TimeUnit.SECONDS))releaseEnrollmentPause();
+                else android.util.Log.w("JarvisEnrollment","Enrollment worker still owns resources; wake detection remains paused");
             } catch (InterruptedException ignored) { Thread.currentThread().interrupt(); }
-            finally { WakeWordService.resumeAfterEnrollment(); }
         }, "JarvisEnrollmentCleanup");
         cleanup.setDaemon(true);
         cleanup.start();

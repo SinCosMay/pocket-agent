@@ -6,8 +6,8 @@ import androidx.test.platform.app.InstrumentationRegistry;
 /** Test-only permission provisioning; no exported production entrypoint. */
 final class DeviceTestAccess {
  static void ensureAccessibility() throws Exception {
-  if(AgentAccessibility.connected!=null)return;
   Context c=InstrumentationRegistry.getInstrumentation().getTargetContext();
+  if(AccessibilityProxyBackend.connected(c))return;
   UiAutomation automation=InstrumentationRegistry.getInstrumentation().getUiAutomation(UiAutomation.FLAG_DONT_SUPPRESS_ACCESSIBILITY_SERVICES);
   automation.adoptShellPermissionIdentity("android.permission.WRITE_SECURE_SETTINGS");
   try {
@@ -22,7 +22,7 @@ final class DeviceTestAccess {
    Settings.Secure.putInt(c.getContentResolver(),Settings.Secure.ACCESSIBILITY_ENABLED,1);
   }finally{automation.dropShellPermissionIdentity();}
   long deadline=System.currentTimeMillis()+15000;
-  while(AgentAccessibility.connected==null&&System.currentTimeMillis()<deadline)Thread.sleep(100);
-  if(AgentAccessibility.connected==null)throw new AssertionError("Accessibility did not bind after test provisioning");
+  while(!AccessibilityProxyBackend.connected(c)&&System.currentTimeMillis()<deadline)Thread.sleep(100);
+  if(!AccessibilityProxyBackend.connected(c))throw new AssertionError("Accessibility did not bind after test provisioning");
  }
 }

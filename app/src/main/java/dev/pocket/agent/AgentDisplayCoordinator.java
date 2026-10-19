@@ -2,7 +2,7 @@ package dev.pocket.agent;
 
 import android.content.Context;
 import android.content.ComponentName;
-import dev.pocket.android.AndroidScreenBackend;
+import android.provider.Settings;
 import dev.pocket.control.ControlException;
 import java.util.LinkedHashMap;
 import java.util.Map;
@@ -55,11 +55,49 @@ final class AgentDisplayCoordinator implements AutoCloseable {
         return id;
     }
 
-    synchronized AndroidScreenBackend screen(String owner) throws ControlException {
+    synchronized AccessibilityProxyBackend screen(String owner) throws ControlException {
         int id=display(owner);
-        AgentAccessibility observer=AgentAccessibility.connected;
-        if(observer==null) throw new ControlException(PERMISSION_REQUIRED,"Enable Pocket Agent accessibility to use virtual displays");
-        return observer.backend(id);
+        AccessibilityProxyBackend backend=new AccessibilityProxyBackend(context,id);
+        AccessibilityProxyBackend.ConnectionState state=AccessibilityProxyBackend.connectionState(context);
+        if(state==AccessibilityProxyBackend.ConnectionState.UNKNOWN)
+            throw new ControlException(NOT_READY,"Accessibility bridge is busy; retry after the in-flight operation completes");
+        if(state==AccessibilityProxyBackend.ConnectionState.DISCONNECTED)recoverAccessibility();
+        state=AccessibilityProxyBackend.connectionState(context);
+        if(state!=AccessibilityProxyBackend.ConnectionState.CONNECTED)
+            throw new ControlException(NOT_READY,"Pocket Agent accessibility has not rebound yet; retry after recovery");
+        return backend;
+    }
+
+    private boolean accessibilityEnabledByUser(ComponentName target) {
+        try {
+            if(Settings.Secure.getInt(context.getContentResolver(),Settings.Secure.ACCESSIBILITY_ENABLED,0)!=1)return false;
+            String raw=Settings.Secure.getString(context.getContentResolver(),Settings.Secure.ENABLED_ACCESSIBILITY_SERVICES);
+            if(raw==null)return false;
+            for(String item:raw.split(":"))if(target.equals(ComponentName.unflattenFromString(item.trim())))return true;
+        } catch(RuntimeException ignored) {}
+        return false;
+    }
+    private void recoverAccessibility() throws ControlException {
+        ComponentName component=new ComponentName(context,AgentAccessibility.class);
+        boolean enabled=accessibilityEnabledByUser(component);
+        boolean pending=AccessibilityRepairState.pending(context);
+        if(!enabled&&!pending)
+            throw new ControlException(PERMISSION_REQUIRED,"Enable Pocket Agent accessibility to use virtual displays");
+        try {
+            context.startForegroundService(new android.content.Intent(context,AccessibilityRepairService.class));
+        } catch(RuntimeException failure) {
+            throw new ControlException(NOT_READY,"Pocket Agent accessibility recovery could not be started");
+        }
+        long deadline=android.os.SystemClock.elapsedRealtime()+4500;
+        while(android.os.SystemClock.elapsedRealtime()<deadline) {
+            if(AccessibilityProxyBackend.connected(context))return;
+            try {Thread.sleep(100);} catch(InterruptedException interrupted) {
+                Thread.currentThread().interrupt();
+                throw new ControlException(RESULT_UNKNOWN,"Interrupted while waiting for accessibility recovery");
+            }
+        }
+        if(!accessibilityEnabledByUser(component)&&!AccessibilityRepairState.pending(context))
+            throw new ControlException(PERMISSION_REQUIRED,"Pocket Agent accessibility is disabled");
     }
 
     synchronized void launch(String owner,String component) throws ControlException {client().launch(display(owner),component);}
@@ -70,19 +108,18 @@ final class AgentDisplayCoordinator implements AutoCloseable {
     synchronized void release(String owner) {
         Integer id=displays.remove(owner);
         if(id!=null) {
-            AgentAccessibility observer=AgentAccessibility.connected;
-            if(observer!=null) observer.release(id);
             if(client!=null) client.removeDisplay(id);
+            new AccessibilityProxyBackend(context,id).release();
         }
     }
 
     private synchronized void invalidate() {
-        AgentAccessibility observer=AgentAccessibility.connected;
-        if(observer!=null) for(int id:displays.values())observer.release(id);
+        for(int id:displays.values())new AccessibilityProxyBackend(context,id).release();
         displays.clear();
     }
 
     synchronized int activeCount() {return displays.size();}
+    boolean accessibilityConnected() {return AccessibilityProxyBackend.connected(context);}
     String backendStatus() {ShizukuDisplayClient present=client;return present==null?ShizukuDisplayClient.prerequisites():present.status();}
 
     @Override public synchronized void close() {
