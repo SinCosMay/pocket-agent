@@ -200,8 +200,14 @@ public final class ShellDisplayService extends IDisplayShell.Stub {
         if(!"1".equals(execOutput("/system/bin/settings","get","secure","accessibility_enabled").trim()))return false;
         Set<String> current=accessibilityServices(execOutput("/system/bin/settings","get","secure","enabled_accessibility_services"));
         for(String item:current)if(component.equals(android.content.ComponentName.unflattenFromString(item)))return true;
-        current.add(component.flattenToShortString());
-        return putAccessibilityServices(current);
+        // Only restore across the exact intermediate state this repair created.
+        // Any concurrent accessibility-settings change is treated as user intent.
+        if(!current.equals(withoutTarget))return false;
+        try {Thread.sleep(120);} catch(InterruptedException interrupted) {Thread.currentThread().interrupt();return false;}
+        Set<String> stable=accessibilityServices(execOutput("/system/bin/settings","get","secure","enabled_accessibility_services"));
+        if(!stable.equals(withoutTarget))return false;
+        stable.add(component.flattenToShortString());
+        return putAccessibilityServices(stable);
     }
     private Set<Integer> rootTasksOnDisplay(int id) {
         Set<Integer> result=parseRootTasks(execOutput("/system/bin/am","stack","list"),id);
