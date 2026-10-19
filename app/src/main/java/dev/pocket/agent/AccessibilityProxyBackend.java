@@ -51,12 +51,15 @@ final class AccessibilityProxyBackend implements ControlBackend {
                 "Accessibility bridge process unavailable; wait for recovery");
         }
     }
-    static boolean connected(Context context) {
+    enum ConnectionState {CONNECTED,DISCONNECTED,UNKNOWN}
+    static ConnectionState connectionState(Context context) {
         try {
             Bundle out=providerCall(context.getApplicationContext(),"status",new Bundle(),false,STATUS_IPC_TIMEOUT_MS);
-            return out!=null&&out.getBoolean("connected");
-        } catch(ControlException ignored) {return false;}
+            if(out==null)return ConnectionState.UNKNOWN;
+            return out.getBoolean("connected")?ConnectionState.CONNECTED:ConnectionState.DISCONNECTED;
+        } catch(ControlException ignored) {return ConnectionState.UNKNOWN;}
     }
+    static boolean connected(Context context) {return connectionState(context)==ConnectionState.CONNECTED;}
     private Bundle call(String method,Bundle extras) throws ControlException {
         extras.putInt("displayId",displayId);
         boolean mutation="execute".equals(method);

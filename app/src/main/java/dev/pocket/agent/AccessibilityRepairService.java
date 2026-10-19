@@ -63,20 +63,24 @@ public final class AccessibilityRepairService extends Service {
                     else {
                         if(enabled&&!pending)AccessibilityRepairState.begin(this);
                         client=new ShizukuDisplayClient(this,()->{},false);
-                        boolean repaired=client.repairAccessibility(component.flattenToShortString(),!enabled&&pending);
-                        outcome=repaired?"triggered":"failed";
-                        long deadline=android.os.SystemClock.elapsedRealtime()+4000;
-                        while(repaired&&android.os.SystemClock.elapsedRealtime()<deadline) {
-                            if(AccessibilityProxyBackend.connected(this)) {AccessibilityRepairState.clear(this);outcome="restored";break;}
-                            try {Thread.sleep(100);} catch(InterruptedException interrupted) {Thread.currentThread().interrupt();break;}
-                        }
-                        if(!enabledByUser(component)&&!AccessibilityRepairState.pending(this))outcome="disabled";
-                        else if(!enabledByUser(component)&&!"triggered".equals(outcome)) {
-                            // The marker deliberately survives a failed mid-repair attempt so
-                            // the independent guardian can retry once Shizuku is available.
-                            outcome="repair_pending";
-                        } else if(enabledByUser(component)&&!"restored".equals(outcome)) {
-                            AccessibilityRepairState.clear(this);
+                        if(!client.awaitReady(35_000)) {
+                            outcome="service_start_timeout";
+                        } else {
+                            boolean repaired=client.repairAccessibility(component.flattenToShortString(),!enabled&&pending);
+                            outcome=repaired?"triggered":"failed";
+                            long deadline=android.os.SystemClock.elapsedRealtime()+4000;
+                            while(repaired&&android.os.SystemClock.elapsedRealtime()<deadline) {
+                                if(AccessibilityProxyBackend.connected(this)) {AccessibilityRepairState.clear(this);outcome="restored";break;}
+                                try {Thread.sleep(100);} catch(InterruptedException interrupted) {Thread.currentThread().interrupt();break;}
+                            }
+                            if(!enabledByUser(component)&&!AccessibilityRepairState.pending(this))outcome="disabled";
+                            else if(!enabledByUser(component)&&!"triggered".equals(outcome)) {
+                                // The marker deliberately survives a failed mid-repair attempt so
+                                // the independent guardian can retry once Shizuku is available.
+                                outcome="repair_pending";
+                            } else if(enabledByUser(component)&&!"restored".equals(outcome)) {
+                                AccessibilityRepairState.clear(this);
+                            }
                         }
                     }
                 }

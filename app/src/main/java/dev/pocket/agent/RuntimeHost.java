@@ -28,7 +28,7 @@ public final class RuntimeHost implements AutoCloseable {
     private final Handler handler;
     private NativeTools tools;
     private NodeRuntime runtime;
-    private boolean active, pumpScheduled, shutdownAcknowledged;
+    private boolean active, pumpScheduled, shutdownAcknowledged, shutdownClean;
     private volatile boolean closing, closed, terminalRuntimeFailure;
     private int runtimeRestartAttempts;
     private static final int MAX_RUNTIME_RESTARTS=2;
@@ -56,6 +56,7 @@ public final class RuntimeHost implements AutoCloseable {
     }
     private void createRuntime() throws Exception {
         store.markInterrupted();
+        store.markDurableInterrupted();
         tools = new NativeTools(context);
         runtime = V8Host.getNodeI18nInstance().createV8Runtime();
         runtime.getNodeModule(NodeModuleModule.class).setRequireRootDirectory(context.getFilesDir());
@@ -199,7 +200,7 @@ public final class RuntimeHost implements AutoCloseable {
     private void emit(JSONObject event) {
         String type = event.optString("type");
         if (type.equals("shutdown_ready")) {
-            shutdownAcknowledged=true;
+            shutdownAcknowledged=true;shutdownClean=event.optBoolean("clean",false);
         } else if (type.equals("dev_tool_result")) {
             CompletableFuture<JSONObject> pending = debugPending.remove(event.optString("requestId"));
             if (pending != null) pending.complete(event.optJSONObject("result"));
@@ -261,6 +262,8 @@ public final class RuntimeHost implements AutoCloseable {
                     case "store.save.chunk": {
                         if(durableSaveOutput==null||durableSaveFile==null)throw new IllegalStateException("No durable save in progress");
                         String chunk=args.getString("chunk");
+                        if(!chunk.isEmpty()&&(Character.isLowSurrogate(chunk.charAt(0))||Character.isHighSurrogate(chunk.charAt(chunk.length()-1))))
+                            throw new IllegalArgumentException("Durable state chunk splits a surrogate pair");
                         if(durableSaveReceived+chunk.length()>durableSaveExpected)throw new IllegalArgumentException("Durable state chunk overflow");
                         byte[] bytes=chunk.getBytes(java.nio.charset.StandardCharsets.UTF_8);
                         if(durableSaveBytes+bytes.length>MAX_DURABLE_STATE_BYTES)throw new IllegalArgumentException("Durable state byte budget exceeded");
@@ -358,7 +361,7 @@ public final class RuntimeHost implements AutoCloseable {
     private boolean drainRuntimeBeforeClose() {
         NodeRuntime current=runtime;
         if(current==null)return true;
-        shutdownAcknowledged=false;
+        shutdownAcknowledged=false;shutdownClean=false;
         try {
             current.getExecutor("PocketAgent.dispatch('{\"action\":\"prepare_shutdown\"}')").executeVoid();
         } catch(Throwable error) {return false;}
@@ -368,13 +371,16 @@ public final class RuntimeHost implements AutoCloseable {
             catch(Throwable error){return false;}
             try {Thread.sleep(10);} catch(InterruptedException e){Thread.currentThread().interrupt();return false;}
         }
-        return shutdownAcknowledged;
+        return shutdownAcknowledged&&shutdownClean;
     }
     private void closeResourcesOnOwnerThread(boolean cleanShutdown) {
         completePending(new IllegalStateException("Service stopped"));
         abortDurableSave();
         closeRuntimeOnly();
-        if(!cleanShutdown)try {store.markInterrupted();} catch(Throwable error) {android.util.Log.w("PocketRuntime","Could not mark interrupted",error);}
+        if(!cleanShutdown) {
+            try {store.markInterrupted();} catch(Throwable error) {android.util.Log.w("PocketRuntime","Could not mark interrupted",error);}
+            try {store.markDurableInterrupted();} catch(Throwable error) {android.util.Log.w("PocketRuntime","Could not neutralize durable inbox",error);}
+        }
         try {memory.close();} catch(Throwable error) {android.util.Log.w("PocketRuntime","Memory store close failed",error);}
         try {store.close();} catch(Throwable error) {android.util.Log.w("PocketRuntime","State store close failed",error);}
         try {thread.quitSafely();} catch(Throwable error) {android.util.Log.w("PocketRuntime","Runtime thread close failed",error);}
@@ -394,6 +400,7 @@ public final class RuntimeHost implements AutoCloseable {
         completePending(new IllegalStateException("Runtime owner thread is unavailable"));
         abortDurableSave();
         try {store.markInterrupted();} catch(Throwable error) {android.util.Log.w("PocketRuntime","Could not mark interrupted",error);}
+        try {store.markDurableInterrupted();} catch(Throwable error) {android.util.Log.w("PocketRuntime","Could not neutralize durable inbox",error);}
         try {memory.close();} catch(Throwable error) {android.util.Log.w("PocketRuntime","Memory store close failed",error);}
         try {store.close();} catch(Throwable error) {android.util.Log.w("PocketRuntime","State store close failed",error);}
         try {thread.quitSafely();} catch(Throwable error) {android.util.Log.w("PocketRuntime","Runtime thread close failed",error);}

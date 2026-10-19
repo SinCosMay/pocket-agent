@@ -37,7 +37,12 @@ public final class AccessibilityGuardianService extends Service {
                 stopForeground(STOP_FOREGROUND_REMOVE);stopSelf();return;
             }
             long now=android.os.SystemClock.elapsedRealtime();
-            if(AccessibilityProxyBackend.connected(AccessibilityGuardianService.this)) {
+            AccessibilityProxyBackend.ConnectionState connection=AccessibilityProxyBackend.connectionState(AccessibilityGuardianService.this);
+            if(connection==AccessibilityProxyBackend.ConnectionState.UNKNOWN) {
+                updateNotification("Accessibility bridge busy · waiting for current operation");
+                main.postDelayed(this,2000);return;
+            }
+            if(connection==AccessibilityProxyBackend.ConnectionState.CONNECTED) {
                 AccessibilityRepairState.clear(AccessibilityGuardianService.this);
                 misses=0;repairAttempts=0;nextRepairAt=0;
                 updateNotification("Accessibility connected");

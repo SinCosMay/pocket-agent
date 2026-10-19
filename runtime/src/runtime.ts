@@ -15,16 +15,18 @@ const WORKER_PROMPT=`You are a bounded phone operator worker. Complete the assig
 const stripImages=(messages:any[])=>messages.map(m=>({...m,content:Array.isArray(m.content)?m.content.map((c:any)=>c.type==='image'?{type:'text',text:'[Previous screenshot omitted; observe again for current state]'}:c):m.content}));
 const DIRECT_STORE_LIMIT=1_500_000;
 const STORE_CHUNK_CHARS=180_000;
-const MAX_DURABLE_CHECKPOINT_CHARS=24_000_000;
-const durableTail=(messages:any[],maxChars:number)=>{
-  const kept:any[]=[];let used=2;
-  for(let i=messages.length-1;i>=0;i--) {
-    const next=messages[i],size=JSON.stringify(next).length+1;
-    if(kept.length&&used+size>maxChars)break;
-    if(size>maxChars&&!kept.length)continue;
+const MAX_DURABLE_CHECKPOINT_BYTES=24_000_000;
+const utf8Bytes=(text:string)=>Buffer.byteLength(text,'utf8');
+const durableTail=(messages:any[],maxBytes:number)=>{
+  const system=messages[0]?.role==='system'?messages[0]:undefined;
+  const kept:any[]=[];let used=system?utf8Bytes(JSON.stringify(system))+3:2;
+  for(let i=messages.length-1;i>=(system?1:0);i--) {
+    const next=messages[i],size=utf8Bytes(JSON.stringify(next))+1;
+    if(kept.length&&used+size>maxBytes)break;
+    if(size>maxBytes-used&&!kept.length)continue;
     kept.unshift(next);used+=size;
   }
-  return kept;
+  return system?[system,...kept]:kept;
 };
 const textMessages=(messages:any[],sanitize=(text:string)=>text)=>messages.filter(m=>m.role==='user'||m.role==='assistant').map((m,i)=>({id:`${m.timestamp}-${i}`,role:m.role,text:messageText(m)||(m.stopReason==='error'?`Request failed: ${sanitize(m.errorMessage??'Provider request failed')}`:''),timestamp:m.timestamp,...(m.stopReason?{stopReason:m.stopReason}:{}),...(m.errorMessage?{error:sanitize(m.errorMessage)}:{})})).filter(m=>m.text);
 const normalizeMode=(mode:string)=>mode==='api-key'?'openai':mode==='codex-relay'||mode==='codexRelay'?'codex':mode;
@@ -484,8 +486,9 @@ export class PocketRuntime {
     for(const [id,session] of this.sessions)if(!retained.has(id as any)){session.dispose();this.sessions.delete(id);this.workerReasoningProofs.delete(id);}
     this.delivered=new Set([...this.delivered].filter(key=>retained.has(JSON.parse(key)[0])));
   }
-  private async stopAll():Promise<void> {
+  private async stopAll():Promise<boolean> {
     this.stoppingAll=true;
+    let saved=false;
     try {
       this.mainPaused=true;this.inbox=[];this.main.agent.abort();this.observerSession?.abort();this.releaseScreen('main');
       // Child ownership cancellation is explicit through each owning caller.
@@ -494,15 +497,16 @@ export class PocketRuntime {
         return this.runtime.cancelSubagent(c.conversationId,parent);
       }));
     } catch(e) {this.reportError(e);}
-    finally {this.stoppingAll=false;this.save();this.publish();}
+    finally {this.stoppingAll=false;saved=this.save();this.publish();}
+    return saved;
   }
   private async prepareShutdown():Promise<void> {
     if(this.shuttingDown)return;
     this.shuttingDown=true;
-    let clean=false;
+    let clean=false,persisted=false;
     try {
       if(this.pendingSave){clearTimeout(this.pendingSave);this.pendingSave=undefined;}
-      await this.stopAll();
+      persisted=await this.stopAll();
       const deadline=Date.now()+1400;
       while(Date.now()<deadline) {
         const tasks=this.runtime.listConversations();
@@ -512,10 +516,10 @@ export class PocketRuntime {
       if(this.observerSession){try{this.observerSession.abort();}catch{}try{this.observerSession.dispose();}catch{}this.observerSession=undefined;}
       for(const session of this.sessions.values())try{session.dispose();}catch{}
       try{this.main.dispose();}catch{}
-      this.save();
+      persisted=this.save()&&persisted;
     } catch(e) {this.reportError(e);}
     finally {
-      this.emit({type:'shutdown_ready',clean});
+      if(persisted)this.emit({type:'shutdown_ready',clean});
     }
   }
   private queueObservation(text:string):void {
@@ -564,18 +568,23 @@ export class PocketRuntime {
       for(const [id,s] of this.sessions)workerMessages[id]=stripImages(s.messages);
       let state:any={version:1,config:this.config,providerRevision:this.credentials.providerRevision,busy:this.busy,lastError:this.lastError,mainPaused:this.mainPaused,totalStarts:this.totalStarts,mainSystemPrompt:this.mainSystemPrompt,mainMessages:stripImages(this.main.messages),workers:this.runtime.listConversations(),workerMessages,workerReasoningProofs:Object.fromEntries(this.workerReasoningProofs),inbox:this.inbox,delivered:[...this.delivered],mainTurns:this.mainTurns,observationPending:this.observationPending};
       let serialized=this.redact(JSON.stringify(state));
-      if(serialized.length>MAX_DURABLE_CHECKPOINT_CHARS) {
+      if(utf8Bytes(serialized)>MAX_DURABLE_CHECKPOINT_BYTES) {
         const compactWorkers:any={};
         for(const [id,messages] of Object.entries(workerMessages))compactWorkers[id]=durableTail(messages as any[],1_250_000);
         state={...state,checkpointCompacted:true,mainMessages:durableTail(state.mainMessages,6_000_000),workerMessages:compactWorkers};
         serialized=this.redact(JSON.stringify(state));
       }
-      if(serialized.length>MAX_DURABLE_CHECKPOINT_CHARS)throw new Error('Durable checkpoint exceeds the bounded 24 MB retention budget');
+      if(utf8Bytes(serialized)>MAX_DURABLE_CHECKPOINT_BYTES)
+        throw new Error('Durable checkpoint exceeds the bounded 24 MB UTF-8 retention budget');
       const direct=JSON.stringify({state});
       if(direct.length<=DIRECT_STORE_LIMIT) {this.call('store.save',{state});return true;}
       this.call('store.save.begin',{chars:serialized.length});chunked=true;
-      for(let offset=0;offset<serialized.length;offset+=STORE_CHUNK_CHARS)
-        this.call('store.save.chunk',{chunk:serialized.slice(offset,offset+STORE_CHUNK_CHARS)});
+      for(let offset=0;offset<serialized.length;) {
+        let end=Math.min(serialized.length,offset+STORE_CHUNK_CHARS);
+        if(end<serialized.length&&end>offset&&/[\uD800-\uDBFF]/.test(serialized[end-1]))end--;
+        this.call('store.save.chunk',{chunk:serialized.slice(offset,end)});
+        offset=end;
+      }
       this.call('store.save.commit',{});chunked=false;
       return true;
     } catch(e) {

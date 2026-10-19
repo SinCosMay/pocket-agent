@@ -85,6 +85,20 @@ final class ShizukuDisplayClient implements AutoCloseable {
             Log.e(TAG,"Shizuku UserService binding call failed",e);
         }
     }
+    boolean awaitReady(long timeoutMs) throws ControlException {
+        if(timeoutMs<0)throw new IllegalArgumentException("timeoutMs");
+        if(!"ready".equals(status()))tryBind();
+        long end=SystemClock.elapsedRealtime()+timeoutMs;
+        synchronized(readyLock) {
+            while(!"ready".equals(status())&&!closed&&SystemClock.elapsedRealtime()<end) {
+                String state=status();
+                if(!"binding".equals(state))break;
+                try {readyLock.wait(Math.max(1,end-SystemClock.elapsedRealtime()));}
+                catch(InterruptedException e) {Thread.currentThread().interrupt();throw new ControlException(ControlException.Code.RESULT_UNKNOWN,"Interrupted binding Shizuku service");}
+            }
+        }
+        return "ready".equals(status());
+    }
     private IDisplayShell require() throws ControlException {
         if(!"ready".equals(status())) {
             tryBind();

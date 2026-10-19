@@ -58,9 +58,13 @@ final class AgentDisplayCoordinator implements AutoCloseable {
     synchronized AccessibilityProxyBackend screen(String owner) throws ControlException {
         int id=display(owner);
         AccessibilityProxyBackend backend=new AccessibilityProxyBackend(context,id);
-        if(!AccessibilityProxyBackend.connected(context))recoverAccessibility();
-        if(!AccessibilityProxyBackend.connected(context))
-            throw new ControlException(NOT_READY,"Pocket Agent accessibility is enabled but has not rebound yet; retry after recovery");
+        AccessibilityProxyBackend.ConnectionState state=AccessibilityProxyBackend.connectionState(context);
+        if(state==AccessibilityProxyBackend.ConnectionState.UNKNOWN)
+            throw new ControlException(NOT_READY,"Accessibility bridge is busy; retry after the in-flight operation completes");
+        if(state==AccessibilityProxyBackend.ConnectionState.DISCONNECTED)recoverAccessibility();
+        state=AccessibilityProxyBackend.connectionState(context);
+        if(state!=AccessibilityProxyBackend.ConnectionState.CONNECTED)
+            throw new ControlException(NOT_READY,"Pocket Agent accessibility has not rebound yet; retry after recovery");
         return backend;
     }
 
@@ -104,8 +108,8 @@ final class AgentDisplayCoordinator implements AutoCloseable {
     synchronized void release(String owner) {
         Integer id=displays.remove(owner);
         if(id!=null) {
-            new AccessibilityProxyBackend(context,id).release();
             if(client!=null) client.removeDisplay(id);
+            new AccessibilityProxyBackend(context,id).release();
         }
     }
 

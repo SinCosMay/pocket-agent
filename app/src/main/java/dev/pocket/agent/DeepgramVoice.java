@@ -13,6 +13,7 @@ import android.media.MediaRecorder;
 import android.os.Process;
 import android.os.Handler;
 import android.os.Looper;
+import android.util.Log;
 import java.util.ArrayDeque;
 import java.util.Arrays;
 import java.util.concurrent.ExecutorService;
@@ -95,10 +96,10 @@ final class DeepgramVoice implements AutoCloseable {
     }
 
     private void safeStatus(String message) {
-        try {callback.onStatus(message);} catch (Throwable ignored) {}
+        try {callback.onStatus(message);} catch (RuntimeException failure) {Log.w("PocketVoice","Voice status callback failed",failure);}
     }
     private void safePlaybackFinished() {
-        try {callback.onPlaybackFinished();} catch (Throwable ignored) {}
+        try {callback.onPlaybackFinished();} catch (RuntimeException failure) {Log.w("PocketVoice","Playback-finished callback failed",failure);}
     }
 
     DeepgramVoice(Context context, String key, Callback callback, SocketConnector connector, String sttUrl) {
@@ -646,7 +647,7 @@ final class DeepgramVoice implements AutoCloseable {
                             try { Thread.sleep(20); } catch (InterruptedException interrupted) { Thread.currentThread().interrupt(); break; }
                         }
                     }
-                } catch (Throwable failure) {
+                } catch (RuntimeException failure) {
                     if (!closed && generation == playbackEpoch) safeStatus("Speech playback failed");
                 } finally {
                     synchronized (DeepgramVoice.this) {

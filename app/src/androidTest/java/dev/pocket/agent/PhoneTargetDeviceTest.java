@@ -52,8 +52,9 @@ public class PhoneTargetDeviceTest {
                 screen=new AccessibilityProxyBackend(context,display.getDisplay().getDisplayId());
                 String fixtureClass="launch_failure".equals(mode)
                     ?"dev.pocket.agent.fixture.MissingActivity":"dev.pocket.agent.fixture.FixtureActivity";
-                Intent launch=new Intent().setClassName("dev.pocket.agent.fixture",fixtureClass)
-                    .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK|Intent.FLAG_ACTIVITY_MULTIPLE_TASK|Intent.FLAG_ACTIVITY_EXCLUDE_FROM_RECENTS);
+                int activityFlags=Intent.FLAG_ACTIVITY_NEW_TASK|Intent.FLAG_ACTIVITY_MULTIPLE_TASK;
+                if(!"recents_regression".equals(mode))activityFlags|=Intent.FLAG_ACTIVITY_EXCLUDE_FROM_RECENTS;
+                Intent launch=new Intent().setClassName("dev.pocket.agent.fixture",fixtureClass).addFlags(activityFlags);
                 if(!"editable".equals(mode))launch.putExtra("chooser_case",mode);
                 context.startActivity(launch,ActivityOptions.makeBasic().setLaunchDisplayId(display.getDisplay().getDisplayId()).toBundle());
                 observed("editable".equals(mode)?"POCKET_AGENT_FIXTURE":"CHOOSER_READY");
@@ -132,8 +133,16 @@ public class PhoneTargetDeviceTest {
 
     @Test public void workerTaskDoesNotMigrateIntoPhysicalRecentsWhenDisplayIsReleased() throws Exception {
         shell("am force-stop dev.pocket.agent.fixture");
-        Chooser c=new Chooser("normal");
+        Chooser c=new Chooser("recents_regression");
         try {
+            int displayId=c.display.getDisplay().getDisplayId();
+            java.util.Set<Integer> tasks=ShellDisplayService.parseRootTasks(shell("am stack list"),displayId);
+            if(tasks.isEmpty())tasks=ShellDisplayService.parseRootTasks(shell("dumpsys activity activities"),displayId);
+            assertFalse("Fixture must own a root task on the worker display before cleanup",tasks.isEmpty());
+            for(int task:tasks)shell("am stack remove "+task);
+            Thread.sleep(250);
+            assertTrue("Worker root tasks must be gone before virtual-display teardown",
+                ShellDisplayService.parseRootTasks(shell("dumpsys activity activities"),displayId).isEmpty());
             c.releaseDisplayOnly();
             Thread.sleep(700);
             String recents=shell("dumpsys activity recents");

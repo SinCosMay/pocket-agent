@@ -67,6 +67,7 @@ public final class AgentService extends Service {
         if (ACTION_COMMAND.equals(intent.getAction())) {
             String value = intent.getStringExtra("command");
             try {
+                if(host!=null&&host.terminalFailure())startup=host.recover();
                 JSONObject command = new JSONObject(value == null ? "{}" : value);
                 String voiceSessionId = command.optString("voiceSessionId", "");
                 startup.thenCompose(ignored -> host.dispatch(command)).whenComplete((response, failure) -> {

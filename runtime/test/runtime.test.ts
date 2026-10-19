@@ -438,12 +438,13 @@ test('account credentials stay redacted from durable state and events after prov
 
 test('large valid checkpoints cross the native argument limit through chunked durable persistence',()=>{
  class ChunkBridge extends Bridge {
-  pending='';
+  pending='';beginCount=0;chunkCount=0;commitCount=0;
   override call(method:string,argsJson:string):string {
    const args=JSON.parse(argsJson);
-   if(method==='store.save.begin'){this.pending='';return JSON.stringify({ok:true,result:true});}
-   if(method==='store.save.chunk'){this.pending+=args.chunk;return JSON.stringify({ok:true,result:this.pending.length});}
-   if(method==='store.save.commit'){this.state=JSON.parse(this.pending);this.pending='';return JSON.stringify({ok:true,result:true});}
+   if(method==='store.save'&&argsJson.length>1_500_000)throw new Error('oversized direct save rejected');
+   if(method==='store.save.begin'){this.pending='';this.beginCount++;return JSON.stringify({ok:true,result:true});}
+   if(method==='store.save.chunk'){this.pending+=args.chunk;this.chunkCount++;return JSON.stringify({ok:true,result:this.pending.length});}
+   if(method==='store.save.commit'){this.state=JSON.parse(this.pending);this.pending='';this.commitCount++;return JSON.stringify({ok:true,result:true});}
    if(method==='store.save.abort'){this.pending='';return JSON.stringify({ok:true,result:true});}
    return super.call(method,argsJson);
   }
@@ -453,6 +454,44 @@ test('large valid checkpoints cross the native argument limit through chunked du
  runtime.save();
  assert.ok(JSON.stringify(bridge.state).length>1_500_000);
  assert.equal(bridge.state.mainMessages.at(-1).content[0].text.length,1_600_000);
+ assert.equal(bridge.beginCount,1);assert.ok(bridge.chunkCount>1);assert.equal(bridge.commitCount,1);
+});
+
+test('chunked checkpoint transport never splits surrogate pairs',()=>{
+ class UnicodeChunkBridge extends Bridge {
+  pending='';chunks=0;
+  override call(method:string,argsJson:string):string {
+   const args=JSON.parse(argsJson);
+   if(method==='store.save'&&argsJson.length>1_500_000)throw new Error('oversized direct save rejected');
+   if(method==='store.save.begin'){this.pending='';return JSON.stringify({ok:true,result:true});}
+   if(method==='store.save.chunk'){
+    const chunk=String(args.chunk);this.chunks++;
+    assert.ok(!/^[\uDC00-\uDFFF]/.test(chunk));assert.ok(!/[\uD800-\uDBFF]$/.test(chunk));
+    this.pending+=chunk;return JSON.stringify({ok:true,result:this.pending.length});
+   }
+   if(method==='store.save.commit'){this.state=JSON.parse(this.pending);return JSON.stringify({ok:true,result:true});}
+   if(method==='store.save.abort')return JSON.stringify({ok:true,result:true});
+   return super.call(method,argsJson);
+  }
+ }
+ const bridge=new UnicodeChunkBridge(),runtime=new PocketRuntime(bridge);
+ runtime.main.agent.state.messages.push({role:'user',content:[{type:'text',text:'😀'.repeat(800_000)}],timestamp:Date.now()} as any);
+ assert.equal(runtime.save(),true);assert.ok(bridge.chunks>1);
+ assert.equal(bridge.state.mainMessages.at(-1).content[0].text.length,1_600_000);
+});
+
+test('failed final shutdown checkpoint is never acknowledged as shutdown ready',async()=>{
+ class ShutdownBridge extends Bridge {
+  fail=false;
+  override call(method:string,argsJson:string):string {
+   if(this.fail&&method.startsWith('store.save'))throw new Error('forced shutdown persistence failure');
+   return super.call(method,argsJson);
+  }
+ }
+ const bridge=new ShutdownBridge(),runtime=new PocketRuntime(bridge),internal=runtime as any;
+ bridge.fail=true;await internal.prepareShutdown();
+ assert.ok(!bridge.events.some(e=>e.type==='shutdown_ready'));
+ assert.match(internal.lastError,/forced shutdown persistence failure/);
 });
 
 test('coalesced persistence failure is contained and cannot escape the timer callback',async()=>{
