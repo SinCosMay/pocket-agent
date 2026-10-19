@@ -25,7 +25,7 @@ import java.util.Arrays;
 import org.json.JSONObject;
 
 /** User-started assistant capture plus on-demand announcements from the running agent. */
-public final class VoiceListeningService extends Service implements AgentService.Observer {
+public final class VoiceListeningService extends Service {
     static final String ACTION_START = "dev.pocket.agent.VOICE_START";
     static final String ACTION_STOP = "dev.pocket.agent.VOICE_STOP";
     static final String ACTION_ANNOUNCE = "dev.pocket.agent.VOICE_ANNOUNCE";
@@ -167,9 +167,9 @@ public final class VoiceListeningService extends Service implements AgentService
         }
         sttMode = VoiceSttSettings.mode(this);
         started = true;
-        AgentService.observe(this);
-        if (!AgentService.isRunning())
-            startForegroundService(new Intent(this, AgentService.class).setAction(AgentService.ACTION_START));
+        // AgentService lives in the main process. Starting it is idempotent and avoids
+        // relying on process-local static state from this crash-isolated voice process.
+        startForegroundService(new Intent(this, AgentService.class).setAction(AgentService.ACTION_START));
         voice = new DeepgramVoice(this, key, new DeepgramVoice.Callback() {
             @Override public void onUtterance(String text) {
                 main.post(() -> {
@@ -721,7 +721,15 @@ public final class VoiceListeningService extends Service implements AgentService
             .setAction(AgentService.ACTION_COMMAND).putExtra("command", command.toString()));
     }
 
-    @Override public void onAgentEvent(JSONObject event) {
+    static void deliverAgentEvent(String raw) {
+        VoiceListeningService service=runningService;
+        if(service==null)return;
+        try {
+            JSONObject event=new JSONObject(raw);
+            service.main.post(()->service.onAgentEvent(event));
+        } catch(Exception ignored) {}
+    }
+    private void onAgentEvent(JSONObject event) {
         if (!started || activeTurn == null || !activeTurn.equals(event.optString("sessionId"))) return;
         switch (event.optString("type")) {
             case "voice_delta":
@@ -751,7 +759,6 @@ public final class VoiceListeningService extends Service implements AgentService
         main.removeCallbacks(defaultSpeechFinalTimeout);
         cancelSystemResultFallback();
         cancelDeepgramDuplicateFallback();
-        AgentService.unobserve(this);
         pendingAnnouncements.clear();
         acceptedIds.clear();
         if (voice != null) voice.setPcmObserver(null);
