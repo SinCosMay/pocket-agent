@@ -3,7 +3,10 @@ package dev.pocket.agent;
 import android.content.Context;
 import android.security.keystore.KeyGenParameterSpec;
 import android.security.keystore.KeyProperties;
+import android.util.AtomicFile;
 import android.util.Base64;
+import java.io.File;
+import java.io.FileOutputStream;
 import java.nio.charset.StandardCharsets;
 import java.security.KeyStore;
 import javax.crypto.Cipher;
@@ -16,7 +19,34 @@ import org.json.JSONObject;
 final class VoiceCredentialStore {
     private static final String ALIAS = "pocket-agent-deepgram-v1";
     private final Context context;
-    VoiceCredentialStore(Context context) { this.context = context.getApplicationContext(); }
+    private final AtomicFile credentialFile;
+    VoiceCredentialStore(Context context) {
+        this.context = context.getApplicationContext();
+        this.credentialFile=new AtomicFile(new File(this.context.getNoBackupFilesDir(),"voice-credential.json"));
+    }
+    private String savedEnvelope() {
+        try {
+            if(credentialFile.getBaseFile().isFile())
+                return new String(credentialFile.readFully(),StandardCharsets.UTF_8);
+        } catch(Exception error) {throw new IllegalStateException("Protected voice credential is unavailable");}
+        String legacy=context.getSharedPreferences("voice-credentials",Context.MODE_PRIVATE).getString("secret",null);
+        if(legacy!=null) {
+            try {writeEnvelope(legacy);context.getSharedPreferences("voice-credentials",Context.MODE_PRIVATE).edit().remove("secret").commit();}
+            catch(Exception ignored) {}
+        }
+        return legacy;
+    }
+    private void writeEnvelope(String value) throws Exception {
+        FileOutputStream output=null;
+        try {
+            output=credentialFile.startWrite();
+            output.write(value.getBytes(StandardCharsets.UTF_8));
+            credentialFile.finishWrite(output);
+        } catch(Exception failure) {
+            if(output!=null)credentialFile.failWrite(output);
+            throw failure;
+        }
+    }
 
     private SecretKey key() throws Exception {
         KeyStore store = KeyStore.getInstance("AndroidKeyStore");
@@ -32,8 +62,7 @@ final class VoiceCredentialStore {
     synchronized boolean configured() { return !read().isEmpty(); }
 
     synchronized String read() {
-        String saved = context.getSharedPreferences("voice-credentials", Context.MODE_PRIVATE)
-            .getString("secret", null);
+        String saved = savedEnvelope();
         if (saved == null) return "";
         try {
             JSONObject envelope = new JSONObject(saved);
@@ -55,8 +84,7 @@ final class VoiceCredentialStore {
         JSONObject envelope = new JSONObject()
             .put("iv", Base64.encodeToString(cipher.getIV(), Base64.NO_WRAP))
             .put("data", Base64.encodeToString(cipher.doFinal(value.getBytes(StandardCharsets.UTF_8)), Base64.NO_WRAP));
-        if (!context.getSharedPreferences("voice-credentials", Context.MODE_PRIVATE)
-            .edit().putString("secret", envelope.toString()).commit())
-            throw new IllegalStateException("Unable to save voice credentials");
+        writeEnvelope(envelope.toString());
+        context.getSharedPreferences("voice-credentials",Context.MODE_PRIVATE).edit().remove("secret").commit();
     }
 }
