@@ -70,10 +70,13 @@ public class CodexAuthDeviceTest {
         CredentialStore credentials=new CredentialStore(context());JSONObject saved=credentials.get();
         try {
             JSONArray levels=new JSONArray().put("low").put("medium").put("high").put("ultra");
-            JSONObject synthetic=account("synthetic-level-refresh","levels")
-                    .put("reasoningEffort","high").put("preferredReasoningEffort","high")
-                    .put("reasoningEffortModel","gpt-6-luna").put("reasoningEfforts",levels);
+            JSONObject synthetic=account("synthetic-level-refresh","levels");
             credentials.save(synthetic);
+            JSONObject connected=credentials.get();
+            assertFalse("New account credentials must not create reasoning proof",connected.has("reasoningEffortModel"));
+            credentials.save(new JSONObject().put("authMode","codex-account").put("model","gpt-6-luna")
+                    .put("reasoningEffort","high").put("preferredReasoningEffort","high")
+                    .put("reasoningEffortModel","gpt-6-luna").put("reasoningEfforts",levels));
             credentials.save(new JSONObject().put("authMode","codex-account").put("model","gpt-6-luna")
                     .put("reasoningEffort","low").put("preferredReasoningEffort","low")
                     .put("reasoningEffortModel","gpt-6-luna").put("reasoningEfforts",levels));

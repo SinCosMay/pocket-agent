@@ -118,8 +118,10 @@ public final class CredentialStore {
                 String selectedModel = model(settings.optString("model", CODEX_MODEL));
                 allowed.put("model", selectedModel);
                 boolean proofSpecified = settings.has("reasoningEffortModel") || settings.has("reasoningEfforts");
-                JSONArray supported = reasoningEfforts(settings.optJSONArray("reasoningEfforts"));
-                boolean validProof = selectedModel.equals(settings.optString("reasoningEffortModel"))
+                JSONArray supported = newAccountCredential ? new JSONArray()
+                        : reasoningEfforts(settings.optJSONArray("reasoningEfforts"));
+                boolean validProof = !newAccountCredential
+                        && selectedModel.equals(settings.optString("reasoningEffortModel"))
                         && supported.length() > 0;
                 if (!proofSpecified && !newAccountCredential && CODEX_ACCOUNT.equals(current.optString("authMode"))
                         && selectedModel.equals(current.optString("reasoningEffortModel"))) {
