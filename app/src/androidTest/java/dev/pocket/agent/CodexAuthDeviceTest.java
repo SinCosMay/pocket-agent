@@ -59,7 +59,7 @@ public class CodexAuthDeviceTest {
             System.out.println("CODEX_AUTH_RESULT="+new JSONObject().put("case","importEncryptAndSignOut").put("synthetic",true).put("imported",true).put("encryptedAtRest",true).put("signedOut",true));
         } finally { credentials.save(saved); }
     }
-    @Test public void persistedReasoningProofAllowsAnotherVerifiedLevel() throws Exception {
+    @Test public void verifiedReasoningLevelsSurviveLowAndAllowLaterReuse() throws Exception {
         assertTrue("Persisted model proof must allow any saved verified level",
                 MainActivity.hasPersistedReasoningProof("gpt-6-luna","medium","gpt-6-luna",
                         new String[]{"low","medium","high"}));
@@ -69,17 +69,38 @@ public class CodexAuthDeviceTest {
         Assume.assumeTrue("Synthetic account tests require an emulator",CredentialStore.isEmulator());
         CredentialStore credentials=new CredentialStore(context());JSONObject saved=credentials.get();
         try {
-            JSONArray levels=new JSONArray().put("low").put("medium").put("high");
+            JSONArray levels=new JSONArray().put("low").put("medium").put("high").put("ultra");
             JSONObject synthetic=account("synthetic-level-refresh","levels")
                     .put("reasoningEffort","high").put("preferredReasoningEffort","high")
                     .put("reasoningEffortModel","gpt-6-luna").put("reasoningEfforts",levels);
             credentials.save(synthetic);
             credentials.save(new JSONObject().put("authMode","codex-account").put("model","gpt-6-luna")
-                    .put("reasoningEffort","medium").put("preferredReasoningEffort","medium")
+                    .put("reasoningEffort","low").put("preferredReasoningEffort","low")
                     .put("reasoningEffortModel","gpt-6-luna").put("reasoningEfforts",levels));
-            JSONObject changed=new CredentialStore(context()).get();
-            assertEquals("Another already-verified level should not require rediscovery","medium",changed.optString("reasoningEffort"));
-            assertEquals("Verified level switch should update the preference","medium",changed.optString("preferredReasoningEffort"));
+            JSONObject reopened=new CredentialStore(context()).get();
+            assertEquals("Explicit verified low should remain active","low",reopened.optString("reasoningEffort"));
+            assertEquals("Verified model proof was lost at low","gpt-6-luna",reopened.optString("reasoningEffortModel"));
+            assertTrue("Verified high level was lost at low",
+                    reopened.optJSONArray("reasoningEfforts").toString().contains("high"));
+            assertFalse("Unsupported reasoning level was not sanitized",
+                    reopened.optJSONArray("reasoningEfforts").toString().contains("ultra"));
+
+            JSONObject rotated=account("synthetic-level-refresh-rotated","levels-rotated")
+                    .put("oldRefreshToken","synthetic-level-refresh");
+            JSONObject refreshed=credentials.updateCodex(rotated);
+            assertEquals("Token refresh must retain model proof at low","gpt-6-luna",refreshed.optString("reasoningEffortModel"));
+            assertTrue("Token refresh must retain verified levels at low",
+                    refreshed.optJSONArray("reasoningEfforts").toString().contains("medium"));
+
+            credentials.save(new JSONObject().put("authMode","codex-account").put("model","gpt-6-luna")
+                    .put("reasoningEffort","high").put("preferredReasoningEffort","high"));
+            JSONObject high=credentials.get();
+            assertEquals("Retained proof should allow high without rediscovery","high",high.optString("reasoningEffort"));
+
+            credentials.save(new JSONObject().put("authMode","codex-account").put("model","gpt-6-luna")
+                    .put("reasoningEffort","medium").put("preferredReasoningEffort","medium"));
+            JSONObject medium=credentials.get();
+            assertEquals("Retained proof should allow medium without rediscovery","medium",medium.optString("reasoningEffort"));
         } finally { credentials.save(saved); }
     }
     @Test public void rotationCompareAndSaveRejectsStaleAndSignedOut() throws Exception {
@@ -102,11 +123,20 @@ public class CodexAuthDeviceTest {
             System.out.println("CODEX_AUTH_RESULT="+new JSONObject().put("case","rotationCompareAndSaveRejectsStaleAndSignedOut").put("synthetic",true).put("rotationSaved",true).put("staleRejected",true).put("signedOutRefreshRejected",true));
         } finally { first.save(saved); }
     }
-    @Test public void reasoningPreferenceSurvivesCodexClampAndCompatibleRestore() throws Exception {
-        assertEquals("Codex low clamp must not overwrite a higher global preference","high",
-                MainActivity.reasoningPreferenceAfterSelection("codex-account","low","high"));
+    @Test public void reasoningPreferenceDistinguishesVerifiedLowFromForcedLow() throws Exception {
+        String[] verified=new String[]{"low","medium","high"};
+        assertEquals("Verified Codex low must become the global preference","low",
+                MainActivity.reasoningPreferenceAfterSelection("codex-account","gpt-6-luna","low","high",
+                        verified,"",new String[0]));
+        assertEquals("Persisted verified Codex low must become the global preference","low",
+                MainActivity.reasoningPreferenceAfterSelection("codex-account","gpt-6-luna","low","high",
+                        null,"gpt-6-luna",verified));
+        assertEquals("Unverified forced low must preserve the prior preference","high",
+                MainActivity.reasoningPreferenceAfterSelection("codex-account","gpt-6-luna","low","high",
+                        null,"",new String[0]));
         assertEquals("Compatible provider selection must become the global preference","high",
-                MainActivity.reasoningPreferenceAfterSelection("openai","high","low"));
+                MainActivity.reasoningPreferenceAfterSelection("openai","gpt-5","high","low",
+                        null,"",new String[0]));
         Assume.assumeTrue("Synthetic account tests require an emulator",CredentialStore.isEmulator());
         CredentialStore credentials=new CredentialStore(context());JSONObject saved=credentials.get();
         try {
@@ -123,16 +153,9 @@ public class CodexAuthDeviceTest {
             credentials.save(codex);
             JSONObject clamped=new CredentialStore(context()).get();
             assertEquals("Codex without model proof must stay at low",CredentialStore.DEFAULT_REASONING_EFFORT,clamped.optString("reasoningEffort"));
-            assertEquals("Codex clamp must not erase the global preference","high",clamped.optString("preferredReasoningEffort"));
+            assertEquals("Forced Codex low must not erase the global preference","high",clamped.optString("preferredReasoningEffort"));
             assertFalse("Unverified Codex model must not gain reasoning proof",clamped.has("reasoningEffortModel"));
-
-            String restoredPreference=clamped.optString("preferredReasoningEffort");
-            credentials.save(new JSONObject().put("authMode","openai").put("endpoint","https://api.openai.com/v1")
-                    .put("model","gpt-5").put("apiKey","synthetic-provider-key")
-                    .put("reasoningEffort",restoredPreference).put("preferredReasoningEffort",restoredPreference));
-            JSONObject restored=new CredentialStore(context()).get();
-            assertEquals("Compatible provider must restore the saved reasoning preference","high",restored.optString("reasoningEffort"));
-            assertEquals("high",restored.optString("preferredReasoningEffort"));
         } finally { credentials.save(saved); }
     }
+
 }

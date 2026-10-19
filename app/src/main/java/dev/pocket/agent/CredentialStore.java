@@ -51,12 +51,18 @@ public final class CredentialStore {
         if (!effort.equals(current.optString("reasoningEffort"))) { current.put("reasoningEffort", effort); changed = true; }
         if (!preferredEffort.equals(current.optString("preferredReasoningEffort"))) { current.put("preferredReasoningEffort", preferredEffort); changed = true; }
         JSONArray supported = reasoningEfforts(current.optJSONArray("reasoningEfforts"));
-        if (CODEX_ACCOUNT.equals(current.optString("authMode")) && !DEFAULT_REASONING_EFFORT.equals(effort)
-                && (!current.optString("model").equals(current.optString("reasoningEffortModel"))
-                || !containsReasoningEffort(supported, effort))) {
+        boolean codexAccount = CODEX_ACCOUNT.equals(current.optString("authMode"));
+        String currentModel = current.optString("model");
+        boolean validProof = codexAccount && !currentModel.isEmpty()
+                && currentModel.equals(current.optString("reasoningEffortModel"))
+                && supported.length() > 0;
+        if (codexAccount && !DEFAULT_REASONING_EFFORT.equals(effort)
+                && (!validProof || !containsReasoningEffort(supported, effort))) {
             current.put("reasoningEffort", DEFAULT_REASONING_EFFORT);
-            current.remove("reasoningEffortModel"); current.remove("reasoningEfforts"); changed = true;
-        } else if (CODEX_ACCOUNT.equals(current.optString("authMode")) && !DEFAULT_REASONING_EFFORT.equals(effort)) {
+            effort = DEFAULT_REASONING_EFFORT;
+            changed = true;
+        }
+        if (validProof) {
             JSONArray existing = current.optJSONArray("reasoningEfforts");
             if (existing == null || !supported.toString().equals(existing.toString())) {
                 current.put("reasoningEfforts", supported); changed = true;
@@ -111,11 +117,19 @@ public final class CredentialStore {
                     if (account.has(field)) allowed.put(field, account.get(field));
                 String selectedModel = model(settings.optString("model", CODEX_MODEL));
                 allowed.put("model", selectedModel);
-                if (!DEFAULT_REASONING_EFFORT.equals(effort)) {
-                    JSONArray supported = reasoningEfforts(settings.optJSONArray("reasoningEfforts"));
-                    if (!selectedModel.equals(settings.optString("reasoningEffortModel"))
-                            || !containsReasoningEffort(supported, effort))
-                        throw new IllegalArgumentException("Discover this model before using that reasoning effort");
+                boolean proofSpecified = settings.has("reasoningEffortModel") || settings.has("reasoningEfforts");
+                JSONArray supported = reasoningEfforts(settings.optJSONArray("reasoningEfforts"));
+                boolean validProof = selectedModel.equals(settings.optString("reasoningEffortModel"))
+                        && supported.length() > 0;
+                if (!proofSpecified && !newAccountCredential && CODEX_ACCOUNT.equals(current.optString("authMode"))
+                        && selectedModel.equals(current.optString("reasoningEffortModel"))) {
+                    supported = reasoningEfforts(current.optJSONArray("reasoningEfforts"));
+                    validProof = supported.length() > 0;
+                }
+                if (!DEFAULT_REASONING_EFFORT.equals(effort)
+                        && (!validProof || !containsReasoningEffort(supported, effort)))
+                    throw new IllegalArgumentException("Discover this model before using that reasoning effort");
+                if (validProof) {
                     allowed.put("reasoningEffortModel", selectedModel);
                     allowed.put("reasoningEfforts", supported);
                 }
@@ -143,12 +157,14 @@ public final class CredentialStore {
             String effort = reasoningEffort(current.optString("reasoningEffort", DEFAULT_REASONING_EFFORT));
             String preferredEffort = reasoningEffort(current.optString("preferredReasoningEffort", effort));
             JSONArray supported = reasoningEfforts(current.optJSONArray("reasoningEfforts"));
+            boolean validProof = selectedModel.equals(current.optString("reasoningEffortModel"))
+                    && supported.length() > 0;
             if (!DEFAULT_REASONING_EFFORT.equals(effort)
-                    && (!selectedModel.equals(current.optString("reasoningEffortModel"))
-                    || !containsReasoningEffort(supported, effort))) effort = DEFAULT_REASONING_EFFORT;
+                    && (!validProof || !containsReasoningEffort(supported, effort)))
+                effort = DEFAULT_REASONING_EFFORT;
             JSONObject allowed = new JSONObject().put("authMode", CODEX_ACCOUNT)
                     .put("model", selectedModel).put("reasoningEffort", effort).put("preferredReasoningEffort", preferredEffort);
-            if (!DEFAULT_REASONING_EFFORT.equals(effort)) {
+            if (validProof) {
                 allowed.put("reasoningEffortModel", selectedModel);
                 allowed.put("reasoningEfforts", supported);
             }

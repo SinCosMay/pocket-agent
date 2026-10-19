@@ -312,15 +312,24 @@ public final class MainActivity extends Activity implements AgentService.Observe
         if (values != null) for (String value : values) if (isReasoningEffort(value)) result.put(value);
         return result;
     }
-    static String reasoningPreferenceAfterSelection(String mode, String selectedEffort, String preferred) {
-        if (mode.equals("openai") || mode.equals("codex")
-                || mode.equals(CredentialStore.CODEX_ACCOUNT) && !CredentialStore.DEFAULT_REASONING_EFFORT.equals(selectedEffort))
-            return selectedEffort;
-        return preferred;
+    static boolean hasPersistedReasoningModelProof(String selectedModel,
+            String verifiedModel, String[] verifiedLevels) {
+        return selectedModel.equals(verifiedModel) && verifiedLevels != null && verifiedLevels.length > 0;
     }
     static boolean hasPersistedReasoningProof(String selectedModel, String selectedEffort,
             String verifiedModel, String[] verifiedLevels) {
-        return selectedModel.equals(verifiedModel) && containsReasoningEffort(verifiedLevels, selectedEffort);
+        return hasPersistedReasoningModelProof(selectedModel, verifiedModel, verifiedLevels)
+                && containsReasoningEffort(verifiedLevels, selectedEffort);
+    }
+    static String reasoningPreferenceAfterSelection(String mode, String selectedModel,
+            String selectedEffort, String preferred, String[] advertised,
+            String verifiedModel, String[] verifiedLevels) {
+        if (mode.equals("openai") || mode.equals("codex")) return selectedEffort;
+        if (mode.equals(CredentialStore.CODEX_ACCOUNT)
+                && (containsReasoningEffort(advertised, selectedEffort)
+                || hasPersistedReasoningProof(selectedModel, selectedEffort, verifiedModel, verifiedLevels)))
+            return selectedEffort;
+        return preferred;
     }
     private void populateReasoningPicker(Spinner picker, String modelId, String preferred,
             boolean codexAccount, boolean codexLike, String verifiedModel, String[] verifiedLevels) {
@@ -381,10 +390,11 @@ public final class MainActivity extends Activity implements AgentService.Observe
         reasoningPicker = reasoning;
         String savedActiveReasoning = saved.optString("reasoningEffort", CredentialStore.DEFAULT_REASONING_EFFORT);
         final String[] preferredReasoning = {saved.optString("preferredReasoningEffort", savedActiveReasoning)};
+        final String savedReasoningModel = saved.optString("reasoningEffortModel");
+        final String[] savedReasoningLevels = reasoningEfforts(saved.optJSONArray("reasoningEfforts"));
         populateReasoningPicker(reasoning, model.getText().toString(),
                 selected == 5 ? savedActiveReasoning : preferredReasoning[0],
-                selected == 5, selected == 4 || selected == 5, saved.optString("reasoningEffortModel"),
-                reasoningEfforts(saved.optJSONArray("reasoningEfforts")));
+                selected == 5, selected == 4 || selected == 5, savedReasoningModel, savedReasoningLevels);
         panel.addView(reasoning);
         TextView reasoningHelp = text("");
         panel.addView(reasoningHelp);
@@ -395,15 +405,17 @@ public final class MainActivity extends Activity implements AgentService.Observe
             @Override public void onItemSelected(AdapterView<?> parent, View view, int position, long id) {
                 if (position > 0 && position < modelIds.length && modelIds[position] != null) {
                     String selectedMode = modes[mode.getSelectedItemPosition()];
-                    preferredReasoning[0] = reasoningPreferenceAfterSelection(selectedMode,
-                            selectedReasoningEffort(reasoning), preferredReasoning[0]);
+                    String currentModel = model.getText().toString().trim();
+                    preferredReasoning[0] = reasoningPreferenceAfterSelection(selectedMode, currentModel,
+                            selectedReasoningEffort(reasoning), preferredReasoning[0],
+                            modelReasoningEfforts.get(currentModel), savedReasoningModel, savedReasoningLevels);
                     model.setText(modelIds[position]);
                     String pickerPreference = selectedMode.equals(CredentialStore.CODEX_ACCOUNT)
                             ? selectedReasoningEffort(reasoning) : preferredReasoning[0];
                     populateReasoningPicker(reasoning, modelIds[position], pickerPreference,
                             selectedMode.equals(CredentialStore.CODEX_ACCOUNT),
                             selectedMode.equals("codex") || selectedMode.equals(CredentialStore.CODEX_ACCOUNT),
-                            saved.optString("reasoningEffortModel"), reasoningEfforts(saved.optJSONArray("reasoningEfforts")));
+                            savedReasoningModel, savedReasoningLevels);
                 }
             }
             @Override public void onNothingSelected(AdapterView<?> parent) { }
@@ -491,16 +503,17 @@ public final class MainActivity extends Activity implements AgentService.Observe
             else { endpoint.setText("https://api.openai.com/v1"); model.setText("scripted"); }
             String pickerPreference = account ? selectedReasoningEffort(reasoning) : preferredReasoning[0];
             populateReasoningPicker(reasoning, model.getText().toString(), pickerPreference,
-                    account, account || selectedMode.equals("codex"), saved.optString("reasoningEffortModel"),
-                    reasoningEfforts(saved.optJSONArray("reasoningEfforts")));
+                    account, account || selectedMode.equals("codex"), savedReasoningModel, savedReasoningLevels);
         };
         final int[] lastProvider = {selected};
         mode.setOnItemSelectedListener(new AdapterView.OnItemSelectedListener() {
             @Override public void onItemSelected(AdapterView<?> parent, View view, int position, long id) {
                 if (position != lastProvider[0]) {
                     String previousMode = modes[lastProvider[0]];
-                    preferredReasoning[0] = reasoningPreferenceAfterSelection(previousMode,
-                            selectedReasoningEffort(reasoning), preferredReasoning[0]);
+                    String currentModel = model.getText().toString().trim();
+                    preferredReasoning[0] = reasoningPreferenceAfterSelection(previousMode, currentModel,
+                            selectedReasoningEffort(reasoning), preferredReasoning[0],
+                            modelReasoningEfforts.get(currentModel), savedReasoningModel, savedReasoningLevels);
                     secret.setText("");
                     modelRequestId = null;
                     modelIds = new String[0];
@@ -684,23 +697,26 @@ public final class MainActivity extends Activity implements AgentService.Observe
                     String selectedMode = modes[mode.getSelectedItemPosition()];
                     String selectedModel = model.getText().toString().trim();
                     String selectedEffort = selectedReasoningEffort(reasoning);
-                    preferredReasoning[0] = reasoningPreferenceAfterSelection(selectedMode, selectedEffort, preferredReasoning[0]);
+                    String[] advertised = modelReasoningEfforts.get(selectedModel);
+                    boolean persistedModelProof = hasPersistedReasoningModelProof(selectedModel,
+                            savedReasoningModel, savedReasoningLevels);
+                    String[] verifiedLevels = advertised != null && advertised.length > 0
+                            ? advertised : persistedModelProof ? savedReasoningLevels : null;
+                    preferredReasoning[0] = reasoningPreferenceAfterSelection(selectedMode, selectedModel,
+                            selectedEffort, preferredReasoning[0], advertised,
+                            savedReasoningModel, savedReasoningLevels);
                     JSONObject config = json("authMode", selectedMode, "model", selectedModel, "reasoningEffort", selectedEffort,
                             "preferredReasoningEffort", preferredReasoning[0]);
-                    if (selectedMode.equals(CredentialStore.CODEX_ACCOUNT)
-                            && !CredentialStore.DEFAULT_REASONING_EFFORT.equals(selectedEffort)) {
-                        String[] advertised = modelReasoningEfforts.get(selectedModel);
-                        String[] savedLevels = reasoningEfforts(saved.optJSONArray("reasoningEfforts"));
-                        boolean persistedProof = hasPersistedReasoningProof(selectedModel, selectedEffort,
-                                saved.optString("reasoningEffortModel"), savedLevels);
-                        String[] verifiedLevels = containsReasoningEffort(advertised, selectedEffort)
-                                ? advertised : persistedProof ? savedLevels : null;
-                        if (verifiedLevels == null) {
+                    if (selectedMode.equals(CredentialStore.CODEX_ACCOUNT)) {
+                        if (!CredentialStore.DEFAULT_REASONING_EFFORT.equals(selectedEffort)
+                                && !containsReasoningEffort(verifiedLevels, selectedEffort)) {
                             toast("Discover this model before using that reasoning effort");
                             return;
                         }
-                        config.put("reasoningEffortModel", selectedModel);
-                        config.put("reasoningEfforts", reasoningEffortsJson(verifiedLevels));
+                        if (verifiedLevels != null) {
+                            config.put("reasoningEffortModel", selectedModel);
+                            config.put("reasoningEfforts", reasoningEffortsJson(verifiedLevels));
+                        }
                     }
                     if (!selectedMode.equals(CredentialStore.CODEX_ACCOUNT)) {
                         config.put("endpoint", endpoint.getText().toString().trim());
