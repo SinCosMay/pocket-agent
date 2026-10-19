@@ -5,6 +5,7 @@ import android.content.Context;
 import android.database.Cursor;
 import android.database.sqlite.SQLiteDatabase;
 import android.database.sqlite.SQLiteOpenHelper;
+import java.nio.charset.StandardCharsets;
 import org.json.JSONArray;
 import org.json.JSONObject;
 
@@ -29,13 +30,23 @@ public final class StateStore extends SQLiteOpenHelper {
     }
     public synchronized JSONObject loadDurable() {
         try (Cursor cursor = getReadableDatabase().rawQuery("SELECT json FROM runtime_state WHERE id=1", null)) {
-            if (cursor.moveToFirst()) return new JSONObject(cursor.getString(0));
+            if (cursor.moveToFirst()) {
+                String raw=cursor.getType(0)==Cursor.FIELD_TYPE_BLOB
+                    ?new String(cursor.getBlob(0),StandardCharsets.UTF_8):cursor.getString(0);
+                return new JSONObject(raw);
+            }
         } catch (org.json.JSONException e) { throw new IllegalStateException("Invalid saved runtime state", e); }
         return new JSONObject();
     }
     public synchronized void saveDurable(JSONObject state) {
         ContentValues values = new ContentValues(); values.put("id", 1); values.put("json", state.toString());
         getWritableDatabase().insertWithOnConflict("runtime_state", null, values, SQLiteDatabase.CONFLICT_REPLACE);
+    }
+    public synchronized void saveDurableBytes(byte[] utf8Json) {
+        if(utf8Json==null||utf8Json.length==0)throw new IllegalArgumentException("Durable state bytes are empty");
+        ContentValues values=new ContentValues();values.put("id",1);values.put("json",utf8Json);
+        if(getWritableDatabase().insertWithOnConflict("runtime_state",null,values,SQLiteDatabase.CONFLICT_REPLACE)<0)
+            throw new IllegalStateException("Unable to persist durable state");
     }
     public synchronized void record(JSONObject event) {
         ContentValues values = new ContentValues(); values.put("at", System.currentTimeMillis()); values.put("json", event.toString());
