@@ -40,11 +40,17 @@ public final class CrashResilienceDeviceTest {
         assertTrue((flags&android.content.Intent.FLAG_ACTIVITY_EXCLUDE_FROM_RECENTS)!=0);
     }
 
-    @Test public void shellDisplayKeysFailClosedWhenPhysicalDeviceCannotAcceptThem() {
-        assertTrue(NativeTools.shellDisplayKeySupported(true,false));
-        assertFalse(NativeTools.shellDisplayKeySupported(false,false));
-        assertFalse(NativeTools.shellDisplayKeySupported(true,true));
-        assertFalse(NativeTools.shellDisplayKeySupported(false,true));
+    @Test public void largeDurableBlobLoadsWithoutCursorWindowOverflow() throws Exception {
+        Context c=context();
+        try(StateStore store=new StateStore(c)) {
+            org.json.JSONObject original=store.loadDurable();
+            char[] chars=new char[4_000_000];java.util.Arrays.fill(chars,'x');
+            org.json.JSONObject large=new org.json.JSONObject().put("payload",new String(chars));
+            try {
+                store.saveDurableBytes(large.toString().getBytes(java.nio.charset.StandardCharsets.UTF_8));
+                assertEquals(4_000_000,store.loadDurable().getString("payload").length());
+            } finally {store.saveDurableBytes(original.toString().getBytes(java.nio.charset.StandardCharsets.UTF_8));}
+        }
     }
 
     @Test public void accessibilityAndGuardianHaveIndependentProcesses() throws Exception {

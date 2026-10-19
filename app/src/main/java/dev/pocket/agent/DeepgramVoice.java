@@ -630,7 +630,7 @@ final class DeepgramVoice implements AutoCloseable {
         try {
             playerQueue.execute(() -> {
                 AudioTrack track=null;
-                boolean notify=false;
+                boolean notify=false,notifyEligible=false;
                 try {
                     long expected;
                     synchronized (DeepgramVoice.this) {
@@ -647,7 +647,9 @@ final class DeepgramVoice implements AutoCloseable {
                             try { Thread.sleep(20); } catch (InterruptedException interrupted) { Thread.currentThread().interrupt(); break; }
                         }
                     }
+                    notifyEligible=true;
                 } catch (RuntimeException failure) {
+                    notifyEligible=true;
                     if (!closed && generation == playbackEpoch) safeStatus("Speech playback failed");
                 } finally {
                     synchronized (DeepgramVoice.this) {
@@ -656,7 +658,7 @@ final class DeepgramVoice implements AutoCloseable {
                             try { track.release(); } catch (RuntimeException ignored) { }
                             speaker = null;
                         }
-                        if (!closed && generation == playbackEpoch && waitingForFlush) {
+                        if (notifyEligible && !closed && generation == playbackEpoch && waitingForFlush) {
                             waitingForFlush = false;
                             notify = true;
                         }
