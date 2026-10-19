@@ -261,7 +261,8 @@ export class PocketRuntime {
     const key=generationKey({conversationId:conversationId as any,generation});
     if(this.delivered.has(key)||this.inbox.some(x=>x.key===key))return;
     this.inbox.push({type:'completion',key,conversationId,generation});
-    this.save();queueMicrotask(()=>void this.pump());
+    if(this.save())queueMicrotask(()=>void this.pump());
+    else this.coalesce();
   }
   private async pump():Promise<void> {
     if(this.pumping||this.stoppingAll||this.mainPaused)return;
@@ -271,19 +272,34 @@ export class PocketRuntime {
         if(this.main.full()){this.mainPaused=true;this.reportError('Main conversation reached the mobile context limit; pending results and history were retained.');this.save();break;}
         this.deliveryTransaction=true;
         const item=this.inbox.shift();
+        const previousMessages=this.main.agent.state.messages;
+        const previousTurns=this.mainTurns,previousInterrupted=this.mainInterrupted,previousSpeaking=this.speakingTurn;
+        let completion:any,receiptBefore:any,deliveredAdded=false;
         let prompt=item.text;
         if(item.type==='completion') {
           const c=this.runtime.generationCaller(item).conversation,g=c.generation(item.generation)!;
-          // Persist transcript delivery + exact-generation model receipt atomically before inference.
+          completion={c,g};receiptBefore=g.receipts.model;
           prompt=`[Worker completion] ${item.conversationId} generation ${item.generation}: ${JSON.stringify(g.state)}`;
-          this.delivered.add(item.key);c.markCollected(g,'model');
+          deliveredAdded=!this.delivered.has(item.key);this.delivered.add(item.key);c.markCollected(g,'model');
         }
         this.busy=true;this.mainInterrupted=false;this.lastError=null;this.mainTurns++;
         this.speakingTurn=typeof item.voiceSessionId==='string'&&/^[a-f0-9-]{36}$/.test(item.voiceSessionId)?item.voiceSessionId:null;
         this.main.agent.state.messages=[...this.main.messages,{role:'user',content:[{type:'text',text:prompt}],timestamp:Date.now()}];
+        this.injectMemory(this.main,'main',prompt);
+        // Never begin inference until queue removal, transcript delivery and the exact
+        // completion receipt are durably committed together.
+        if(!this.save()) {
+          this.main.agent.state.messages=previousMessages;
+          this.mainTurns=previousTurns;this.mainInterrupted=previousInterrupted;this.speakingTurn=previousSpeaking;
+          this.busy=false;this.inbox.unshift(item);
+          if(deliveredAdded)this.delivered.delete(item.key);
+          if(completion)(completion.g.receipts as any).model=receiptBefore;
+          this.deliveryTransaction=false;
+          this.coalesce();
+          break;
+        }
         this.deliveryTransaction=false;
-        // Delivery transcript, receipt and queue removal are one native store checkpoint.
-        this.injectMemory(this.main,'main',prompt);this.save();this.publish();const pending=this.main.continue();
+        this.publish();const pending=this.main.continue();
         try {
           await pending;
           const last=this.main.messages.at(-1);
@@ -461,8 +477,9 @@ export class PocketRuntime {
     this.delivered=new Set([...this.delivered].filter(key=>retained.has(JSON.parse(key)[0])));
   }
   private async stopAll():Promise<void> {
-    this.stoppingAll=true;this.mainPaused=true;this.inbox=[];this.main.agent.abort();this.observerSession?.abort();this.releaseScreen('main');
+    this.stoppingAll=true;
     try {
+      this.mainPaused=true;this.inbox=[];this.main.agent.abort();this.observerSession?.abort();this.releaseScreen('main');
       // Child ownership cancellation is explicit through each owning caller.
       await Promise.allSettled(this.runtime.listConversations().filter(c=>c.currentGeneration).map(c=>{
         const parent=c.parentConversationId?this.runtime.generationCaller({conversationId:c.parentConversationId,generation:this.runtime.conversation(c.parentConversationId).generations.at(-1)!.generation}):undefined;

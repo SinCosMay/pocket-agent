@@ -129,8 +129,14 @@ final class JarvisDetector implements AutoCloseable {
     float lastScore() { return lastScore; }
 
     @Override public void close() throws OrtException {
-        wake.close();
-        embedding.close();
-        mel.close();
+        OrtException failure=null;
+        for(OrtSession session:new OrtSession[]{wake,embedding,mel}) {
+            try {session.close();}
+            catch(OrtException problem) {
+                if(failure==null)failure=problem;
+                else failure.addSuppressed(problem);
+            }
+        }
+        if(failure!=null)throw failure;
     }
 }

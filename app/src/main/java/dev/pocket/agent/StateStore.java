@@ -26,7 +26,8 @@ public final class StateStore extends SQLiteOpenHelper {
     }
     public synchronized void save(JSONObject state) {
         ContentValues values = new ContentValues(); values.put("id", 1); values.put("json", state.toString());
-        getWritableDatabase().insertWithOnConflict("snapshot", null, values, SQLiteDatabase.CONFLICT_REPLACE);
+        if(getWritableDatabase().insertWithOnConflict("snapshot", null, values, SQLiteDatabase.CONFLICT_REPLACE)==-1)
+            throw new IllegalStateException("Snapshot persistence failed");
     }
     public synchronized JSONObject loadDurable() {
         try (Cursor cursor = getReadableDatabase().rawQuery("SELECT json FROM runtime_state WHERE id=1", null)) {
@@ -40,7 +41,8 @@ public final class StateStore extends SQLiteOpenHelper {
     }
     public synchronized void saveDurable(JSONObject state) {
         ContentValues values = new ContentValues(); values.put("id", 1); values.put("json", state.toString());
-        getWritableDatabase().insertWithOnConflict("runtime_state", null, values, SQLiteDatabase.CONFLICT_REPLACE);
+        if(getWritableDatabase().insertWithOnConflict("runtime_state", null, values, SQLiteDatabase.CONFLICT_REPLACE)==-1)
+            throw new IllegalStateException("Runtime state persistence failed");
     }
     public synchronized void saveDurableBytes(byte[] utf8Json) {
         if(utf8Json==null||utf8Json.length==0)throw new IllegalArgumentException("Durable state bytes are empty");
