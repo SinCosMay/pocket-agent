@@ -20,6 +20,14 @@ public final class AccessibilityGuardianService extends Service {
     static final String EXTRA_REPAIR_RESULT="repair_result";
     private static final String CHANNEL="accessibility-recovery";
     private static final int MAX_REPAIRS=3;
+    enum RepairDecision {DEFER,EXHAUSTED,START}
+    static RepairDecision repairDecision(boolean safeForAutomaticRepair,int attempts) {
+        if(!safeForAutomaticRepair)return RepairDecision.DEFER;
+        return attempts>=MAX_REPAIRS?RepairDecision.EXHAUSTED:RepairDecision.START;
+    }
+    static int repairAttemptsAfterResult(int attempts,String result) {
+        return "deferred_unlocked".equals(result)?Math.max(0,attempts-1):attempts;
+    }
     private final Handler main=new Handler(Looper.getMainLooper());
     private int misses,repairAttempts;
     private long startedAt,nextRepairAt;
@@ -48,15 +56,20 @@ public final class AccessibilityGuardianService extends Service {
                 updateNotification("Accessibility connected");
             } else if(now-startedAt>=12_000 && ++misses>=3 && now>=nextRepairAt) {
                 misses=0;
-                if(repairAttempts>=MAX_REPAIRS) {
+                RepairDecision decision=repairDecision(safeForAutomaticRepair(),repairAttempts);
+                if(decision==RepairDecision.DEFER) {
+                    nextRepairAt=now+2_000;
+                    updateNotification("Accessibility disconnected · recovery deferred while phone is unlocked");
+                } else if(decision==RepairDecision.EXHAUSTED) {
                     updateNotification("Recovery paused after repeated failures · check Shizuku and Accessibility settings");
                     main.postDelayed(this,30_000);return;
+                } else {
+                    repairAttempts++;
+                    nextRepairAt=now+Math.min(60_000,5_000L<<(repairAttempts-1));
+                    updateNotification("Accessibility disconnected · recovery attempt "+repairAttempts+" of "+MAX_REPAIRS);
+                    try {startForegroundService(new Intent(AccessibilityGuardianService.this,AccessibilityRepairService.class));}
+                    catch(RuntimeException failure) {updateNotification("Recovery could not start · check Shizuku");}
                 }
-                repairAttempts++;
-                nextRepairAt=now+Math.min(60_000,5_000L<<(repairAttempts-1));
-                updateNotification("Accessibility disconnected · recovery attempt "+repairAttempts+" of "+MAX_REPAIRS);
-                try {startForegroundService(new Intent(AccessibilityGuardianService.this,AccessibilityRepairService.class));}
-                catch(RuntimeException failure) {updateNotification("Recovery could not start · check Shizuku");}
             }
             main.postDelayed(this,2000);
         }
@@ -97,7 +110,11 @@ public final class AccessibilityGuardianService extends Service {
             String result=intent.getStringExtra(EXTRA_REPAIR_RESULT);
             if("shizuku_unavailable".equals(result)||"permission_required".equals(result))
                 updateNotification("Recovery blocked by Shizuku · start Shizuku and grant Pocket Agent");
-            else if("deferred_unlocked".equals(result))updateNotification("Recovery deferred while phone is unlocked");
+            else if("deferred_unlocked".equals(result)) {
+                repairAttempts=repairAttemptsAfterResult(repairAttempts,result);
+                nextRepairAt=android.os.SystemClock.elapsedRealtime()+2_000;
+                updateNotification("Recovery deferred while phone is unlocked");
+            }
             else if("disabled".equals(result))updateNotification("Accessibility was disabled by the user");
             else if("repair_pending".equals(result))updateNotification("Accessibility repair interrupted · retrying safely");
             else if("failed".equals(result))updateNotification("Accessibility recovery attempt failed");
