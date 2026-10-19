@@ -59,8 +59,9 @@ export async function discoverProviderModels(
   if (mode !== 'opencode' && token?.trim()) headers.Authorization = 'Bearer ' + token;
   if (account) {
     headers['ChatGPT-Account-Id'] = auth!.accountId;
-    // Current Codex catalog requests carry originator and User-Agent. Use Pi's
-    // own identity for both and never accept a caller-controlled discovery URL.
+    // Current Codex catalog requests carry originator, User-Agent and package
+    // version. Use Pi's own identity for the first two and never accept a
+    // caller-controlled discovery URL.
     headers.originator = CODEX_MODELS_ORIGINATOR;
     headers['User-Agent'] = getPiUserAgent();
     headers.version = CODEX_MODELS_CLIENT_VERSION;
