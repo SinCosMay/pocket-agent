@@ -267,7 +267,7 @@ final class NativeTools implements AutoCloseable {
         if(value==null)return "";
         return value.length()>max?value.substring(0,max):value;
     }
-    private AndroidScreenBackend screen(String owner) throws ControlException {return displays.screen(owner);}
+    private AccessibilityProxyBackend screen(String owner) throws ControlException {return displays.screen(owner);}
     private static Integer integer(JSONObject a,String name) throws Exception {return a.has(name)?a.getInt(name):null;}
     private static String string(JSONObject a,String name) throws Exception {return a.has(name)?a.getString(name):null;}
     private JSONObject outcome(AndroidSystemActions.Outcome value) {return Json.tool(Json.obj("status",value.status(),"reference",value.reference(),"message",value.message()));}
@@ -339,7 +339,7 @@ final class NativeTools implements AutoCloseable {
                 int state=context.getSystemService(android.telephony.TelephonyManager.class).getCallState();callState=switch(state) {case 0 -> "idle";case 1 -> "ringing";case 2 -> "offhook";default -> "unknown";};
             }catch(Exception denied) {}
         }
-        return Json.tool(Json.obj("version",BuildConfig.VERSION_NAME,"operation_prefix",operations.prefix(),"operation_nonce_min_length",8,"operation_nonce_max_length",48,"accessibility_connected",AgentAccessibility.connected!=null,"notification_listener_connected",PhoneNotifications.connected!=null,"interactive",context.getSystemService(PowerManager.class).isInteractive(),"locked",context.getSystemService(KeyguardManager.class).isKeyguardLocked(),"permissions",permissions,"phone_accounts",accounts,"sms_subscriptions",subscriptions,"media_sessions",media,"call_state",callState,"call_state_note","offhook includes dialing; it is not connection proof","preferred_order",Json.arr("direct_android_api","app_provided_action","semantic_accessibility","screen_gesture"),"virtual_displays",Json.obj("backend",displays.backendStatus(),"active",displays.activeCount(),"maximum",AgentDisplayCoordinator.MAX_DISPLAYS,"requires_shizuku",true)));
+        return Json.tool(Json.obj("version",BuildConfig.VERSION_NAME,"operation_prefix",operations.prefix(),"operation_nonce_min_length",8,"operation_nonce_max_length",48,"accessibility_connected",displays.accessibilityConnected(),"notification_listener_connected",PhoneNotifications.connected!=null,"interactive",context.getSystemService(PowerManager.class).isInteractive(),"locked",context.getSystemService(KeyguardManager.class).isKeyguardLocked(),"permissions",permissions,"phone_accounts",accounts,"sms_subscriptions",subscriptions,"media_sessions",media,"call_state",callState,"call_state_note","offhook includes dialing; it is not connection proof","preferred_order",Json.arr("direct_android_api","app_provided_action","semantic_accessibility","screen_gesture"),"virtual_displays",Json.obj("backend",displays.backendStatus(),"active",displays.activeCount(),"maximum",AgentDisplayCoordinator.MAX_DISPLAYS,"requires_shizuku",true)));
     }
     private JSONObject dispatch(String name,JSONObject a,String owner) throws Exception {
         switch(name) {
