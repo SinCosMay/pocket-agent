@@ -248,7 +248,7 @@ public final class WakeWordService extends Service {
             microphone = null;
             if (record != null) {
                 try { record.stop(); } catch (RuntimeException ignored) { }
-                record.release();
+                try { record.release(); } catch (RuntimeException releaseFailure) { Log.w("JarvisWake","Microphone release failed",releaseFailure); }
             }
             recording.set(false);
             thread = null;
@@ -297,7 +297,7 @@ public final class WakeWordService extends Service {
             detector = null;
         }
         if (acknowledgementSound != null) {
-            acknowledgementSound.close();
+            try { acknowledgementSound.close(); } catch (RuntimeException releaseFailure) { Log.w("JarvisWake","Acknowledgement sound release failed",releaseFailure); }
             acknowledgementSound = null;
         }
         running = null;
