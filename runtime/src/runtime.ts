@@ -15,6 +15,17 @@ const WORKER_PROMPT=`You are a bounded phone operator worker. Complete the assig
 const stripImages=(messages:any[])=>messages.map(m=>({...m,content:Array.isArray(m.content)?m.content.map((c:any)=>c.type==='image'?{type:'text',text:'[Previous screenshot omitted; observe again for current state]'}:c):m.content}));
 const DIRECT_STORE_LIMIT=1_500_000;
 const STORE_CHUNK_CHARS=180_000;
+const MAX_DURABLE_CHECKPOINT_CHARS=24_000_000;
+const durableTail=(messages:any[],maxChars:number)=>{
+  const kept:any[]=[];let used=2;
+  for(let i=messages.length-1;i>=0;i--) {
+    const next=messages[i],size=JSON.stringify(next).length+1;
+    if(kept.length&&used+size>maxChars)break;
+    if(size>maxChars&&!kept.length)continue;
+    kept.unshift(next);used+=size;
+  }
+  return kept;
+};
 const textMessages=(messages:any[],sanitize=(text:string)=>text)=>messages.filter(m=>m.role==='user'||m.role==='assistant').map((m,i)=>({id:`${m.timestamp}-${i}`,role:m.role,text:messageText(m)||(m.stopReason==='error'?`Request failed: ${sanitize(m.errorMessage??'Provider request failed')}`:''),timestamp:m.timestamp,...(m.stopReason?{stopReason:m.stopReason}:{}),...(m.errorMessage?{error:sanitize(m.errorMessage)}:{})})).filter(m=>m.text);
 const normalizeMode=(mode:string)=>mode==='api-key'?'openai':mode==='codex-relay'||mode==='codexRelay'?'codex':mode;
 
@@ -40,6 +51,7 @@ export class PocketRuntime {
   private restoring=true;
   private pumping=false;
   private stoppingAll=false;
+  private shuttingDown=false;
   private mainPaused=false;
   private totalStarts=0;
   private deliveryTransaction=false;
@@ -313,7 +325,10 @@ export class PocketRuntime {
     try {
       const cmd=JSON.parse(commandJson);
       if(!cmd||typeof cmd.action!=='string')throw new Error('Missing action');
-      if(cmd.action==='send') {
+      if(this.shuttingDown&&cmd.action!=='state')throw new Error('Runtime shutdown is in progress');
+      if(cmd.action==='prepare_shutdown') {
+        void this.prepareShutdown();
+      } else if(cmd.action==='send') {
         if(typeof cmd.text!=='string'||!cmd.text.trim()||cmd.text.length>50000)throw new Error('Message must contain 1..50000 characters');
         if(this.inbox.length>=32)throw new Error('Pending message limit reached (32)');
         if(!cmd.conversationId&&this.main.full())throw new Error('Main conversation is at the mobile context limit; history and pending results were retained');
@@ -456,6 +471,28 @@ export class PocketRuntime {
     } catch(e) {this.reportError(e);}
     finally {this.stoppingAll=false;this.save();this.publish();}
   }
+  private async prepareShutdown():Promise<void> {
+    if(this.shuttingDown)return;
+    this.shuttingDown=true;
+    let clean=false;
+    try {
+      if(this.pendingSave){clearTimeout(this.pendingSave);this.pendingSave=undefined;}
+      await this.stopAll();
+      const deadline=Date.now()+1400;
+      while(Date.now()<deadline) {
+        const tasks=this.runtime.listConversations();
+        if(!this.busy&&!this.observing&&!this.pumping&&!this.deliveryTransaction&&!tasks.some(c=>c.currentGeneration||c.isStopping)){clean=true;break;}
+        await new Promise(resolve=>setTimeout(resolve,10));
+      }
+      if(this.observerSession){try{this.observerSession.abort();}catch{}try{this.observerSession.dispose();}catch{}this.observerSession=undefined;}
+      for(const session of this.sessions.values())try{session.dispose();}catch{}
+      try{this.main.dispose();}catch{}
+      this.save();
+    } catch(e) {this.reportError(e);}
+    finally {
+      this.emit({type:'shutdown_ready',clean});
+    }
+  }
   private queueObservation(text:string):void {
     if(this.config.mode==='scripted'||!text.trim()||text.startsWith('[Worker completion]'))return;
     this.observationPending.push(text.slice(0,1500));
@@ -496,10 +533,17 @@ export class PocketRuntime {
     try {
       const workerMessages:any={};
       for(const [id,s] of this.sessions)workerMessages[id]=stripImages(s.messages);
-      const state={version:1,config:this.config,providerRevision:this.credentials.providerRevision,busy:this.busy,lastError:this.lastError,mainPaused:this.mainPaused,totalStarts:this.totalStarts,mainSystemPrompt:this.mainSystemPrompt,mainMessages:stripImages(this.main.messages),workers:this.runtime.listConversations(),workerMessages,workerReasoningProofs:Object.fromEntries(this.workerReasoningProofs),inbox:this.inbox,delivered:[...this.delivered],mainTurns:this.mainTurns,observationPending:this.observationPending};
+      let state:any={version:1,config:this.config,providerRevision:this.credentials.providerRevision,busy:this.busy,lastError:this.lastError,mainPaused:this.mainPaused,totalStarts:this.totalStarts,mainSystemPrompt:this.mainSystemPrompt,mainMessages:stripImages(this.main.messages),workers:this.runtime.listConversations(),workerMessages,workerReasoningProofs:Object.fromEntries(this.workerReasoningProofs),inbox:this.inbox,delivered:[...this.delivered],mainTurns:this.mainTurns,observationPending:this.observationPending};
+      let serialized=this.redact(JSON.stringify(state));
+      if(serialized.length>MAX_DURABLE_CHECKPOINT_CHARS) {
+        const compactWorkers:any={};
+        for(const [id,messages] of Object.entries(workerMessages))compactWorkers[id]=durableTail(messages as any[],1_250_000);
+        state={...state,checkpointCompacted:true,mainMessages:durableTail(state.mainMessages,6_000_000),workerMessages:compactWorkers};
+        serialized=this.redact(JSON.stringify(state));
+      }
+      if(serialized.length>MAX_DURABLE_CHECKPOINT_CHARS)throw new Error('Durable checkpoint exceeds the bounded 24 MB retention budget');
       const direct=JSON.stringify({state});
       if(direct.length<=DIRECT_STORE_LIMIT) {this.call('store.save',{state});return;}
-      const serialized=this.redact(JSON.stringify(state));
       this.call('store.save.begin',{chars:serialized.length});chunked=true;
       for(let offset=0;offset<serialized.length;offset+=STORE_CHUNK_CHARS)
         this.call('store.save.chunk',{chunk:serialized.slice(offset,offset+STORE_CHUNK_CHARS)});
