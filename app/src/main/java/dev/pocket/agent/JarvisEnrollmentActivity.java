@@ -226,7 +226,8 @@ public final class JarvisEnrollmentActivity extends Activity {
         }
         Thread cleanup = new Thread(() -> {
             try {
-                while (!worker.awaitTermination(5, java.util.concurrent.TimeUnit.SECONDS)) { }
+                if (!worker.awaitTermination(5, java.util.concurrent.TimeUnit.SECONDS))
+                    android.util.Log.w("JarvisEnrollment","Enrollment worker did not stop within cleanup deadline");
             } catch (InterruptedException ignored) { Thread.currentThread().interrupt(); }
             finally { WakeWordService.resumeAfterEnrollment(); }
         }, "JarvisEnrollmentCleanup");
