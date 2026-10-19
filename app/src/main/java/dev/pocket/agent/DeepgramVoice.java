@@ -664,10 +664,15 @@ final class DeepgramVoice implements AutoCloseable {
                 }
             });
         } catch (RuntimeException rejected) {
+            boolean notify=false;
             synchronized (this) {
-                if (!closed && generation == playbackEpoch) waitingForFlush=false;
+                if (!closed && generation == playbackEpoch && waitingForFlush) {
+                    waitingForFlush=false;
+                    notify=true;
+                }
             }
             if(!closed)safeStatus("Speech playback failed");
+            if(notify)safePlaybackFinished();
         }
     }
 
