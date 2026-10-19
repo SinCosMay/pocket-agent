@@ -47,6 +47,7 @@
         <service android:name=".VoiceListeningService" android:exported="false" android:process=":voice"
             android:foregroundServiceType="microphone|mediaPlayback" />
         <receiver android:name=".VoiceAgentEventReceiver" android:exported="false" android:process=":voice" />
+        <receiver android:name=".VoiceSettingsReceiver" android:exported="false" android:process=":voice" />
         <service android:name=".AgentService" android:exported="false" android:foregroundServiceType="specialUse">
             <property android:name="android.app.PROPERTY_SPECIAL_USE_FGS_SUBTYPE" android:value="User-started conversational agent completing explicitly requested background phone tasks, with ongoing notification and Stop all control" />
         </service>
