@@ -1,5 +1,5 @@
 import { Agent } from '@earendil-works/pi-agent-core';
-import { makeStream, modelFor } from './provider.js';
+import { makeStream, modelFor, type ReasoningEffort } from './provider.js';
 
 /** Finite but generous budgets for multi-step phone and puzzle workflows. */
 export const MOBILE_SESSION_BUDGET={turnsPerGeneration:200,toolCallsPerGeneration:800,maxMessages:2048,maxSerializedChars:8_000_000} as const;
@@ -10,11 +10,11 @@ export class MobileSession {
   private steering:string[]=[];
   private turns=0;
   private calls=0;
-  constructor(readonly owner:string, config:any, credentials:any, tools:any[], messages:any[]=[] ,systemPrompt='', selectedModel?:string) {
+  constructor(readonly owner:string, config:any, credentials:any, tools:any[], messages:any[]=[] ,systemPrompt='', selectedModel?:string, reasoning?:ReasoningEffort, supportedReasoning?:readonly ReasoningEffort[]) {
     const current=modelFor(config,credentials);
     const selected=selectedModel===`${current.provider}/${current.id}`
       ? current : selectedModel ? modelFor(config,credentials,selectedModel) : current;
-    this.agent=new Agent({streamFn:makeStream(config,credentials,owner),initialState:{
+    this.agent=new Agent({streamFn:makeStream(config,credentials,owner,reasoning,supportedReasoning),initialState:{
       model:selected,systemPrompt,tools,messages,
     },toolExecution:'sequential',sessionId:owner,
       beforeToolCall:()=>{if(++this.calls>MOBILE_SESSION_BUDGET.toolCallsPerGeneration)throw new Error(`Mobile tool-call budget reached (${MOBILE_SESSION_BUDGET.toolCallsPerGeneration} per generation); saved context was retained`);return undefined;},

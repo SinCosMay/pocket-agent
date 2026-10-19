@@ -2,6 +2,7 @@ import { Type } from 'typebox';
 import { randomUUID } from 'node:crypto';
 import schemas from '../../app/src/main/assets/tools.json';
 import { SubagentParams, parseSubagentInvocation } from '../vendor/pi9/schema.js';
+import { REASONING_EFFORTS } from './provider.js';
 
 // Keep upstream parsing/contracts intact; advertise only mobile-supported spawn
 // inputs. Agent selection still determines the recursively inherited tool grant.
@@ -9,7 +10,17 @@ const mobileSpawn:any={...SubagentParams.properties.spawns.items,properties:{...
 const unsupportedSpawnOverrides=['cwd','skills','thinking'];
 for(const field of unsupportedSpawnOverrides)delete mobileSpawn.properties[field];
 if(mobileSpawn.required)mobileSpawn.required=mobileSpawn.required.filter((field:string)=>!unsupportedSpawnOverrides.includes(field));
+mobileSpawn.properties.reasoning=Type.Optional(Type.Union(REASONING_EFFORTS.map(level=>Type.Literal(level)) as any,{description:'Reasoning effort for this worker. Omit to inherit the caller reasoning effort.'}));
 export const MobileSubagentParams=Type.Unsafe({...SubagentParams,properties:{...SubagentParams.properties,spawns:{...SubagentParams.properties.spawns,items:mobileSpawn}}});
+
+function normalizeMobileSubagentInvocation(params:any):any {
+  if(params?.action!=='spawn'||!Array.isArray(params.spawns))return params;
+  return {...params,spawns:params.spawns.map((task:any)=>{
+    if(!task||typeof task!=='object'||Array.isArray(task)||task.reasoning===undefined)return task;
+    const {reasoning,...rest}=task;
+    return {...rest,thinking:reasoning};
+  })};
+}
 
 export function toolResult(data:any):any {
   let latestImage:any;
@@ -207,9 +218,9 @@ export function speakToUserTool(host:any,owner:string):any {
 
 export function subagentTool(app:any,parent?:any):any {
   const owner=()=>parent?{conversation:parent,generation:parent.requireCurrentGeneration()}:undefined;
-  return {name:'subagent',label:'Subagent',description:'Use action=models to discover provider models, then specify a listed model in spawns[].model for an independent worker. Omitting model inherits the main model. Delegate asynchronously. spawn returns immediately. End your turn and remain available; host delivers completion. inspect does not collect. join collects; use only for explicit dependencies. resume requires the initiator collection receipt. Tools are inherited by children.',parameters:MobileSubagentParams,
+  return {name:'subagent',label:'Subagent',description:'Use action=models to discover provider models and their supportedReasoningLevels. Specify a listed model in spawns[].model and an optional spawns[].reasoning for an independent worker. Omitting model inherits the main model; omitting reasoning inherits the caller reasoning effort. Delegate asynchronously. spawn returns immediately. End your turn and remain available; host delivers completion. inspect does not collect. join collects; use only for explicit dependencies. resume requires the initiator collection receipt. Tools are inherited by children.',parameters:MobileSubagentParams,
     execute:async(id:string,params:any,signal?:AbortSignal)=>{
-      const invocation=parseSubagentInvocation(params,{maxTasks:4});
+      const invocation=parseSubagentInvocation(normalizeMobileSubagentInvocation(params),{maxTasks:4});
       if('error' in invocation) return toolResult({action:params.action,error:invocation.error});
       const r=app.runtime,caller=owner(), action=invocation.action;
       let results:any[]=[];
@@ -231,7 +242,8 @@ export function subagentTool(app:any,parent?:any):any {
           if(parent && r.conversationDepth(parent.conversationId)>=4) throw new Error('Maximum recursive mobile worker depth is 4');
           for(const task of tasks) {
             if('error' in task) {results.push({ok:false,...task});continue;}
-            const h=app.startTasks([task],{caller,initiatedBy:'model'});
+            const effectiveTask=action==='spawn'&&task.thinking===undefined?{...task,thinking:parent?.requestedConfig?.thinking??app.state().provider.reasoningEffort}:task;
+            const h=app.startTasks([effectiveTask],{caller,initiatedBy:'model'});
             results.push(...h.starts);void h.completion.catch(app.reportError);
           }
           break;

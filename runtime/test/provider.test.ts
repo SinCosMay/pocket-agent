@@ -76,7 +76,7 @@ test('direct Codex wire has fixed destination, explicit strict:false and a struc
  assert.equal(agent.state.messages.at(-1)?.content[0].type,'text');
 });
 
-test('direct Codex wires main reasoning effort, preserves low for workers, and sanitizes invalid values',async()=>{
+test('direct Codex wires configured reasoning for main and workers and sanitizes invalid values',async()=>{
  for(const [configured,owner,proof,withLevels,expected] of [
    ['minimal','main','gpt-6-luna',true,'minimal'],
    ['low','main',undefined,false,'low'],
@@ -89,6 +89,9 @@ test('direct Codex wires main reasoning effort, preserves low for workers, and s
    ['high','main',undefined,false,'low'],
    ['not-a-level','main',undefined,false,'low'],
    ['xhigh','worker-fixture','gpt-6-luna',true,'low'],
+   ['high','worker-fixture','different-model',true,'low'],
+   ['high','worker-fixture','gpt-6-luna',false,'low'],
+   ['high','memory-observer','gpt-6-luna',true,'low'],
  ] as const) {
    const credentials={...accountCredential(),...(proof?{
      reasoningEffortModel:proof,...(withLevels?{reasoningEfforts:['minimal','low','medium','high','xhigh','max']}:{})
@@ -99,6 +102,23 @@ test('direct Codex wires main reasoning effort, preserves low for workers, and s
      wire=requestBody(init);return codexResponse([]);
    }}),initialState:{model:modelFor(config,credentials),tools:[]}});
    await agent.prompt('Reasoning effort probe');
+   assert.equal(wire.reasoning?.effort,expected);
+ }
+});
+
+test('worker reasoning override requires model-bound catalog or credential proof',async()=>{
+ for(const [supported,selectedModel,expected] of [
+   [['low','high'],'gpt-6-luna','high'],
+   [['low'],'gpt-6-luna','low'],
+   [undefined,'gpt-6-mini','low'],
+   [undefined,'gpt-6-luna','low'],
+ ] as const) {
+   const credentials=accountCredential();let wire:any;
+   const stream=makeStream({...accountConfig,reasoningEffort:'medium'},credentials,'worker-fixture','high',supported as any);
+   const agent=new Agent({streamFn:(model,context,options)=>stream(model,context,{...options,fetch:async(_input,init)=>{
+     wire=requestBody(init);return codexResponse([]);
+   }}),initialState:{model:modelFor(accountConfig,credentials,selectedModel),tools:[]}});
+   await agent.prompt('Worker reasoning probe');
    assert.equal(wire.reasoning?.effort,expected);
  }
 });

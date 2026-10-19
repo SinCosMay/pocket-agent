@@ -34,7 +34,7 @@ test('Pi validates the full mutation ID contract before dispatch; historical rec
 
 test('mobile spawn schema omits unsupported overrides while upstream actions and inherited grants stay intact',()=>{
  const mobile:any=MobileSubagentParams,upstream:any=SubagentParams;
- assert.deepEqual(Object.keys(mobile.properties.spawns.items.properties).sort(),['agent','label','model','prompt']);
+ assert.deepEqual(Object.keys(mobile.properties.spawns.items.properties).sort(),['agent','label','model','prompt','reasoning']);
  assert.deepEqual(mobile.properties.spawns.items.required,['agent','prompt','label']);
  assert.equal(mobile.properties.spawns.items.additionalProperties,false);
  for(const field of ['cwd','skills','thinking'])assert.ok(field in upstream.properties.spawns.items.properties,'upstream schema must remain unmodified');
@@ -43,10 +43,23 @@ test('mobile spawn schema omits unsupported overrides while upstream actions and
  const runtime=new PocketRuntime(new Bridge());
  const tool=runtime.main.agent.state.tools.find((t:any)=>t.name==='subagent')!;
  assert.equal(tool.parameters,MobileSubagentParams);
+ assert.match(tool.description,/omitting reasoning inherits the caller reasoning effort/);
  assert.match(tool.description,/Tools are inherited by children/);
  assert.ok(runtime.registry.agents.get('phone-operator')!.tools!.includes('phone_act'));
  assert.ok(!runtime.registry.agents.get('researcher')!.tools!.includes('phone_act'));
  assert.ok(runtime.registry.agents.get('researcher')!.tools!.includes('phone_calendar_events'));
+});
+
+test('mobile subagents inherit main reasoning and accept an explicit per-spawn reasoning override',async()=>{
+ const bridge=new Bridge();bridge.credentials={authMode:'scripted',model:'scripted',reasoningEffort:'high'};
+ const runtime=new PocketRuntime(bridge);
+ const tool=runtime.main.agent.state.tools.find((t:any)=>t.name==='subagent')!;
+ await tool.execute('reasoning-explicit',{action:'spawn',spawns:[{agent:'researcher',label:'Explicit reasoning',prompt:'Read state',reasoning:'medium'}]});
+ await until(()=>runtime.state().tasks[0]?.status==='completed');
+ assert.equal(runtime.state().tasks[0].requestedConfig.thinking,'medium');
+ await tool.execute('reasoning-inherited',{action:'spawn',spawns:[{agent:'researcher',label:'Inherited reasoning',prompt:'Read state'}]});
+ await until(()=>runtime.state().tasks[1]?.status==='completed');
+ assert.equal(runtime.state().tasks[1].requestedConfig.thinking,'high');
 });
 
 test('batch vision keeps only latest bounded image and preserves image-free operation receipts',()=>{
@@ -338,6 +351,27 @@ test('reasoning effort survives restart and provider reconfiguration while inval
  bridge.credentials={...bridge.credentials,reasoningEffort:'invalid'};
  command(restored,{action:'configure'});
  assert.equal(restored.state().provider.reasoningEffort,'low');
+});
+
+test('retained workers persist model-bound reasoning proof, keep it on same-provider configure, and clear it on provider change',async()=>{
+ const bridge=new Bridge();bridge.credentials={authMode:'scripted',model:'scripted',reasoningEffort:'high',providerRevision:'provider-rev-1'};
+ const runtime=new PocketRuntime(bridge);
+ (runtime as any).cachedModels={at:Date.now(),models:[{id:'scripted',name:'Scripted model',supportedReasoningLevels:['low','medium','high']}]};
+ const handle=runtime.startTasks([{kind:'spawn',agent:'researcher',label:'Pinned reasoning',prompt:'Read state',thinking:'medium'}],{initiatedBy:'user'});
+ await handle.completion;await until(()=>runtime.state().tasks[0]?.status==='completed');
+ const id=runtime.state().tasks[0].conversationId;
+ assert.equal(runtime.state().tasks[0].requestedConfig.thinking,'medium');
+ assert.deepEqual(bridge.state.workerReasoningProofs[id],{model:'scripted',levels:['low','medium','high']});
+ const restored=new PocketRuntime(bridge);
+ assert.deepEqual((restored as any).workerReasoningProofs.get(id),{model:'scripted',levels:['low','medium','high']},'model-bound proof survives restart');
+ bridge.credentials={...bridge.credentials,reasoningEffort:'low'};
+ command(restored,{action:'configure'});
+ assert.equal(restored.state().tasks[0].requestedConfig.thinking,'medium','same provider preserves the worker reasoning snapshot');
+ assert.deepEqual((restored as any).workerReasoningProofs.get(id),{model:'scripted',levels:['low','medium','high']});
+ bridge.credentials={authMode:'openai',endpoint:'https://example.test/v1',apiKey:'provider-key',model:'next-model',reasoningEffort:'low',providerRevision:'provider-rev-2'};
+ command(restored,{action:'configure'});
+ assert.equal(restored.state().tasks[0].requestedConfig.thinking,undefined,'provider changes clear stale worker reasoning overrides');
+ assert.equal((restored as any).workerReasoningProofs.has(id),false,'provider changes clear stale model-bound proof');
 });
 
 test('paused main with retained inbox can still apply provider and prompt settings',()=>{
