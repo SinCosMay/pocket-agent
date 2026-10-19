@@ -113,7 +113,10 @@ public final class AgentService extends Service {
                         "Speech service could not start; check Pocket Agent voice permissions");
                 }
             }
-            for (Observer observer : observers) observer.onAgentEvent(event);
+            for (Observer observer : observers) {
+                try {observer.onAgentEvent(event);}
+                catch (Throwable failure) {Log.w("PocketAgent","Observer callback failed; continuing other observers",failure);}
+            }
         });
     }
     @Override public void onDestroy() {
