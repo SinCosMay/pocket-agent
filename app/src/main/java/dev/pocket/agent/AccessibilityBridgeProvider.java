@@ -10,9 +10,12 @@ import dev.pocket.control.ControlBackend;
 import dev.pocket.control.ControlException;
 import java.io.File;
 import java.io.FileOutputStream;
-import java.util.ArrayList;
+import java.nio.charset.StandardCharsets;
+import org.json.JSONArray;
+import org.json.JSONObject;
 
 public final class AccessibilityBridgeProvider extends ContentProvider {
+    private static final long STALE_BRIDGE_FILE_MS=10*60_000L;
     static String authority(android.content.Context context) {return context.getPackageName()+".accessibility-bridge";}
     static Uri uri(android.content.Context context) {return Uri.parse("content://"+authority(context));}
     @Override public boolean onCreate() {return true;}
@@ -37,6 +40,34 @@ public final class AccessibilityBridgeProvider extends ContentProvider {
         if(displayId<0)throw new IllegalArgumentException("Display ID required");
         return displayId==android.view.Display.DEFAULT_DISPLAY?service.backend():service.backend(displayId);
     }
+    private File bridgeFile(String prefix,byte[] bytes) throws Exception {
+        File dir=new File(getContext().getCacheDir(),"accessibility-bridge");
+        if(!dir.exists()&&!dir.mkdirs())throw new IllegalStateException("Could not create accessibility bridge cache");
+        File[] existing=dir.listFiles();
+        long cutoff=System.currentTimeMillis()-STALE_BRIDGE_FILE_MS;
+        if(existing!=null)for(File file:existing)if(file.isFile()&&file.lastModified()<cutoff)try {file.delete();}catch(RuntimeException ignored){}
+        File file=File.createTempFile(prefix,".bin",dir);
+        try(FileOutputStream output=new FileOutputStream(file)){output.write(bytes);}
+        return file;
+    }
+    private Bundle observation(ControlBackend.Observation observation) throws Exception {
+        JSONObject payload=new JSONObject()
+            .put("snapshotId",observation.snapshotId()).put("capturedAtMs",observation.capturedAtMs()).put("packageName",observation.packageName())
+            .put("windowId",observation.windowId()).put("coordinateWidth",observation.coordinateWidth()).put("coordinateHeight",observation.coordinateHeight())
+            .put("interactive",observation.interactive()).put("locked",observation.locked()).put("nodesTruncated",observation.nodesTruncated())
+            .put("imageMime",observation.imageMime()).put("imageWidth",observation.imageWidth()).put("imageHeight",observation.imageHeight());
+        JSONArray nodes=new JSONArray();
+        for(ControlBackend.Node node:observation.nodes())nodes.put(new JSONObject()
+            .put("index",node.index()).put("resourceId",node.resourceId()).put("text",node.text()).put("description",node.description()).put("role",node.role())
+            .put("left",node.left()).put("top",node.top()).put("right",node.right()).put("bottom",node.bottom())
+            .put("enabled",node.enabled()).put("focused",node.focused()).put("editable",node.editable()).put("clickable",node.clickable())
+            .put("longClickable",node.longClickable()).put("scrollable",node.scrollable()));
+        payload.put("nodes",nodes);
+        byte[] image=observation.image();
+        if(image!=null)payload.put("imageFile",bridgeFile("screen-",image).getAbsolutePath());
+        File serialized=bridgeFile("observation-",payload.toString().getBytes(StandardCharsets.UTF_8));
+        Bundle out=new Bundle();out.putString("payloadFile",serialized.getAbsolutePath());return out;
+    }
     @Override public Bundle call(String method,String arg,Bundle extras) {
         try {
             AgentAccessibility service=AgentAccessibility.connected;
@@ -48,30 +79,8 @@ public final class AccessibilityBridgeProvider extends ContentProvider {
             if(service==null)throw new ControlException(ControlException.Code.PERMISSION_REQUIRED,"Pocket Agent accessibility is enabled but not currently bound");
             if(extras==null)throw new ControlException(ControlException.Code.INVALID_ARGUMENT,"Missing accessibility bridge arguments");
             AndroidScreenBackend backend=backend(service,extras.getInt("displayId",-1));
-            if("observe".equals(method)) {
-                ControlBackend.Observation observation=backend.observe(extras.getBoolean("includeImage"),extras.getInt("maxImageDimension"),extras.getInt("maxNodes"));
-                Bundle out=new Bundle();
-                out.putString("snapshotId",observation.snapshotId());out.putLong("capturedAtMs",observation.capturedAtMs());out.putString("packageName",observation.packageName());
-                out.putInt("windowId",observation.windowId());out.putInt("coordinateWidth",observation.coordinateWidth());out.putInt("coordinateHeight",observation.coordinateHeight());
-                out.putBoolean("interactive",observation.interactive());out.putBoolean("locked",observation.locked());out.putBoolean("nodesTruncated",observation.nodesTruncated());
-                out.putString("imageMime",observation.imageMime());out.putInt("imageWidth",observation.imageWidth());out.putInt("imageHeight",observation.imageHeight());
-                ArrayList<Bundle> nodes=new ArrayList<>();
-                for(ControlBackend.Node node:observation.nodes()) {
-                    Bundle item=new Bundle();item.putInt("index",node.index());item.putString("resourceId",node.resourceId());item.putString("text",node.text());item.putString("description",node.description());item.putString("role",node.role());
-                    item.putInt("left",node.left());item.putInt("top",node.top());item.putInt("right",node.right());item.putInt("bottom",node.bottom());
-                    item.putBoolean("enabled",node.enabled());item.putBoolean("focused",node.focused());item.putBoolean("editable",node.editable());item.putBoolean("clickable",node.clickable());item.putBoolean("longClickable",node.longClickable());item.putBoolean("scrollable",node.scrollable());nodes.add(item);
-                }
-                out.putParcelableArrayList("nodes",nodes);
-                byte[] image=observation.image();
-                if(image!=null) {
-                    File dir=new File(getContext().getCacheDir(),"accessibility-bridge");
-                    if(!dir.exists()&&!dir.mkdirs())throw new IllegalStateException("Could not create accessibility bridge cache");
-                    File file=File.createTempFile("screen-",".bin",dir);
-                    try(FileOutputStream output=new FileOutputStream(file)){output.write(image);}
-                    out.putString("imageFile",file.getAbsolutePath());
-                }
-                return out;
-            }
+            if("observe".equals(method))
+                return observation(backend.observe(extras.getBoolean("includeImage"),extras.getInt("maxImageDimension"),extras.getInt("maxNodes")));
             if("noteInteraction".equals(method)) {backend.noteInteraction(extras.getLong("eventTime"));return new Bundle();}
             if("validate".equals(method)) {backend.validateAction(action(extras));return new Bundle();}
             if("execute".equals(method)) {

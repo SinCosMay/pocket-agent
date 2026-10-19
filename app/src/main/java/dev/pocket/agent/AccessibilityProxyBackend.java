@@ -5,9 +5,12 @@ import android.os.Bundle;
 import dev.pocket.control.ControlBackend;
 import dev.pocket.control.ControlException;
 import java.io.File;
+import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.util.ArrayList;
 import java.util.List;
+import org.json.JSONArray;
+import org.json.JSONObject;
 
 final class AccessibilityProxyBackend implements ControlBackend {
     private final Context context;
@@ -43,27 +46,38 @@ final class AccessibilityProxyBackend implements ControlBackend {
         if(action.selector()!=null) {out.putBoolean("hasSelector",true);optional(out,"resourceId",action.selector().resourceId());optional(out,"selectorText",action.selector().text());optional(out,"description",action.selector().description());}
         return out;
     }
+    private JSONObject payload(Bundle out) throws ControlException {
+        String path=out.getString("payloadFile");
+        if(path==null)throw new ControlException(ControlException.Code.RESULT_UNKNOWN,"Accessibility result transfer was incomplete; observe again");
+        File file=new File(path);
+        try {return new JSONObject(new String(Files.readAllBytes(file.toPath()),StandardCharsets.UTF_8));}
+        catch(Exception failure) {throw new ControlException(ControlException.Code.RESULT_UNKNOWN,"Accessibility result transfer failed; observe again");}
+        finally {try {file.delete();}catch(RuntimeException ignored){}}
+    }
+    private static byte[] image(JSONObject payload) throws ControlException {
+        String path=payload.optString("imageFile",null);
+        if(path==null)return null;
+        File file=new File(path);
+        try {return Files.readAllBytes(file.toPath());}
+        catch(Exception failure) {throw new ControlException(ControlException.Code.RESULT_UNKNOWN,"Screenshot transfer failed; observe again");}
+        finally {try {file.delete();}catch(RuntimeException ignored){}}
+    }
     void validateAction(ControlBackend.Action action) throws ControlException {call("validate",action(action));}
     void noteInteraction(long eventTime) throws ControlException {Bundle args=new Bundle();args.putLong("eventTime",eventTime);call("noteInteraction",args);}
     void release() {try {call("release",new Bundle());} catch(ControlException ignored) {}}
 
     @Override public ControlBackend.Observation observe(boolean includeImage,int maxImageDimension,int maxNodes) throws ControlException {
         Bundle args=new Bundle();args.putBoolean("includeImage",includeImage);args.putInt("maxImageDimension",maxImageDimension);args.putInt("maxNodes",maxNodes);
-        Bundle out=call("observe",args);
-        ArrayList<Bundle> raw=out.getParcelableArrayList("nodes");
-        List<ControlBackend.Node> nodes=new ArrayList<>();
-        if(raw!=null)for(Bundle node:raw)nodes.add(new ControlBackend.Node(node.getInt("index"),node.getString("resourceId",""),node.getString("text",""),node.getString("description",""),node.getString("role",""),
-            node.getInt("left"),node.getInt("top"),node.getInt("right"),node.getInt("bottom"),node.getBoolean("enabled"),node.getBoolean("focused"),node.getBoolean("editable"),node.getBoolean("clickable"),node.getBoolean("longClickable"),node.getBoolean("scrollable")));
-        byte[] image=null;String path=out.getString("imageFile");
-        if(path!=null) {
-            File file=new File(path);
-            try {image=Files.readAllBytes(file.toPath());}
-            catch(Exception failure) {throw new ControlException(ControlException.Code.RESULT_UNKNOWN,"Screenshot transfer failed; observe again");}
-            finally {try {file.delete();}catch(RuntimeException ignored){}}
+        JSONObject data=payload(call("observe",args));JSONArray raw=data.optJSONArray("nodes");List<ControlBackend.Node> nodes=new ArrayList<>();
+        if(raw!=null)for(int i=0;i<raw.length();i++) {
+            JSONObject node=raw.optJSONObject(i);if(node==null)continue;
+            nodes.add(new ControlBackend.Node(node.optInt("index"),node.optString("resourceId"),node.optString("text"),node.optString("description"),node.optString("role"),
+                node.optInt("left"),node.optInt("top"),node.optInt("right"),node.optInt("bottom"),node.optBoolean("enabled"),node.optBoolean("focused"),node.optBoolean("editable"),
+                node.optBoolean("clickable"),node.optBoolean("longClickable"),node.optBoolean("scrollable")));
         }
-        return new ControlBackend.Observation(out.getString("snapshotId"),out.getLong("capturedAtMs"),out.getString("packageName",""),out.getInt("windowId"),
-            out.getInt("coordinateWidth"),out.getInt("coordinateHeight"),out.getBoolean("interactive"),out.getBoolean("locked"),nodes,out.getBoolean("nodesTruncated"),
-            image,out.getString("imageMime"),out.getInt("imageWidth"),out.getInt("imageHeight"));
+        return new ControlBackend.Observation(data.optString("snapshotId"),data.optLong("capturedAtMs"),data.optString("packageName"),data.optInt("windowId"),
+            data.optInt("coordinateWidth"),data.optInt("coordinateHeight"),data.optBoolean("interactive"),data.optBoolean("locked"),nodes,data.optBoolean("nodesTruncated"),
+            image(data),data.optString("imageMime",null),data.optInt("imageWidth"),data.optInt("imageHeight"));
     }
     @Override public ControlBackend.Result execute(ControlBackend.Action action) throws ControlException {
         Bundle out=call("execute",action(action));return new ControlBackend.Result(out.getString("status"),out.getString("message"));
