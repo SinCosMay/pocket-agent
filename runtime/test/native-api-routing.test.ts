@@ -77,6 +77,24 @@ test('physical display UI calls bypass the virtual-display lease',async()=>{
  assert.equal(acquisitions,1,'default virtual UI behavior must remain unchanged');
 });
 
+test('mixed-target batch rejects before reserving a virtual display',async()=>{
+ let acquisitions=0,dispatched=0;
+ const host={
+  ensureDisplay:async()=>{acquisitions++;return {status:'acquired'};},
+  call:()=>{dispatched++;return {status:'unexpected'};},
+ };
+ const batch=nativeTools(host,'mixed-batch').find((x:any)=>x.name==='phone_batch')!;
+ const op='123456789-abcdef1234567890_mixed001';
+ const result=await batch.execute('mixed',{calls:[
+  {name:'phone_open_app',args:{package_name:'dev.pocket.agent.fixture',display_target:'physical',operation_id:op}},
+  {name:'phone_observe',args:{display_target:'virtual'}},
+ ]});
+ assert.equal(result.isError,true);
+ assert.equal(result.details.code,'INVALID_ARGUMENT');
+ assert.equal(acquisitions,0);
+ assert.equal(dispatched,0);
+});
+
 test('physical-only batch does not reserve a virtual display',async()=>{
  let acquisitions=0,dispatched=0;
  const host={
