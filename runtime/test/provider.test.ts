@@ -76,6 +76,25 @@ test('direct Codex wire has fixed destination, explicit strict:false and a struc
  assert.equal(agent.state.messages.at(-1)?.content[0].type,'text');
 });
 
+test('direct Codex wires main reasoning effort, preserves low for workers, and sanitizes invalid values',async()=>{
+ for(const [configured,owner,expected] of [
+   ['minimal','main','minimal'],
+   ['xhigh','main','xhigh'],
+   ['max','main','max'],
+   ['not-a-level','main','low'],
+   ['xhigh','worker-fixture','low'],
+ ] as const) {
+   const credentials=accountCredential();let wire:any;
+   const config={...accountConfig,reasoningEffort:configured};
+   const stream=makeStream(config,credentials,owner);
+   const agent=new Agent({streamFn:(model,context,options)=>stream(model,context,{...options,fetch:async(_input,init)=>{
+     wire=requestBody(init);return codexResponse([]);
+   }}),initialState:{model:modelFor(config,credentials),tools:[]}});
+   await agent.prompt('Reasoning effort probe');
+   assert.equal(wire.reasoning?.effort,expected);
+ }
+});
+
 test('direct Codex rejects every configured endpoint override',()=>{
  for(const endpoint of ['https://evil.test','https://chatgpt.com/backend-api/codex/responses','http://127.0.0.1:8787/v1']) {
    assert.throws(()=>modelFor({...accountConfig,endpoint},accountCredential()),/fixed provider endpoint/);

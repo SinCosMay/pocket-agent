@@ -47,8 +47,14 @@ public final class MainActivity extends Activity implements AgentService.Observe
     private String viewedWorker;
     private String deferredUserMessage;
     private Spinner modelPicker;
+    private Spinner reasoningPicker;
     private String modelRequestId;
     private String[] modelIds = {};
+    private final java.util.Map<String, String[]> modelReasoningEfforts = new java.util.HashMap<>();
+    private final java.util.Map<String, String> modelDefaultReasoningEfforts = new java.util.HashMap<>();
+    private static final String[] REASONING_EFFORTS = {"minimal", "low", "medium", "high", "xhigh", "max"};
+    private static final String[] DEFAULT_REASONING_CHOICES = {"minimal", "low", "medium", "high", "xhigh"};
+    private static final String[] CODEX_REASONING_CHOICES = {"minimal", "low", "medium", "high", "xhigh"};
     private StateStore store;
     private static final int IMPORT_CODEX = 90;
     private final ExecutorService accountFiles = Executors.newSingleThreadExecutor();
@@ -136,6 +142,8 @@ public final class MainActivity extends Activity implements AgentService.Observe
             if (models == null) { toast("Provider returned no model list"); return; }
             String[] labels = new String[models.length() + 1];
             modelIds = new String[models.length() + 1];
+            modelReasoningEfforts.clear();
+            modelDefaultReasoningEfforts.clear();
             labels[0] = "Select discovered main model";
             for (int i = 0; i < models.length(); i++) {
                 JSONObject entry = models.optJSONObject(i);
@@ -143,6 +151,17 @@ public final class MainActivity extends Activity implements AgentService.Observe
                 modelIds[i + 1] = id;
                 String name = entry == null ? id : entry.optString("name", id);
                 labels[i + 1] = name.equals(id) ? id : name + " (" + id + ")";
+                JSONArray levels = entry == null ? null : entry.optJSONArray("supportedReasoningLevels");
+                if (levels != null) {
+                    java.util.ArrayList<String> supported = new java.util.ArrayList<>();
+                    for (int j = 0; j < levels.length(); j++) {
+                        String effort = levels.optString(j);
+                        if (isReasoningEffort(effort) && !supported.contains(effort)) supported.add(effort);
+                    }
+                    if (!supported.isEmpty()) modelReasoningEfforts.put(id, supported.toArray(new String[0]));
+                }
+                String defaultEffort = entry == null ? "" : entry.optString("defaultReasoningLevel");
+                if (isReasoningEffort(defaultEffort)) modelDefaultReasoningEfforts.put(id, defaultEffort);
             }
             modelPicker.setAdapter(new ArrayAdapter<>(this, android.R.layout.simple_spinner_dropdown_item, labels));
             modelPicker.setSelection(0);
@@ -251,6 +270,53 @@ public final class MainActivity extends Activity implements AgentService.Observe
         startForegroundService(service);
     }
     private boolean activeWork() { return AgentService.isRunning() && (state.optBoolean("busy") || state.optBoolean("active")); }
+    private static boolean isReasoningEffort(String value) {
+        for (String candidate : REASONING_EFFORTS) if (candidate.equals(value)) return true;
+        return false;
+    }
+    private static String reasoningLabel(String value) {
+        return switch (value) {
+            case "minimal" -> "Minimal";
+            case "medium" -> "Medium";
+            case "high" -> "High";
+            case "xhigh" -> "Extra high (xhigh)";
+            case "max" -> "Maximum (max)";
+            default -> "Low";
+        };
+    }
+    private static String selectedReasoningEffort(Spinner picker) {
+        Object tagged = picker.getTag();
+        if (tagged instanceof String[]) {
+            String[] values = (String[]) tagged;
+            int position = picker.getSelectedItemPosition();
+            if (position >= 0 && position < values.length && isReasoningEffort(values[position])) return values[position];
+        }
+        return CredentialStore.DEFAULT_REASONING_EFFORT;
+    }
+    private void populateReasoningPicker(Spinner picker, String modelId, String preferred, boolean codexLike) {
+        String[] advertised = modelReasoningEfforts.get(modelId);
+        String[] fallback = codexLike ? CODEX_REASONING_CHOICES : DEFAULT_REASONING_CHOICES;
+        String[] values = advertised != null && advertised.length > 0 ? advertised
+                : "max".equals(preferred) ? REASONING_EFFORTS : fallback;
+        String[] labels = new String[values.length];
+        int selection = -1;
+        for (int i = 0; i < values.length; i++) {
+            labels[i] = reasoningLabel(values[i]);
+            if (values[i].equals(preferred)) selection = i;
+        }
+        if (selection < 0) {
+            String advertisedDefault = modelDefaultReasoningEfforts.get(modelId);
+            if (advertisedDefault != null) {
+                for (int i = 0; i < values.length; i++) if (advertisedDefault.equals(values[i])) { selection = i; break; }
+            }
+        }
+        if (selection < 0) {
+            for (int i = 0; i < values.length; i++) if (CredentialStore.DEFAULT_REASONING_EFFORT.equals(values[i])) { selection = i; break; }
+        }
+        picker.setTag(values);
+        picker.setAdapter(new ArrayAdapter<>(this, android.R.layout.simple_spinner_dropdown_item, labels));
+        picker.setSelection(Math.max(0, selection));
+    }
     private void settings() {
         CredentialStore credentials = new CredentialStore(this); final JSONObject saved;
         try { saved = credentials.get(); } catch (Exception e) { toast("Unable to read protected credentials"); return; }
@@ -277,13 +343,26 @@ public final class MainActivity extends Activity implements AgentService.Observe
         EditText endpoint = field(endpointPanel, "API endpoint", saved.optString("endpoint", defaultEndpoint)); endpoint.setInputType(InputType.TYPE_CLASS_TEXT | InputType.TYPE_TEXT_VARIATION_URI);
         String defaultModel = selected == 2 ? CredentialStore.OPENCODE_MODEL : selected == 3 ? CredentialStore.NEBIUS_MODEL : selected == 5 ? CredentialStore.CODEX_MODEL : "gpt-4.1-mini";
         EditText model = field(panel, "Main chat model ID (editable fallback)", saved.optString("model", defaultModel));
+        panel.addView(text("Reasoning effort"));
+        Spinner reasoning = new Spinner(this);
+        reasoningPicker = reasoning;
+        populateReasoningPicker(reasoning, model.getText().toString(),
+                saved.optString("reasoningEffort", CredentialStore.DEFAULT_REASONING_EFFORT), selected == 4 || selected == 5);
+        panel.addView(reasoning);
+        TextView reasoningHelp = text("");
+        panel.addView(reasoningHelp);
         Spinner picker = new Spinner(this);
         modelPicker = picker;
         picker.setAdapter(new ArrayAdapter<>(this, android.R.layout.simple_spinner_dropdown_item, new String[]{"Tap Discover models to choose"}));
         picker.setOnItemSelectedListener(new AdapterView.OnItemSelectedListener() {
             @Override public void onItemSelected(AdapterView<?> parent, View view, int position, long id) {
-                if (position > 0 && position < modelIds.length && modelIds[position] != null)
+                if (position > 0 && position < modelIds.length && modelIds[position] != null) {
+                    String preferred = selectedReasoningEffort(reasoning);
                     model.setText(modelIds[position]);
+                    String selectedMode = modes[mode.getSelectedItemPosition()];
+                    populateReasoningPicker(reasoning, modelIds[position], preferred,
+                            selectedMode.equals("codex") || selectedMode.equals(CredentialStore.CODEX_ACCOUNT));
+                }
             }
             @Override public void onNothingSelected(AdapterView<?> parent) { }
         });
@@ -344,6 +423,12 @@ public final class MainActivity extends Activity implements AgentService.Observe
             boolean openCode = selectedMode.equals(CredentialStore.OPENCODE);
             boolean nebius = selectedMode.equals(CredentialStore.NEBIUS);
             boolean fixedProvider = openCode || nebius;
+            boolean reasoningProvider = account || selectedMode.equals("openai") || selectedMode.equals("codex");
+            reasoning.setEnabled(reasoningProvider);
+            reasoning.setAlpha(reasoningProvider ? 1.0f : 0.45f);
+            reasoningHelp.setText(reasoningProvider
+                    ? "Discovered models narrow this list to reasoning levels advertised by the provider. For an editable model ID, support can vary by model."
+                    : "This provider does not expose the OpenAI/Codex reasoning-effort control. The saved value is kept for compatible providers.");
             boolean sameProvider = selectedMode.equals(auth)
                     || (selectedMode.equals("openai") && auth.equals("api-key"))
                     || (selectedMode.equals("codex") && (auth.equals("codexRelay") || auth.equals("codex-relay")));
@@ -360,6 +445,8 @@ public final class MainActivity extends Activity implements AgentService.Observe
             else if (selectedMode.equals("codex")) { endpoint.setText("http://10.0.2.2:8787/v1"); model.setText(CredentialStore.CODEX_MODEL); }
             else if (selectedMode.equals("openai")) { endpoint.setText("https://api.openai.com/v1"); model.setText("gpt-4.1-mini"); }
             else { endpoint.setText("https://api.openai.com/v1"); model.setText("scripted"); }
+            populateReasoningPicker(reasoning, model.getText().toString(), selectedReasoningEffort(reasoning),
+                    account || selectedMode.equals("codex"));
         };
         final int[] lastProvider = {selected};
         mode.setOnItemSelectedListener(new AdapterView.OnItemSelectedListener() {
@@ -368,6 +455,8 @@ public final class MainActivity extends Activity implements AgentService.Observe
                     secret.setText("");
                     modelRequestId = null;
                     modelIds = new String[0];
+                    modelReasoningEfforts.clear();
+                    modelDefaultReasoningEfforts.clear();
                     picker.setAdapter(new ArrayAdapter<>(MainActivity.this, android.R.layout.simple_spinner_dropdown_item,
                             new String[]{"Tap Discover models to choose"}));
                     picker.setSelection(0);
@@ -544,7 +633,8 @@ public final class MainActivity extends Activity implements AgentService.Observe
                 try {
                     if (activeWork()) { toast("Stop active work before changing connections"); return; }
                     String selectedMode = modes[mode.getSelectedItemPosition()];
-                    JSONObject config = json("authMode", selectedMode, "model", model.getText().toString().trim());
+                    JSONObject config = json("authMode", selectedMode, "model", model.getText().toString().trim(),
+                            "reasoningEffort", selectedReasoningEffort(reasoning));
                     if (!selectedMode.equals(CredentialStore.CODEX_ACCOUNT)) {
                         config.put("endpoint", endpoint.getText().toString().trim());
                         String savedMode = saved.optString("authMode");
@@ -570,7 +660,11 @@ public final class MainActivity extends Activity implements AgentService.Observe
             });
         });
         dialog.setOnDismissListener(ignored -> {
-            if (modelPicker == picker) { modelPicker = null; modelRequestId = null; modelIds = new String[0]; }
+            if (modelPicker == picker) {
+                modelPicker = null; reasoningPicker = null; modelRequestId = null; modelIds = new String[0];
+                modelReasoningEfforts.clear();
+                modelDefaultReasoningEfforts.clear();
+            }
         });
         dialog.show();
     }

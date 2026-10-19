@@ -324,6 +324,20 @@ test('custom main system prompt persists through turns, restart and provider rec
  assert.equal(bridge.state.mainSystemPrompt,DEFAULT_MAIN_PROMPT,'reset persists the built-in default');
 });
 
+test('reasoning effort survives restart and provider reconfiguration while invalid stored values fall back to low',()=>{
+ const bridge=new Bridge();
+ bridge.credentials={authMode:'scripted',model:'scripted',reasoningEffort:'high'};
+ const runtime=new PocketRuntime(bridge);
+ assert.equal(runtime.state().provider.reasoningEffort,'high');
+ command(runtime,{action:'configure'});
+ assert.equal(runtime.state().provider.reasoningEffort,'high');
+ const restored=new PocketRuntime(bridge);
+ assert.equal(restored.state().provider.reasoningEffort,'high');
+ bridge.credentials={...bridge.credentials,reasoningEffort:'invalid'};
+ command(restored,{action:'configure'});
+ assert.equal(restored.state().provider.reasoningEffort,'low');
+});
+
 test('paused main with retained inbox can still apply provider and prompt settings',()=>{
  const bridge=new Bridge(),runtime=new PocketRuntime(bridge),internal=runtime as any;
  internal.mainPaused=true;internal.inbox=[{type:'user',text:'retained while context is full'}];
