@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import {discoverProviderModels} from '../src/model-catalog.js';
+import {CODEX_MODELS_CLIENT_VERSION,CODEX_MODELS_ORIGINATOR,discoverProviderModels} from '../src/model-catalog.js';
 import {modelFor} from '../src/provider.js';
 import {resolveModel} from '../vendor/pi9/execute.js';
 
@@ -55,16 +55,43 @@ function accountCredentials() {
  return {authMode:'codex-account',accessToken:token,refreshToken:'private-refresh',accountId,expiresAt:expiry};
 }
 test('Codex account discovery uses fixed origin, account-scoped authorization and advertised slugs',async()=>{
- const auth=accountCredentials();
+ const auth=accountCredentials();let request:{input:any;init?:RequestInit}|undefined;
  const models=await discoverProviderModels({mode:'codex-account',model:'main-large'},auth,async(input,init)=>{
-   assert.match(String(input),/^https:\/\/chatgpt\.com\/backend-api\/codex\/models\?/);
-   const h=new Headers(init?.headers);
-   assert.equal(h.get('authorization'),'Bearer '+auth.accessToken);
-   assert.equal(h.get('chatgpt-account-id'),auth.accountId);
-   assert.equal(init?.redirect,'error');
-   return json({models:[{slug:'codex-strong',display_name:'Strong'},{slug:'codex-fast',display_name:'Fast'},{slug:'unavailable',supported_in_api:false}]});
+   request={input,init};
+   return json({models:[
+     {slug:'codex-strong',display_name:'Strong',minimal_client_version:'0.155.0',default_reasoning_level:'medium',supported_reasoning_levels:[
+       {effort:'low'},{effort:'medium'},{effort:'high'},{effort:'xhigh'},{effort:'max'},{effort:'ultra'},{effort:'unsupported'}
+     ]},
+     {slug:'codex-fast',display_name:'Fast',minimal_client_version:'0.153.0',default_reasoning_level:'low',supported_reasoning_levels:[
+       {effort:'minimal'},{effort:'low'},{effort:'medium'}
+     ]},
+     {slug:'codex-unknown',display_name:'Unknown levels',default_reasoning_level:'low',supported_reasoning_levels:[{effort:'ultra'}]},
+     {slug:'unavailable',supported_in_api:false},
+   ]});
  });
- assert.deepEqual(models,[{id:'codex-strong',name:'Strong'},{id:'codex-fast',name:'Fast'}]);
+ assert.ok(request);
+ const url=new URL(String(request.input));
+ assert.equal(url.origin+url.pathname,'https://chatgpt.com/backend-api/codex/models');
+ assert.equal(url.searchParams.get('client_version'),CODEX_MODELS_CLIENT_VERSION);
+ assert.deepEqual([...url.searchParams.keys()],['client_version']);
+ const h=new Headers(request.init?.headers);
+ assert.equal(h.get('authorization'),'Bearer '+auth.accessToken);
+ assert.equal(h.get('chatgpt-account-id'),auth.accountId);
+ assert.equal(h.get('version'),CODEX_MODELS_CLIENT_VERSION);
+ assert.equal(h.get('originator'),CODEX_MODELS_ORIGINATOR);
+ assert.match(h.get('user-agent')??'',/^pi \(/);
+ assert.equal(request.init?.method,'GET');
+ assert.equal(request.init?.redirect,'error');
+ assert.deepEqual(models,[
+   {id:'codex-strong',name:'Strong',supportedReasoningLevels:['low','medium','high','xhigh','max'],defaultReasoningLevel:'medium'},
+   {id:'codex-fast',name:'Fast',supportedReasoningLevels:['minimal','low','medium'],defaultReasoningLevel:'low'},
+   {id:'codex-unknown',name:'Unknown levels'},
+ ]);
+ await assert.rejects(()=>discoverProviderModels(
+   {mode:'codex-account',model:'main-large',endpoint:'https://attacker.test/v1'},
+   auth,
+   async()=>{throw Error('No request expected');},
+ ),/fixed provider endpoint/);
 });
 
 

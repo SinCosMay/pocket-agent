@@ -1,12 +1,44 @@
-import { modelFor, type ProviderConfig, type ProviderCredentials } from './provider.js';
-import { ensureCodexCredentials } from './codex-auth.js';
+import { getPiUserAgent } from '@earendil-works/pi-ai/utils/pi-user-agent';
+import { modelFor, REASONING_EFFORTS, type ProviderConfig, type ProviderCredentials, type ReasoningEffort } from './provider.js';
+import { CODEX_CATALOG_COMPAT_VERSION, ensureCodexCredentials } from './codex-auth.js';
 
-export interface CatalogModel { id: string; name: string }
-const CODEX_MODELS_URL = 'https://chatgpt.com/backend-api/codex/models?client_version=0.130.0';
+export interface CatalogModel {
+  id: string;
+  name: string;
+  supportedReasoningLevels?: ReasoningEffort[];
+  defaultReasoningLevel?: ReasoningEffort;
+}
+export const CODEX_MODELS_CLIENT_VERSION = CODEX_CATALOG_COMPAT_VERSION;
+export const CODEX_MODELS_ORIGINATOR = 'pi';
+export const CODEX_MODELS_URL = 'https://chatgpt.com/backend-api/codex/models';
 export const OPENCODE_MODELS_URL = 'https://opencode.ai/inference/v1/models';
 const MAX_CATALOG_BYTES = 512 * 1024;
 const MODEL_ID = /^[A-Za-z0-9._:/+@-]{1,160}$/;
 const OPENCODE_NON_CHAT_FREE = new Set(['jev-1.13-free']);
+const REASONING_LEVEL_SET = new Set<string>(REASONING_EFFORTS);
+
+function catalogReasoning(entry: any): Pick<CatalogModel,'supportedReasoningLevels'|'defaultReasoningLevel'> {
+  if (!entry || typeof entry !== 'object') return {};
+  const hasAdvertisedLevels = Array.isArray(entry.supported_reasoning_levels);
+  const advertised = hasAdvertisedLevels ? entry.supported_reasoning_levels : [];
+  const supported: ReasoningEffort[] = [];
+  const seen = new Set<string>();
+  for (const item of advertised) {
+    const effort = typeof item === 'string' ? item : item?.effort;
+    if (typeof effort !== 'string' || !REASONING_LEVEL_SET.has(effort) || seen.has(effort)) continue;
+    seen.add(effort);
+    supported.push(effort as ReasoningEffort);
+  }
+  const rawDefault = entry.default_reasoning_level;
+  const defaultReasoningLevel = typeof rawDefault === 'string'
+    && REASONING_LEVEL_SET.has(rawDefault)
+    && (!hasAdvertisedLevels || seen.has(rawDefault))
+    ? rawDefault as ReasoningEffort : undefined;
+  return {
+    ...(supported.length ? {supportedReasoningLevels:supported} : {}),
+    ...(defaultReasoningLevel ? {defaultReasoningLevel} : {}),
+  };
+}
 
 /** Fetches provider-advertised models, never an inferred or hard-coded allowlist. */
 export async function discoverProviderModels(
@@ -21,11 +53,19 @@ export async function discoverProviderModels(
   const auth = account ? await ensureCodexCredentials(credentials) : null;
   const token = account ? auth!.accessToken : credentials.apiKey;
   if (mode !== 'opencode' && !token?.trim()) throw new Error('Save a provider credential before discovering models.');
-  const url = account ? CODEX_MODELS_URL : mode === 'opencode' ? OPENCODE_MODELS_URL : current.baseUrl.replace(/\/$/, '') + '/models';
+  const url = account ? `${CODEX_MODELS_URL}?client_version=${encodeURIComponent(CODEX_MODELS_CLIENT_VERSION)}` : mode === 'opencode' ? OPENCODE_MODELS_URL : current.baseUrl.replace(/\/$/, '') + '/models';
   const headers: Record<string,string> = {Accept: 'application/json'};
   // OpenCode's catalog is public; never send a Console service-account key to that separate public origin.
   if (mode !== 'opencode' && token?.trim()) headers.Authorization = 'Bearer ' + token;
-  if (account) headers['ChatGPT-Account-Id'] = auth!.accountId;
+  if (account) {
+    headers['ChatGPT-Account-Id'] = auth!.accountId;
+    // Current Codex catalog requests carry originator, User-Agent and package
+    // version. Use Pi's own identity for the first two and never accept a
+    // caller-controlled discovery URL.
+    headers.originator = CODEX_MODELS_ORIGINATOR;
+    headers['User-Agent'] = getPiUserAgent();
+    headers.version = CODEX_MODELS_CLIENT_VERSION;
+  }
   let response: Response;
   try {
     response = await fetcher(url, {method:'GET', headers, redirect:'error', signal:AbortSignal.timeout(15000)});
@@ -70,7 +110,11 @@ export async function discoverProviderModels(
     if (mode === 'opencode' && ((id !== 'big-pickle' && !id.endsWith('-free')) || OPENCODE_NON_CHAT_FREE.has(id))) continue;
     seen.add(id);
     const display = entry.display_name ?? entry.name;
-    models.push({id, name: typeof display === 'string' && display.trim() && display.length <= 120 ? display : id});
+    models.push({
+      id,
+      name: typeof display === 'string' && display.trim() && display.length <= 120 ? display : id,
+      ...(account ? catalogReasoning(entry) : {}),
+    });
     if (models.length >= 1024) break;
   }
   if (!models.length) throw new Error('Provider returned no usable model identifiers.');

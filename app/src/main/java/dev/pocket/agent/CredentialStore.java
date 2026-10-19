@@ -14,6 +14,7 @@ import javax.crypto.Cipher;
 import javax.crypto.KeyGenerator;
 import javax.crypto.SecretKey;
 import javax.crypto.spec.GCMParameterSpec;
+import org.json.JSONArray;
 import org.json.JSONObject;
 
 /** Allowlisted credentials encrypted with a non-exportable Android Keystore key. */
@@ -23,6 +24,7 @@ public final class CredentialStore {
     private static final Object LOCK = new Object();
     public static final String CODEX_ACCOUNT = "codex-account";
     public static final String CODEX_MODEL = "gpt-6-luna";
+    public static final String DEFAULT_REASONING_EFFORT = "low";
     public static final String OPENCODE = "opencode";
     public static final String OPENCODE_ENDPOINT = "https://opencode.ai/inference/openai/v1";
     public static final String OPENCODE_MODEL = "big-pickle";
@@ -42,12 +44,39 @@ public final class CredentialStore {
     }
     public JSONObject get() throws Exception { synchronized (LOCK) {
         JSONObject current = read();
-        if (!current.has("providerRevision")) { current.put("providerRevision", UUID.randomUUID().toString()); write(current); }
+        boolean changed = false;
+        if (!current.has("providerRevision")) { current.put("providerRevision", UUID.randomUUID().toString()); changed = true; }
+        String effort = reasoningEffort(current.optString("reasoningEffort", DEFAULT_REASONING_EFFORT));
+        String preferredEffort = reasoningEffort(current.optString("preferredReasoningEffort", effort));
+        if (!effort.equals(current.optString("reasoningEffort"))) { current.put("reasoningEffort", effort); changed = true; }
+        if (!preferredEffort.equals(current.optString("preferredReasoningEffort"))) { current.put("preferredReasoningEffort", preferredEffort); changed = true; }
+        JSONArray supported = reasoningEfforts(current.optJSONArray("reasoningEfforts"));
+        boolean codexAccount = CODEX_ACCOUNT.equals(current.optString("authMode"));
+        String currentModel = current.optString("model");
+        boolean validProof = codexAccount && !currentModel.isEmpty()
+                && currentModel.equals(current.optString("reasoningEffortModel"))
+                && supported.length() > 0;
+        if (codexAccount && !DEFAULT_REASONING_EFFORT.equals(effort)
+                && (!validProof || !containsReasoningEffort(supported, effort))) {
+            current.put("reasoningEffort", DEFAULT_REASONING_EFFORT);
+            effort = DEFAULT_REASONING_EFFORT;
+            changed = true;
+        }
+        if (validProof) {
+            JSONArray existing = current.optJSONArray("reasoningEfforts");
+            if (existing == null || !supported.toString().equals(existing.toString())) {
+                current.put("reasoningEfforts", supported); changed = true;
+            }
+        } else if (current.has("reasoningEffortModel") || current.has("reasoningEfforts")) {
+            current.remove("reasoningEffortModel"); current.remove("reasoningEfforts"); changed = true;
+        }
+        if (changed) write(current);
         return current;
     } }
     private JSONObject read() throws Exception {
         String saved = context.getSharedPreferences("provider-secrets", Context.MODE_PRIVATE).getString("encrypted", null);
-        if (saved == null) return new JSONObject().put("authMode", "scripted").put("endpoint", "https://api.openai.com/v1").put("model", "gpt-4.1-mini").put("providerRevision", BUILTIN_PROVIDER_REVISION);
+        if (saved == null) return new JSONObject().put("authMode", "scripted").put("endpoint", "https://api.openai.com/v1").put("model", "gpt-4.1-mini")
+                .put("reasoningEffort", DEFAULT_REASONING_EFFORT).put("preferredReasoningEffort", DEFAULT_REASONING_EFFORT).put("providerRevision", BUILTIN_PROVIDER_REVISION);
         JSONObject envelope = new JSONObject(saved);
         Cipher cipher = Cipher.getInstance("AES/GCM/NoPadding");
         cipher.init(Cipher.DECRYPT_MODE, key(), new GCMParameterSpec(128, Base64.decode(envelope.getString("iv"), Base64.NO_WRAP)));
@@ -68,14 +97,44 @@ public final class CredentialStore {
             validateEndpoint(endpoint, mode);
             if (OPENCODE.equals(mode) && settings.optString("apiKey").trim().isEmpty()) throw new IllegalArgumentException("Enter an OpenCode Console service-account key");
             if (NEBIUS.equals(mode) && settings.optString("apiKey").trim().isEmpty()) throw new IllegalArgumentException("Enter a Nebius API key");
-            JSONObject allowed = new JSONObject().put("authMode", mode);
+            boolean newAccountCredential = CODEX_ACCOUNT.equals(mode) && settings.has("accessToken");
+            String effort = reasoningEffort(settings.has("reasoningEffort")
+                    ? settings.optString("reasoningEffort")
+                    : newAccountCredential || (CODEX_ACCOUNT.equals(mode) && !CODEX_ACCOUNT.equals(current.optString("authMode")))
+                            ? DEFAULT_REASONING_EFFORT : current.optString("reasoningEffort", DEFAULT_REASONING_EFFORT));
+            String currentPreferred = reasoningEffort(current.optString("preferredReasoningEffort",
+                    current.optString("reasoningEffort", DEFAULT_REASONING_EFFORT)));
+            String preferredEffort = reasoningEffort(settings.has("preferredReasoningEffort")
+                    ? settings.optString("preferredReasoningEffort")
+                    : settings.has("reasoningEffort") && !CODEX_ACCOUNT.equals(mode) ? effort : currentPreferred);
+            JSONObject allowed = new JSONObject().put("authMode", mode).put("reasoningEffort", effort)
+                    .put("preferredReasoningEffort", preferredEffort);
             if (CODEX_ACCOUNT.equals(mode)) {
                 JSONObject source = settings.has("accessToken") ? settings : current;
                 if (!CODEX_ACCOUNT.equals(source.optString("authMode")) && !settings.has("accessToken")) throw new IllegalArgumentException("Sign in or import an account first");
                 JSONObject account = CodexAccountAuth.validateCredentials(source, false);
                 for (String field : new String[]{"accessToken", "refreshToken", "accountId", "expiresAt", "idToken"})
                     if (account.has(field)) allowed.put(field, account.get(field));
-                allowed.put("model", model(settings.optString("model", CODEX_MODEL)));
+                String selectedModel = model(settings.optString("model", CODEX_MODEL));
+                allowed.put("model", selectedModel);
+                boolean proofSpecified = settings.has("reasoningEffortModel") || settings.has("reasoningEfforts");
+                JSONArray supported = newAccountCredential ? new JSONArray()
+                        : reasoningEfforts(settings.optJSONArray("reasoningEfforts"));
+                boolean validProof = !newAccountCredential
+                        && selectedModel.equals(settings.optString("reasoningEffortModel"))
+                        && supported.length() > 0;
+                if (!proofSpecified && !newAccountCredential && CODEX_ACCOUNT.equals(current.optString("authMode"))
+                        && selectedModel.equals(current.optString("reasoningEffortModel"))) {
+                    supported = reasoningEfforts(current.optJSONArray("reasoningEfforts"));
+                    validProof = supported.length() > 0;
+                }
+                if (!DEFAULT_REASONING_EFFORT.equals(effort)
+                        && (!validProof || !containsReasoningEffort(supported, effort)))
+                    throw new IllegalArgumentException("Discover this model before using that reasoning effort");
+                if (validProof) {
+                    allowed.put("reasoningEffortModel", selectedModel);
+                    allowed.put("reasoningEfforts", supported);
+                }
             } else {
                 allowed.put("endpoint", endpoint);
                 allowed.put("apiKey", settings.optString("apiKey"));
@@ -96,7 +155,21 @@ public final class CredentialStore {
                 if (!update.has(field)) throw new IllegalArgumentException("Refreshed account credentials are incomplete");
             JSONObject account = CodexAccountAuth.validateCredentials(update, true);
             if (!current.optString("accountId").equals(account.getString("accountId"))) throw new IllegalArgumentException("Refreshed account does not match the signed-in account");
-            JSONObject allowed = new JSONObject().put("authMode", CODEX_ACCOUNT).put("model", model(current.optString("model", CODEX_MODEL)));
+            String selectedModel = model(current.optString("model", CODEX_MODEL));
+            String effort = reasoningEffort(current.optString("reasoningEffort", DEFAULT_REASONING_EFFORT));
+            String preferredEffort = reasoningEffort(current.optString("preferredReasoningEffort", effort));
+            JSONArray supported = reasoningEfforts(current.optJSONArray("reasoningEfforts"));
+            boolean validProof = selectedModel.equals(current.optString("reasoningEffortModel"))
+                    && supported.length() > 0;
+            if (!DEFAULT_REASONING_EFFORT.equals(effort)
+                    && (!validProof || !containsReasoningEffort(supported, effort)))
+                effort = DEFAULT_REASONING_EFFORT;
+            JSONObject allowed = new JSONObject().put("authMode", CODEX_ACCOUNT)
+                    .put("model", selectedModel).put("reasoningEffort", effort).put("preferredReasoningEffort", preferredEffort);
+            if (validProof) {
+                allowed.put("reasoningEffortModel", selectedModel);
+                allowed.put("reasoningEfforts", supported);
+            }
             for (String field : new String[]{"accessToken", "refreshToken", "accountId", "expiresAt", "idToken"})
                 if (account.has(field)) allowed.put(field, account.get(field));
             String revision = current.optString("providerRevision");
@@ -108,7 +181,10 @@ public final class CredentialStore {
     public void signOutCodex() throws Exception {
         synchronized (LOCK) {
             JSONObject current = read();
-            if (CODEX_ACCOUNT.equals(current.optString("authMode"))) write(new JSONObject().put("authMode", "scripted").put("model", "scripted").put("endpoint", "https://api.openai.com/v1").put("providerRevision", UUID.randomUUID().toString()));
+            String effort = reasoningEffort(current.optString("reasoningEffort", DEFAULT_REASONING_EFFORT));
+            String preferredEffort = reasoningEffort(current.optString("preferredReasoningEffort", effort));
+            if (CODEX_ACCOUNT.equals(current.optString("authMode"))) write(new JSONObject().put("authMode", "scripted").put("model", "scripted").put("endpoint", "https://api.openai.com/v1")
+                    .put("reasoningEffort", preferredEffort).put("preferredReasoningEffort", preferredEffort).put("providerRevision", UUID.randomUUID().toString()));
         }
     }
     private static String canonicalMode(String mode) {
@@ -134,6 +210,26 @@ public final class CredentialStore {
     private static String model(String value) {
         if (value == null || !value.matches("[A-Za-z0-9._:/+@-]{1,160}")) throw new IllegalArgumentException("Enter a valid model name");
         return value;
+    }
+    private static String reasoningEffort(String value) {
+        return switch (value) {
+            case "minimal", "low", "medium", "high", "xhigh", "max" -> value;
+            default -> DEFAULT_REASONING_EFFORT;
+        };
+    }
+    private static JSONArray reasoningEfforts(JSONArray values) {
+        JSONArray allowed = new JSONArray();
+        if (values == null) return allowed;
+        java.util.HashSet<String> seen = new java.util.HashSet<>();
+        for (int i = 0; i < values.length(); i++) {
+            String value = values.optString(i);
+            if (!value.isEmpty() && value.equals(reasoningEffort(value)) && seen.add(value)) allowed.put(value);
+        }
+        return allowed;
+    }
+    private static boolean containsReasoningEffort(JSONArray values, String effort) {
+        for (int i = 0; i < values.length(); i++) if (effort.equals(values.optString(i))) return true;
+        return false;
     }
     private static String fixedEndpoint(String authMode, String endpoint) {
         if (OPENCODE.equals(authMode)) return OPENCODE_ENDPOINT;

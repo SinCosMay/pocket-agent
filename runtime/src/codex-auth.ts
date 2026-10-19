@@ -2,6 +2,9 @@
 export const CODEX_TOKEN_URL = 'https://auth.openai.com/oauth/token';
 export const CODEX_RESPONSES_URL = 'https://chatgpt.com/backend-api/codex/responses';
 export const CODEX_CLIENT_ID = 'app_EMoamEEZ73f0CkXaXp7hrann';
+// Catalog compatibility follows the currently traced Codex client protocol.
+// Keep it centralized and fixed so callers cannot redirect or spoof discovery.
+export const CODEX_CATALOG_COMPAT_VERSION = '0.162.1';
 const REFRESH_MARGIN_MS = 60000;
 const MAX_TOKEN_RESPONSE = 32768;
 

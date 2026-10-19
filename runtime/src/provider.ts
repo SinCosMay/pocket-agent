@@ -13,15 +13,25 @@ export interface ProviderConfig {
   mode?: 'scripted' | 'openai' | 'codex' | 'codex-account' | 'opencode' | 'nebius';
   endpoint?: string;
   model?: string;
+  reasoningEffort?: ReasoningEffort;
 }
 export interface ProviderCredentials extends CodexCredentialInput {
   endpoint?: string;
   model?: string;
   authMode?: string;
+  reasoningEffortModel?: string;
+  reasoningEfforts?: string[];
 }
 type ProviderModel = Model<'openai-responses'> | Model<'openai-codex-responses'> | Model<'openai-completions'>;
 export const OPENCODE_BASE_URL = 'https://opencode.ai/inference/openai/v1';
 export const NEBIUS_BASE_URL = 'https://api.tokenfactory.nebius.com/v1';
+export const REASONING_EFFORTS = ['minimal','low','medium','high','xhigh','max'] as const;
+export type ReasoningEffort = typeof REASONING_EFFORTS[number];
+export const DEFAULT_REASONING_EFFORT: ReasoningEffort = 'low';
+const REASONING_EFFORT_SET = new Set<string>(REASONING_EFFORTS);
+export function normalizeReasoningEffort(value: unknown): ReasoningEffort {
+  return typeof value === 'string' && REASONING_EFFORT_SET.has(value) ? value as ReasoningEffort : DEFAULT_REASONING_EFFORT;
+}
 function providerInput(mode: string, id: string): Array<'text'|'image'> {
   const normalized = id.toLowerCase();
   const vision = /(^|[/._-])(vl|vision|omni)([/._-]|$)/.test(normalized)
@@ -34,6 +44,16 @@ function accountMode(config: ProviderConfig, credentials: ProviderCredentials): 
 }
 function selectedMode(config: ProviderConfig, credentials: ProviderCredentials): string {
   return credentials.authMode || config.mode || 'openai';
+}
+function configurableReasoningMode(mode: string): boolean {
+  return ['openai','api-key','codex','codexRelay','codex-relay','codex-account'].includes(mode);
+}
+function selectedThinkingLevelMap(config: ProviderConfig, credentials: ProviderCredentials): {xhigh?: string; max?: string}|undefined {
+  const effort = normalizeReasoningEffort(config.reasoningEffort);
+  if (!configurableReasoningMode(selectedMode(config,credentials))) return undefined;
+  if (effort === 'xhigh') return {xhigh:'xhigh'};
+  if (effort === 'max') return {max:'max'};
+  return undefined;
 }
 function isRelay(config: ProviderConfig, credentials: ProviderCredentials): boolean {
   return ['codex', 'codexRelay', 'codex-relay'].includes(selectedMode(config, credentials));
@@ -59,6 +79,7 @@ export function modelFor(config: ProviderConfig, credentials: ProviderCredential
       id, name: id, provider: mode, api: 'openai-completions',
       baseUrl: url.toString().replace(/\/$/, ''), input: providerInput(mode,id),
       reasoning: true, contextWindow: 128000, maxTokens: 4096,
+      thinkingLevelMap: selectedThinkingLevelMap(config,credentials),
       cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
       compat: { supportsDeveloperRole: false },
     };
@@ -67,6 +88,7 @@ export function modelFor(config: ProviderConfig, credentials: ProviderCredential
     id, name: id, provider: account ? 'openai-codex' : 'openai', api: account ? 'openai-codex-responses' : 'openai-responses',
     baseUrl: url.toString().replace(/\/$/, ''), input: ['text', 'image'],
     reasoning: true, contextWindow: 128000, maxTokens: 4096,
+    thinkingLevelMap: selectedThinkingLevelMap(config,credentials),
     cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
     // Pi emits strict:false for standard Responses. The Codex adapter emits
     // strict:null, which is explicitly patched to false below for optional fields.
@@ -209,7 +231,16 @@ export function makeStream(config: ProviderConfig, credentials: ProviderCredenti
       else if (mode === 'nebius' && !apiKey?.trim()) return failure(model,'Configure a Nebius API key before sending.');
       else if (!apiKey?.trim()) return failure(model,'Configure a provider credential before sending.');
       if (options?.signal?.aborted) return failure(model,'Request cancelled.',true);
-      const shared = {...options,apiKey,transport:'sse' as const,maxRetries:0,timeoutMs:120000,reasoning:'low' as const};
+      const requestedReasoning = owner === 'main' && configurableReasoningMode(mode)
+        ? normalizeReasoningEffort(config.reasoningEffort)
+        : DEFAULT_REASONING_EFFORT;
+      const advertisedReasoning = Array.isArray(credentials.reasoningEfforts)
+        ? credentials.reasoningEfforts.filter(value => REASONING_EFFORT_SET.has(value))
+        : [];
+      const reasoning = account && requestedReasoning !== DEFAULT_REASONING_EFFORT
+        && (credentials.reasoningEffortModel !== model.id || !advertisedReasoning.includes(requestedReasoning))
+        ? DEFAULT_REASONING_EFFORT : requestedReasoning;
+      const shared = {...options,apiKey,transport:'sse' as const,maxRetries:0,timeoutMs:120000,reasoning};
       const source = model.api === 'openai-codex-responses'
         ? codexStreamSimple(model,context,{
             ...shared,fetch:fixedCodexFetch(options?.fetch ?? globalThis.fetch,options?.signal),
