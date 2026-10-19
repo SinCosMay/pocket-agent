@@ -44,6 +44,7 @@ final class AccessibilityProxyBackend implements ControlBackend {
         return out;
     }
     void validateAction(ControlBackend.Action action) throws ControlException {call("validate",action(action));}
+    void noteInteraction(long eventTime) throws ControlException {Bundle args=new Bundle();args.putLong("eventTime",eventTime);call("noteInteraction",args);}
     void release() {try {call("release",new Bundle());} catch(ControlException ignored) {}}
 
     @Override public ControlBackend.Observation observe(boolean includeImage,int maxImageDimension,int maxNodes) throws ControlException {
