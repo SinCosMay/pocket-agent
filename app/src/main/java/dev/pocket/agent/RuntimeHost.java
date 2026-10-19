@@ -28,7 +28,7 @@ public final class RuntimeHost implements AutoCloseable {
     private final Handler handler;
     private NativeTools tools;
     private NodeRuntime runtime;
-    private boolean active, pumpScheduled, shutdownAcknowledged;
+    private boolean active, pumpScheduled, shutdownAcknowledged, shutdownClean;
     private volatile boolean closing, closed, terminalRuntimeFailure;
     private int runtimeRestartAttempts;
     private static final int MAX_RUNTIME_RESTARTS=2;
@@ -187,7 +187,7 @@ public final class RuntimeHost implements AutoCloseable {
     private void emit(JSONObject event) {
         String type = event.optString("type");
         if (type.equals("shutdown_ready")) {
-            shutdownAcknowledged=true;
+            shutdownAcknowledged=true;shutdownClean=event.optBoolean("clean",false);
         } else if (type.equals("dev_tool_result")) {
             CompletableFuture<JSONObject> pending = debugPending.remove(event.optString("requestId"));
             if (pending != null) pending.complete(event.optJSONObject("result"));
@@ -344,7 +344,7 @@ public final class RuntimeHost implements AutoCloseable {
     private boolean drainRuntimeBeforeClose() {
         NodeRuntime current=runtime;
         if(current==null)return true;
-        shutdownAcknowledged=false;
+        shutdownAcknowledged=false;shutdownClean=false;
         try {
             current.getExecutor("PocketAgent.dispatch('{\"action\":\"prepare_shutdown\"}')").executeVoid();
         } catch(Throwable error) {return false;}
@@ -354,7 +354,7 @@ public final class RuntimeHost implements AutoCloseable {
             catch(Throwable error){return false;}
             try {Thread.sleep(10);} catch(InterruptedException e){Thread.currentThread().interrupt();return false;}
         }
-        return shutdownAcknowledged;
+        return shutdownAcknowledged&&shutdownClean;
     }
     private void closeResourcesOnOwnerThread(boolean cleanShutdown) {
         completePending(new IllegalStateException("Service stopped"));
