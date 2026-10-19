@@ -98,6 +98,15 @@ public final class RuntimeHost implements AutoCloseable {
         debugPending.clear();
         if (gate != null) {gate.completeExceptionally(reason);gate=null;}
     }
+    private static boolean javetFailure(Throwable error) {
+        for(Throwable current=error;current!=null;current=current.getCause())
+            if(current instanceof JavetException)return true;
+        return false;
+    }
+    private void handleRuntimeEntryFailure(String message,Throwable error) {
+        if(javetFailure(error)&&!closing&&!closed)poisonAndRestart(message,error);
+        else fail(message,error);
+    }
     private void terminalFailure(String message,Throwable error) {
         terminalRuntimeFailure=true;active=false;pumpScheduled=false;
         closeRuntimeOnly();fail(message,error);
@@ -174,7 +183,10 @@ public final class RuntimeHost implements AutoCloseable {
                 String response = runtime.getExecutor("(()=>{const value=PocketAgent.dispatch(" + JSONObject.quote(serialized) + ");return typeof value==='string'?value:JSON.stringify(value)})()").executeString();
                 runtime.await(V8AwaitMode.RunNoWait); schedulePump();
                 result.complete(response == null ? new JSONObject().put("ok", true) : new JSONObject(response));
-            } catch (Throwable error) { fail("Agent command failed", error); result.completeExceptionally(error); }
+            } catch (Throwable error) {
+                handleRuntimeEntryFailure("Agent command failed",error);
+                result.completeExceptionally(error);
+            }
         });
         if(!accepted)result.completeExceptionally(new IllegalStateException("Runtime thread is unavailable"));
         return result;
@@ -289,7 +301,7 @@ public final class RuntimeHost implements AutoCloseable {
                 future.completeExceptionally(new IllegalStateException("Development bridge unavailable")); return;
             }
             try { future.complete(new org.json.JSONArray(runtime.getExecutor("JSON.stringify(PocketAgent.debugList())").executeString())); }
-            catch (Throwable error) { future.completeExceptionally(error); }
+            catch (Throwable error) {handleRuntimeEntryFailure("Development tool listing failed",error);future.completeExceptionally(error);}
         });
         if(!accepted)future.completeExceptionally(new IllegalStateException("Runtime thread is unavailable"));
         return future;
@@ -310,7 +322,9 @@ public final class RuntimeHost implements AutoCloseable {
                 handler.postDelayed(() -> {
                     if (debugPending.remove(id) != null) future.completeExceptionally(new java.util.concurrent.TimeoutException("Tool execution outcome unknown; inspect state before retry"));
                 }, 35000);
-            } catch (Throwable error) { debugPending.remove(id); future.completeExceptionally(error); }
+            } catch (Throwable error) {
+                debugPending.remove(id);handleRuntimeEntryFailure("Development tool call failed",error);future.completeExceptionally(error);
+            }
         });
         if(!accepted)future.completeExceptionally(new IllegalStateException("Runtime thread is unavailable"));
         return future;
@@ -326,7 +340,7 @@ public final class RuntimeHost implements AutoCloseable {
                 while ((n = input.read(buffer)) != -1) bytes.write(buffer, 0, n);
                 runtime.getExecutor(bytes.toString("UTF-8")).executeVoid(); runtime.await(V8AwaitMode.RunNoWait); schedulePump();
                 handler.postDelayed(() -> { if (gate == result) { gate = null; result.completeExceptionally(new IllegalStateException("Node gate timed out")); } }, 20000);
-            } catch (Throwable error) { gate = null; result.completeExceptionally(error); }
+            } catch (Throwable error) {gate=null;handleRuntimeEntryFailure("Runtime compatibility gate failed",error);result.completeExceptionally(error);}
         });
         if(!accepted)result.completeExceptionally(new IllegalStateException("Runtime thread is unavailable"));
         return result;
@@ -336,7 +350,7 @@ public final class RuntimeHost implements AutoCloseable {
         boolean accepted=handler.post(() -> {
             if(runtime==null){result.completeExceptionally(new IllegalStateException("Runtime is not running"));return;}
             try { result.complete(new JSONObject(runtime.getExecutor("JSON.stringify(process.memoryUsage())").executeString())); }
-            catch (Throwable e) { result.completeExceptionally(e); }
+            catch (Throwable error) {handleRuntimeEntryFailure("Runtime memory query failed",error);result.completeExceptionally(error);}
         });
         if(!accepted)result.completeExceptionally(new IllegalStateException("Runtime thread is unavailable"));
         return result;
