@@ -209,7 +209,7 @@ public final class ShellDisplayService extends IDisplayShell.Stub {
         if(!"1".equals(execOutput("/system/bin/settings","get","secure","accessibility_enabled").trim()))return false;
         Set<String> current=accessibilityServices(execOutput("/system/bin/settings","get","secure","enabled_accessibility_services"));
         if(!containsComponent(current,component)) {
-            if(!restoreMissing)return false;
+            if(!restoreMissing||!safeForAccessibilityRepair())return false;
             current.add(component.flattenToShortString());
             return putAccessibilityServices(current);
         }
