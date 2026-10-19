@@ -70,6 +70,9 @@ final class AccessibilityProxyBackend implements ControlBackend {
         }
     }
     static boolean connected(Context context) {return connectionState(context)==ConnectionState.CONNECTED;}
+    static ControlException.Code missingResultCode(boolean mutation) {
+        return mutation?ControlException.Code.RESULT_UNKNOWN:ControlException.Code.NOT_READY;
+    }
     private Bundle call(String method,Bundle extras) throws ControlException {
         extras.putInt("displayId",displayId);
         boolean mutation="execute".equals(method);
@@ -80,7 +83,8 @@ final class AccessibilityProxyBackend implements ControlBackend {
             default -> STATUS_IPC_TIMEOUT_MS;
         };
         final Bundle out=providerCall(context,method,extras,mutation,timeout);
-        if(out==null)throw new ControlException(ControlException.Code.NOT_READY,"Accessibility bridge returned no result");
+        if(out==null)throw new ControlException(missingResultCode(mutation),
+            mutation?"Accessibility action returned no result; observe current state before retrying":"Accessibility bridge returned no result");
         String code=out.getString("errorCode");
         if(code!=null) {
             ControlException.Code parsed;
