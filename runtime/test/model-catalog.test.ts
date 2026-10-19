@@ -65,12 +65,13 @@ test('Codex account discovery uses fixed origin, account-scoped authorization an
      {slug:'codex-fast',display_name:'Fast',minimal_client_version:'0.153.0',default_reasoning_level:'low',supported_reasoning_levels:[
        {effort:'minimal'},{effort:'low'},{effort:'medium'}
      ]},
+     {slug:'codex-unknown',display_name:'Unknown levels',default_reasoning_level:'low',supported_reasoning_levels:[{effort:'ultra'}]},
      {slug:'unavailable',supported_in_api:false},
    ]});
  });
  assert.ok(request);
- const url=new URL(String(request.input)),expectedUrl=new URL(CODEX_MODELS_URL);
- assert.equal(url.origin+url.pathname,expectedUrl.origin+expectedUrl.pathname);
+ const url=new URL(String(request.input));
+ assert.equal(url.origin+url.pathname,'https://chatgpt.com/backend-api/codex/models');
  assert.equal(url.searchParams.get('client_version'),CODEX_MODELS_CLIENT_VERSION);
  assert.deepEqual([...url.searchParams.keys()],['client_version']);
  const h=new Headers(request.init?.headers);
@@ -84,6 +85,7 @@ test('Codex account discovery uses fixed origin, account-scoped authorization an
  assert.deepEqual(models,[
    {id:'codex-strong',name:'Strong',supportedReasoningLevels:['low','medium','high','xhigh','max'],defaultReasoningLevel:'medium'},
    {id:'codex-fast',name:'Fast',supportedReasoningLevels:['minimal','low','medium'],defaultReasoningLevel:'low'},
+   {id:'codex-unknown',name:'Unknown levels'},
  ]);
  await assert.rejects(()=>discoverProviderModels(
    {mode:'codex-account',model:'main-large',endpoint:'https://attacker.test/v1'},

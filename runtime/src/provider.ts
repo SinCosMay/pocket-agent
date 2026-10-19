@@ -19,6 +19,7 @@ export interface ProviderCredentials extends CodexCredentialInput {
   endpoint?: string;
   model?: string;
   authMode?: string;
+  reasoningEffortModel?: string;
 }
 type ProviderModel = Model<'openai-responses'> | Model<'openai-codex-responses'> | Model<'openai-completions'>;
 export const OPENCODE_BASE_URL = 'https://opencode.ai/inference/openai/v1';
@@ -229,9 +230,11 @@ export function makeStream(config: ProviderConfig, credentials: ProviderCredenti
       else if (mode === 'nebius' && !apiKey?.trim()) return failure(model,'Configure a Nebius API key before sending.');
       else if (!apiKey?.trim()) return failure(model,'Configure a provider credential before sending.');
       if (options?.signal?.aborted) return failure(model,'Request cancelled.',true);
-      const reasoning = owner === 'main' && configurableReasoningMode(mode)
+      const requestedReasoning = owner === 'main' && configurableReasoningMode(mode)
         ? normalizeReasoningEffort(config.reasoningEffort)
         : DEFAULT_REASONING_EFFORT;
+      const reasoning = account && requestedReasoning !== DEFAULT_REASONING_EFFORT
+        && credentials.reasoningEffortModel !== model.id ? DEFAULT_REASONING_EFFORT : requestedReasoning;
       const shared = {...options,apiKey,transport:'sse' as const,maxRetries:0,timeoutMs:120000,reasoning};
       const source = model.api === 'openai-codex-responses'
         ? codexStreamSimple(model,context,{

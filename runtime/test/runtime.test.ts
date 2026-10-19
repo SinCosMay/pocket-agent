@@ -329,7 +329,9 @@ test('reasoning effort survives restart and provider reconfiguration while inval
  bridge.credentials={authMode:'scripted',model:'scripted',reasoningEffort:'high'};
  const runtime=new PocketRuntime(bridge);
  assert.equal(runtime.state().provider.reasoningEffort,'high');
+ bridge.credentials={authMode:'openai',endpoint:'https://example.test/v1',apiKey:'provider-key',model:'next-model',reasoningEffort:'high'};
  command(runtime,{action:'configure'});
+ assert.equal(runtime.state().provider.mode,'openai');
  assert.equal(runtime.state().provider.reasoningEffort,'high');
  const restored=new PocketRuntime(bridge);
  assert.equal(restored.state().provider.reasoningEffort,'high');

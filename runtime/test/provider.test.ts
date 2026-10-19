@@ -77,17 +77,19 @@ test('direct Codex wire has fixed destination, explicit strict:false and a struc
 });
 
 test('direct Codex wires main reasoning effort, preserves low for workers, and sanitizes invalid values',async()=>{
- for(const [configured,owner,expected] of [
-   ['minimal','main','minimal'],
-   ['low','main','low'],
-   ['medium','main','medium'],
-   ['high','main','high'],
-   ['xhigh','main','xhigh'],
-   ['max','main','max'],
-   ['not-a-level','main','low'],
-   ['xhigh','worker-fixture','low'],
+ for(const [configured,owner,proof,expected] of [
+   ['minimal','main','gpt-6-luna','minimal'],
+   ['low','main',undefined,'low'],
+   ['medium','main','gpt-6-luna','medium'],
+   ['high','main','gpt-6-luna','high'],
+   ['xhigh','main','gpt-6-luna','xhigh'],
+   ['max','main','gpt-6-luna','max'],
+   ['high','main','different-model','low'],
+   ['high','main',undefined,'low'],
+   ['not-a-level','main',undefined,'low'],
+   ['xhigh','worker-fixture','gpt-6-luna','low'],
  ] as const) {
-   const credentials=accountCredential();let wire:any;
+   const credentials={...accountCredential(),...(proof?{reasoningEffortModel:proof}:{})};let wire:any;
    const config:any={...accountConfig,reasoningEffort:configured};
    const stream=makeStream(config,credentials,owner);
    const agent=new Agent({streamFn:(model,context,options)=>stream(model,context,{...options,fetch:async(_input,init)=>{

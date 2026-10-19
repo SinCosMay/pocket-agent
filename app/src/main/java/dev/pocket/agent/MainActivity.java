@@ -293,18 +293,22 @@ public final class MainActivity extends Activity implements AgentService.Observe
         }
         return CredentialStore.DEFAULT_REASONING_EFFORT;
     }
-    private static String[] reasoningChoicesWithPreferred(String[] fallback, String preferred) {
-        if (!isReasoningEffort(preferred)) return fallback;
-        for (String value : fallback) if (value.equals(preferred)) return fallback;
-        String[] values = java.util.Arrays.copyOf(fallback, fallback.length + 1);
-        values[fallback.length] = preferred;
-        return values;
+    private static boolean containsReasoningEffort(String[] values, String effort) {
+        if (values == null) return false;
+        for (String value : values) if (value.equals(effort)) return true;
+        return false;
     }
-    private void populateReasoningPicker(Spinner picker, String modelId, String preferred, boolean codexLike) {
+    private void populateReasoningPicker(Spinner picker, String modelId, String preferred,
+            boolean codexAccount, boolean codexLike, String verifiedModel) {
         String[] advertised = modelReasoningEfforts.get(modelId);
         String[] fallback = codexLike ? CODEX_REASONING_CHOICES : DEFAULT_REASONING_CHOICES;
-        String[] values = advertised != null && advertised.length > 0 ? advertised
-                : reasoningChoicesWithPreferred(fallback, preferred);
+        String[] values;
+        if (advertised != null && advertised.length > 0) values = advertised;
+        else if (codexAccount) values = modelId.equals(verifiedModel)
+                && isReasoningEffort(preferred) && !CredentialStore.DEFAULT_REASONING_EFFORT.equals(preferred)
+                ? new String[]{CredentialStore.DEFAULT_REASONING_EFFORT, preferred}
+                : new String[]{CredentialStore.DEFAULT_REASONING_EFFORT};
+        else values = fallback;
         String[] labels = new String[values.length];
         int selection = -1;
         for (int i = 0; i < values.length; i++) {
@@ -354,7 +358,8 @@ public final class MainActivity extends Activity implements AgentService.Observe
         Spinner reasoning = new Spinner(this);
         reasoningPicker = reasoning;
         populateReasoningPicker(reasoning, model.getText().toString(),
-                saved.optString("reasoningEffort", CredentialStore.DEFAULT_REASONING_EFFORT), selected == 4 || selected == 5);
+                saved.optString("reasoningEffort", CredentialStore.DEFAULT_REASONING_EFFORT),
+                selected == 5, selected == 4 || selected == 5, saved.optString("reasoningEffortModel"));
         panel.addView(reasoning);
         TextView reasoningHelp = text("");
         panel.addView(reasoningHelp);
@@ -368,7 +373,9 @@ public final class MainActivity extends Activity implements AgentService.Observe
                     model.setText(modelIds[position]);
                     String selectedMode = modes[mode.getSelectedItemPosition()];
                     populateReasoningPicker(reasoning, modelIds[position], preferred,
-                            selectedMode.equals("codex") || selectedMode.equals(CredentialStore.CODEX_ACCOUNT));
+                            selectedMode.equals(CredentialStore.CODEX_ACCOUNT),
+                            selectedMode.equals("codex") || selectedMode.equals(CredentialStore.CODEX_ACCOUNT),
+                            saved.optString("reasoningEffortModel"));
                 }
             }
             @Override public void onNothingSelected(AdapterView<?> parent) { }
@@ -453,7 +460,7 @@ public final class MainActivity extends Activity implements AgentService.Observe
             else if (selectedMode.equals("openai")) { endpoint.setText("https://api.openai.com/v1"); model.setText("gpt-4.1-mini"); }
             else { endpoint.setText("https://api.openai.com/v1"); model.setText("scripted"); }
             populateReasoningPicker(reasoning, model.getText().toString(), selectedReasoningEffort(reasoning),
-                    account || selectedMode.equals("codex"));
+                    account, account || selectedMode.equals("codex"), saved.optString("reasoningEffortModel"));
         };
         final int[] lastProvider = {selected};
         mode.setOnItemSelectedListener(new AdapterView.OnItemSelectedListener() {
@@ -640,8 +647,20 @@ public final class MainActivity extends Activity implements AgentService.Observe
                 try {
                     if (activeWork()) { toast("Stop active work before changing connections"); return; }
                     String selectedMode = modes[mode.getSelectedItemPosition()];
-                    JSONObject config = json("authMode", selectedMode, "model", model.getText().toString().trim(),
-                            "reasoningEffort", selectedReasoningEffort(reasoning));
+                    String selectedModel = model.getText().toString().trim();
+                    String selectedEffort = selectedReasoningEffort(reasoning);
+                    JSONObject config = json("authMode", selectedMode, "model", selectedModel, "reasoningEffort", selectedEffort);
+                    if (selectedMode.equals(CredentialStore.CODEX_ACCOUNT)
+                            && !CredentialStore.DEFAULT_REASONING_EFFORT.equals(selectedEffort)) {
+                        String[] advertised = modelReasoningEfforts.get(selectedModel);
+                        boolean persistedProof = selectedModel.equals(saved.optString("reasoningEffortModel"))
+                                && selectedEffort.equals(saved.optString("reasoningEffort"));
+                        if (!containsReasoningEffort(advertised, selectedEffort) && !persistedProof) {
+                            toast("Discover this model before using that reasoning effort");
+                            return;
+                        }
+                        config.put("reasoningEffortModel", selectedModel);
+                    }
                     if (!selectedMode.equals(CredentialStore.CODEX_ACCOUNT)) {
                         config.put("endpoint", endpoint.getText().toString().trim());
                         String savedMode = saved.optString("authMode");

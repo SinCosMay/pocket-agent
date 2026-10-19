@@ -19,7 +19,8 @@ const REASONING_LEVEL_SET = new Set<string>(REASONING_EFFORTS);
 
 function catalogReasoning(entry: any): Pick<CatalogModel,'supportedReasoningLevels'|'defaultReasoningLevel'> {
   if (!entry || typeof entry !== 'object') return {};
-  const advertised = Array.isArray(entry.supported_reasoning_levels) ? entry.supported_reasoning_levels : [];
+  const hasAdvertisedLevels = Array.isArray(entry.supported_reasoning_levels);
+  const advertised = hasAdvertisedLevels ? entry.supported_reasoning_levels : [];
   const supported: ReasoningEffort[] = [];
   const seen = new Set<string>();
   for (const item of advertised) {
@@ -31,7 +32,7 @@ function catalogReasoning(entry: any): Pick<CatalogModel,'supportedReasoningLeve
   const rawDefault = entry.default_reasoning_level;
   const defaultReasoningLevel = typeof rawDefault === 'string'
     && REASONING_LEVEL_SET.has(rawDefault)
-    && (!supported.length || seen.has(rawDefault))
+    && (!hasAdvertisedLevels || seen.has(rawDefault))
     ? rawDefault as ReasoningEffort : undefined;
   return {
     ...(supported.length ? {supportedReasoningLevels:supported} : {}),
@@ -62,6 +63,7 @@ export async function discoverProviderModels(
     // own identity for both and never accept a caller-controlled discovery URL.
     headers.originator = CODEX_MODELS_ORIGINATOR;
     headers['User-Agent'] = getPiUserAgent();
+    headers.version = CODEX_MODELS_CLIENT_VERSION;
   }
   let response: Response;
   try {
