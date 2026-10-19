@@ -59,6 +59,11 @@ public final class AgentService extends Service {
             stopSelf(); return START_NOT_STICKY;
         }
         if (stopping) return START_NOT_STICKY;
+        if (ACTION_START.equals(intent.getAction()) && host != null && host.terminalFailure()) {
+            startup=host.recover();
+            startup.exceptionally(error->{Log.w("PocketAgent","Runtime recovery failed after explicit restart request");return null;});
+            return START_NOT_STICKY;
+        }
         if (ACTION_COMMAND.equals(intent.getAction())) {
             String value = intent.getStringExtra("command");
             try {
