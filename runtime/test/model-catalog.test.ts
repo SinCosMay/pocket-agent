@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import {CODEX_MODELS_CLIENT_VERSION,CODEX_MODELS_ORIGINATOR,CODEX_MODELS_URL,discoverProviderModels} from '../src/model-catalog.js';
+import {CODEX_MODELS_CLIENT_VERSION,CODEX_MODELS_ORIGINATOR,discoverProviderModels} from '../src/model-catalog.js';
 import {modelFor} from '../src/provider.js';
 import {resolveModel} from '../vendor/pi9/execute.js';
 
