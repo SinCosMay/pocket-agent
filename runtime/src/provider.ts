@@ -216,7 +216,7 @@ function fixedCodexFetch(fetcher: typeof fetch, requestSignal?: AbortSignal): ty
   }) as typeof fetch;
 }
 
-export function makeStream(config: ProviderConfig, credentials: ProviderCredentials = {}, owner: any): StreamFn {
+export function makeStream(config: ProviderConfig, credentials: ProviderCredentials = {}, owner: any, reasoningOverride?: ReasoningEffort, supportedReasoning?: readonly ReasoningEffort[]): StreamFn {
   if (config.mode === 'scripted') return scriptedStream(owner);
   return async(_model, context, options)=>{
     let model: ProviderModel | undefined;
@@ -231,14 +231,19 @@ export function makeStream(config: ProviderConfig, credentials: ProviderCredenti
       else if (mode === 'nebius' && !apiKey?.trim()) return failure(model,'Configure a Nebius API key before sending.');
       else if (!apiKey?.trim()) return failure(model,'Configure a provider credential before sending.');
       if (options?.signal?.aborted) return failure(model,'Request cancelled.',true);
-      const requestedReasoning = owner === 'main' && configurableReasoningMode(mode)
-        ? normalizeReasoningEffort(config.reasoningEffort)
+      const requestedReasoning = configurableReasoningMode(mode)
+        ? normalizeReasoningEffort(reasoningOverride ?? config.reasoningEffort)
         : DEFAULT_REASONING_EFFORT;
-      const advertisedReasoning = Array.isArray(credentials.reasoningEfforts)
-        ? credentials.reasoningEfforts.filter(value => REASONING_EFFORT_SET.has(value))
-        : [];
-      const reasoning = account && requestedReasoning !== DEFAULT_REASONING_EFFORT
-        && (credentials.reasoningEffortModel !== model.id || !advertisedReasoning.includes(requestedReasoning))
+      const hasCatalogReasoning = Array.isArray(supportedReasoning);
+      const advertisedReasoning = hasCatalogReasoning
+        ? supportedReasoning!.filter(value => REASONING_EFFORT_SET.has(value))
+        : Array.isArray(credentials.reasoningEfforts)
+          ? credentials.reasoningEfforts.filter(value => REASONING_EFFORT_SET.has(value))
+          : [];
+      const reasoningVerified = hasCatalogReasoning
+        ? advertisedReasoning.includes(requestedReasoning)
+        : credentials.reasoningEffortModel === model.id && advertisedReasoning.includes(requestedReasoning);
+      const reasoning = account && requestedReasoning !== DEFAULT_REASONING_EFFORT && !reasoningVerified
         ? DEFAULT_REASONING_EFFORT : requestedReasoning;
       const shared = {...options,apiKey,transport:'sse' as const,maxRetries:0,timeoutMs:120000,reasoning};
       const source = model.api === 'openai-codex-responses'
