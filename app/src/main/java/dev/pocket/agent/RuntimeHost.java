@@ -33,8 +33,10 @@ public final class RuntimeHost implements AutoCloseable {
     private int runtimeRestartAttempts;
     private static final int MAX_RUNTIME_RESTARTS=2;
     private static final int MAX_DURABLE_STATE_CHARS=24_000_000;
-    private StringBuilder durableSaveBuffer;
-    private int durableSaveExpected=-1;
+    private static final int MAX_DURABLE_STATE_BYTES=64_000_000;
+    private File durableSaveFile;
+    private FileOutputStream durableSaveOutput;
+    private int durableSaveExpected=-1, durableSaveReceived, durableSaveBytes;
     private CompletableFuture<JSONObject> gate;
     private final java.util.Map<String, CompletableFuture<JSONObject>> debugPending = new java.util.HashMap<>();
     private final java.util.Set<CompletableFuture<?>> pendingRequests =
@@ -77,6 +79,13 @@ public final class RuntimeHost implements AutoCloseable {
         }
         NativeTools oldTools=tools;tools=null;
         if(oldTools!=null)try {oldTools.close();} catch(Throwable ignored) {}
+    }
+    private void abortDurableSave() {
+        FileOutputStream output=durableSaveOutput;durableSaveOutput=null;
+        if(output!=null)try {output.close();} catch(Exception ignored) {}
+        File file=durableSaveFile;durableSaveFile=null;
+        if(file!=null)try {file.delete();} catch(RuntimeException ignored) {}
+        durableSaveExpected=-1;durableSaveReceived=0;durableSaveBytes=0;
     }
     private <T> CompletableFuture<T> track(CompletableFuture<T> future) {
         pendingRequests.add(future);
@@ -231,27 +240,37 @@ public final class RuntimeHost implements AutoCloseable {
                     case "store.save.begin": {
                         int chars=args.getInt("chars");
                         if(chars<0||chars>MAX_DURABLE_STATE_CHARS)throw new IllegalArgumentException("Durable state exceeds limit");
-                        durableSaveExpected=chars;durableSaveBuffer=new StringBuilder(Math.min(chars,2_000_000));result=true;break;
+                        abortDurableSave();
+                        durableSaveExpected=chars;
+                        durableSaveFile=File.createTempFile("runtime-checkpoint-",".json",context.getCacheDir());
+                        durableSaveOutput=new FileOutputStream(durableSaveFile);
+                        result=true;break;
                     }
                     case "store.save.chunk": {
-                        if(durableSaveBuffer==null)throw new IllegalStateException("No durable save in progress");
+                        if(durableSaveOutput==null||durableSaveFile==null)throw new IllegalStateException("No durable save in progress");
                         String chunk=args.getString("chunk");
-                        if(durableSaveBuffer.length()+chunk.length()>durableSaveExpected)throw new IllegalArgumentException("Durable state chunk overflow");
-                        durableSaveBuffer.append(chunk);result=durableSaveBuffer.length();break;
+                        if(durableSaveReceived+chunk.length()>durableSaveExpected)throw new IllegalArgumentException("Durable state chunk overflow");
+                        byte[] bytes=chunk.getBytes(java.nio.charset.StandardCharsets.UTF_8);
+                        if(durableSaveBytes+bytes.length>MAX_DURABLE_STATE_BYTES)throw new IllegalArgumentException("Durable state byte budget exceeded");
+                        durableSaveOutput.write(bytes);durableSaveReceived+=chunk.length();durableSaveBytes+=bytes.length;
+                        result=durableSaveReceived;break;
                     }
                     case "store.save.commit": {
-                        if(durableSaveBuffer==null||durableSaveBuffer.length()!=durableSaveExpected)throw new IllegalStateException("Incomplete durable state");
-                        String serialized=durableSaveBuffer.toString();durableSaveBuffer=null;durableSaveExpected=-1;
-                        store.saveDurable(new JSONObject(serialized));result=true;break;
+                        if(durableSaveOutput==null||durableSaveFile==null||durableSaveReceived!=durableSaveExpected)
+                            throw new IllegalStateException("Incomplete durable state");
+                        durableSaveOutput.flush();durableSaveOutput.getFD().sync();durableSaveOutput.close();durableSaveOutput=null;
+                        byte[] bytes=java.nio.file.Files.readAllBytes(durableSaveFile.toPath());
+                        if(bytes.length!=durableSaveBytes||bytes.length>MAX_DURABLE_STATE_BYTES)throw new IllegalStateException("Durable state transfer mismatch");
+                        store.saveDurableBytes(bytes);abortDurableSave();result=true;break;
                     }
-                    case "store.save.abort": durableSaveBuffer=null;durableSaveExpected=-1;result=true;break;
+                    case "store.save.abort": abortDurableSave();result=true;break;
                     case "credentials.get": result = credentials.get(); break;
                     case "credentials.updateCodex": result = credentials.updateCodex(args); break;
                     default: throw new IllegalArgumentException("Unknown native method");
                 }
                 return new JSONObject().put("ok", true).put("result", result).toString();
             } catch (Throwable error) {
-                if(method!=null&&method.startsWith("store.save.")&&!"store.save.abort".equals(method)){durableSaveBuffer=null;durableSaveExpected=-1;}
+                if(method!=null&&method.startsWith("store.save.")&&!"store.save.abort".equals(method))abortDurableSave();
                 try { return new JSONObject().put("ok", false).put("error", new JSONObject().put("code", error.getClass().getSimpleName()).put("message", "Native call failed: " + method)).toString(); }
                 catch (Exception ignored) { return "{\"ok\":false,\"error\":{\"code\":\"native_error\"}}"; }
             }
@@ -339,7 +358,7 @@ public final class RuntimeHost implements AutoCloseable {
     }
     private void closeResourcesOnOwnerThread(boolean cleanShutdown) {
         completePending(new IllegalStateException("Service stopped"));
-        durableSaveBuffer=null;durableSaveExpected=-1;
+        abortDurableSave();
         closeRuntimeOnly();
         if(!cleanShutdown)try {store.markInterrupted();} catch(Throwable error) {android.util.Log.w("PocketRuntime","Could not mark interrupted",error);}
         try {memory.close();} catch(Throwable error) {android.util.Log.w("PocketRuntime","Memory store close failed",error);}
@@ -359,7 +378,7 @@ public final class RuntimeHost implements AutoCloseable {
         // work, never close it from the caller thread; mark durable state interrupted
         // and release only resources that are safe outside the isolate owner.
         completePending(new IllegalStateException("Runtime owner thread is unavailable"));
-        durableSaveBuffer=null;durableSaveExpected=-1;
+        abortDurableSave();
         try {store.markInterrupted();} catch(Throwable error) {android.util.Log.w("PocketRuntime","Could not mark interrupted",error);}
         try {memory.close();} catch(Throwable error) {android.util.Log.w("PocketRuntime","Memory store close failed",error);}
         try {store.close();} catch(Throwable error) {android.util.Log.w("PocketRuntime","State store close failed",error);}
