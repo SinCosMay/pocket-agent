@@ -5,9 +5,17 @@ import android.provider.Settings;
 import androidx.test.platform.app.InstrumentationRegistry;
 /** Test-only permission provisioning; no exported production entrypoint. */
 final class DeviceTestAccess {
+ private static boolean accessibilityConnected(Context c) {
+  try {
+   android.os.Bundle out=c.getContentResolver().call(
+    android.net.Uri.parse("content://"+c.getPackageName()+".accessibility-bridge"),
+    "status",null,new android.os.Bundle());
+   return out!=null&&out.getBoolean("connected");
+  }catch(RuntimeException unavailable){return false;}
+ }
  static void ensureAccessibility() throws Exception {
   Context c=InstrumentationRegistry.getInstrumentation().getTargetContext();
-  if(AccessibilityProxyBackend.connected(c))return;
+  if(accessibilityConnected(c))return;
   UiAutomation automation=InstrumentationRegistry.getInstrumentation().getUiAutomation(UiAutomation.FLAG_DONT_SUPPRESS_ACCESSIBILITY_SERVICES);
   automation.adoptShellPermissionIdentity("android.permission.WRITE_SECURE_SETTINGS");
   try {
@@ -22,7 +30,7 @@ final class DeviceTestAccess {
    Settings.Secure.putInt(c.getContentResolver(),Settings.Secure.ACCESSIBILITY_ENABLED,1);
   }finally{automation.dropShellPermissionIdentity();}
   long deadline=System.currentTimeMillis()+15000;
-  while(!AccessibilityProxyBackend.connected(c)&&System.currentTimeMillis()<deadline)Thread.sleep(100);
-  if(!AccessibilityProxyBackend.connected(c))throw new AssertionError("Accessibility did not bind after test provisioning");
+  while(!accessibilityConnected(c)&&System.currentTimeMillis()<deadline)Thread.sleep(100);
+  if(!accessibilityConnected(c))throw new AssertionError("Accessibility did not bind after test provisioning");
  }
 }
