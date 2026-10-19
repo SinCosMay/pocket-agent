@@ -2,6 +2,7 @@ package dev.pocket.agent;
 
 import android.content.Context;
 import android.content.ComponentName;
+import android.provider.Settings;
 import dev.pocket.control.ControlException;
 import java.util.LinkedHashMap;
 import java.util.Map;
@@ -57,9 +58,36 @@ final class AgentDisplayCoordinator implements AutoCloseable {
     synchronized AccessibilityProxyBackend screen(String owner) throws ControlException {
         int id=display(owner);
         AccessibilityProxyBackend backend=new AccessibilityProxyBackend(context,id);
+        if(!AccessibilityProxyBackend.connected(context))recoverAccessibility();
         if(!AccessibilityProxyBackend.connected(context))
-            throw new ControlException(PERMISSION_REQUIRED,"Enable Pocket Agent accessibility to use virtual displays");
+            throw new ControlException(NOT_READY,"Pocket Agent accessibility is enabled but has not rebound yet; retry after recovery");
         return backend;
+    }
+
+    private boolean accessibilityEnabledByUser(ComponentName target) {
+        try {
+            if(Settings.Secure.getInt(context.getContentResolver(),Settings.Secure.ACCESSIBILITY_ENABLED,0)!=1)return false;
+            String raw=Settings.Secure.getString(context.getContentResolver(),Settings.Secure.ENABLED_ACCESSIBILITY_SERVICES);
+            if(raw==null)return false;
+            for(String item:raw.split(":"))if(target.equals(ComponentName.unflattenFromString(item.trim())))return true;
+        } catch(RuntimeException ignored) {}
+        return false;
+    }
+    private void recoverAccessibility() throws ControlException {
+        ComponentName component=new ComponentName(context,AgentAccessibility.class);
+        String target=component.flattenToShortString();
+        if(!accessibilityEnabledByUser(component))
+            throw new ControlException(PERMISSION_REQUIRED,"Enable Pocket Agent accessibility to use virtual displays");
+        if(!client().repairAccessibility(target))
+            throw new ControlException(NOT_READY,"Pocket Agent accessibility recovery could not be started");
+        long deadline=android.os.SystemClock.elapsedRealtime()+2500;
+        while(android.os.SystemClock.elapsedRealtime()<deadline) {
+            if(AccessibilityProxyBackend.connected(context))return;
+            try {Thread.sleep(100);} catch(InterruptedException interrupted) {
+                Thread.currentThread().interrupt();
+                throw new ControlException(RESULT_UNKNOWN,"Interrupted while waiting for accessibility recovery");
+            }
+        }
     }
 
     synchronized void launch(String owner,String component) throws ControlException {client().launch(display(owner),component);}

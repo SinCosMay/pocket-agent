@@ -31,7 +31,7 @@ public final class ShellDisplayService extends IDisplayShell.Stub {
     private static final int TRUSTED=1<<10, OWN_GROUP=1<<11, ALWAYS_UNLOCKED=1<<12;
     private static final int OWN_FOCUS=1<<14, DEVICE_GROUP=1<<15;
     private static final int DISPLAY_IME_POLICY_HIDE=2;
-    private static final Pattern ROOT_TASK=Pattern.compile("(?:RootTask\\s+(?:id=|#)|Stack\\s+id=)(\\d+).*?displayId=(\\d+)");
+    private static final Pattern ROOT_TASK=Pattern.compile("(?i)(?:RootTask\\s+(?:id=|#)|Stack\\s+id=)(\\d+).*?(?:m?displayId)\\s*[=:]\\s*(\\d+)");
     private final Context context;
     private final Map<Integer,OwnedDisplay> displays=new LinkedHashMap<>();
     private HandlerThread frameThread;
@@ -135,8 +135,8 @@ public final class ShellDisplayService extends IDisplayShell.Stub {
         java.lang.Process child=null;
         try {
             child=builder.start();
-            byte[] output=child.getInputStream().readAllBytes();
             if(!child.waitFor(8,TimeUnit.SECONDS)) {child.destroyForcibly();return "";}
+            byte[] output=child.getInputStream().readAllBytes();
             return child.exitValue()==0?new String(output,java.nio.charset.StandardCharsets.UTF_8):"";
         } catch(Exception e) {
             if(child!=null) child.destroyForcibly();
@@ -154,6 +154,40 @@ public final class ShellDisplayService extends IDisplayShell.Stub {
             if(child!=null) child.destroyForcibly();
             return false;
         }
+    }
+    private static Set<String> accessibilityServices(String raw) {
+        Set<String> services=new LinkedHashSet<>();
+        if(raw==null)return services;
+        String value=raw.trim();
+        if(value.isEmpty()||"null".equalsIgnoreCase(value))return services;
+        for(String item:value.split(":"))if(!item.isBlank())services.add(item.trim());
+        return services;
+    }
+    private static boolean putAccessibilityServices(Set<String> services) {
+        String value=String.join(":",services);
+        if(value.isEmpty())return exec("/system/bin/settings","delete","secure","enabled_accessibility_services");
+        return exec("/system/bin/settings","put","secure","enabled_accessibility_services",value);
+    }
+    @Override public synchronized boolean repairAccessibility(String componentName) {
+        android.content.ComponentName component=android.content.ComponentName.unflattenFromString(componentName);
+        if(component==null||!"dev.pocket.agent".equals(component.getPackageName())
+            ||!"dev.pocket.agent.AgentAccessibility".equals(component.getClassName()))
+            throw new SecurityException("Only Pocket Agent accessibility may be repaired");
+        if(!"1".equals(execOutput("/system/bin/settings","get","secure","accessibility_enabled").trim()))return false;
+        Set<String> original=accessibilityServices(execOutput("/system/bin/settings","get","secure","enabled_accessibility_services"));
+        boolean found=false;Set<String> withoutTarget=new LinkedHashSet<>();
+        for(String item:original) {
+            android.content.ComponentName parsed=android.content.ComponentName.unflattenFromString(item);
+            if(component.equals(parsed)){found=true;continue;}
+            withoutTarget.add(item);
+        }
+        if(!found||!putAccessibilityServices(withoutTarget))return false;
+        try {Thread.sleep(400);} catch(InterruptedException interrupted) {Thread.currentThread().interrupt();return false;}
+        if(!"1".equals(execOutput("/system/bin/settings","get","secure","accessibility_enabled").trim()))return false;
+        Set<String> current=accessibilityServices(execOutput("/system/bin/settings","get","secure","enabled_accessibility_services"));
+        for(String item:current)if(component.equals(android.content.ComponentName.unflattenFromString(item)))return true;
+        current.add(component.flattenToShortString());
+        return putAccessibilityServices(current);
     }
     private boolean launchTracked(int id,String... command) {
         Set<Integer> before=parseRootTasks(execOutput("/system/bin/am","stack","list"),id);
@@ -200,33 +234,6 @@ public final class ShellDisplayService extends IDisplayShell.Stub {
         owned(id);
         if(keyCode!=4 && keyCode!=3 && keyCode!=187) throw new SecurityException("Key not permitted");
         return exec("/system/bin/input","-d",String.valueOf(id),"keyevent",String.valueOf(keyCode));
-    }
-    @Override public synchronized boolean repairAccessibility(String componentName) {
-        android.content.ComponentName component=android.content.ComponentName.unflattenFromString(componentName);
-        if(component==null||!"dev.pocket.agent".equals(component.getPackageName())||!"dev.pocket.agent.AgentAccessibility".equals(component.getClassName()))
-            throw new SecurityException("Only Pocket Agent accessibility may be repaired");
-        String current=execOutput("/system/bin/settings","get","secure","enabled_accessibility_services").trim();
-        if(current.isEmpty()||"null".equals(current))return false;
-        java.util.List<String> services=new java.util.ArrayList<>();
-        boolean found=false;
-        for(String item:current.split(":")) {
-            if(item.isBlank())continue;
-            android.content.ComponentName parsed=android.content.ComponentName.unflattenFromString(item);
-            if(component.equals(parsed)){found=true;continue;}
-            services.add(item);
-        }
-        if(!found)return false;
-        boolean removed=services.isEmpty()
-            ? exec("/system/bin/settings","delete","secure","enabled_accessibility_services")
-            : exec("/system/bin/settings","put","secure","enabled_accessibility_services",String.join(":",services));
-        if(!removed)return false;
-        try {Thread.sleep(350);} catch(InterruptedException e) {Thread.currentThread().interrupt();return false;}
-        if(!"1".equals(execOutput("/system/bin/settings","get","secure","accessibility_enabled").trim()))return false;
-        String after=execOutput("/system/bin/settings","get","secure","enabled_accessibility_services").trim();
-        java.util.LinkedHashSet<String> restored=new java.util.LinkedHashSet<>();
-        if(!after.isEmpty()&&!"null".equals(after))for(String item:after.split(":"))if(!item.isBlank())restored.add(item);
-        restored.add(componentName);
-        return exec("/system/bin/settings","put","secure","enabled_accessibility_services",String.join(":",restored));
     }
     @Override public synchronized String health() {
         return "uid="+Process.myUid()+";display_count="+displays.size()+";android="+Build.VERSION.SDK_INT;

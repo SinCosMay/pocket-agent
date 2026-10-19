@@ -435,6 +435,48 @@ test('account credentials stay redacted from durable state and events after prov
 });
 
 
+
+test('large valid checkpoints cross the native argument limit through chunked durable persistence',()=>{
+ class ChunkBridge extends Bridge {
+  pending='';
+  override call(method:string,argsJson:string):string {
+   const args=JSON.parse(argsJson);
+   if(method==='store.save.begin'){this.pending='';return JSON.stringify({ok:true,result:true});}
+   if(method==='store.save.chunk'){this.pending+=args.chunk;return JSON.stringify({ok:true,result:this.pending.length});}
+   if(method==='store.save.commit'){this.state=JSON.parse(this.pending);this.pending='';return JSON.stringify({ok:true,result:true});}
+   if(method==='store.save.abort'){this.pending='';return JSON.stringify({ok:true,result:true});}
+   return super.call(method,argsJson);
+  }
+ }
+ const bridge=new ChunkBridge(),runtime=new PocketRuntime(bridge);
+ runtime.main.agent.state.messages.push({role:'user',content:[{type:'text',text:'x'.repeat(1_600_000)}],timestamp:Date.now()} as any);
+ runtime.save();
+ assert.ok(JSON.stringify(bridge.state).length>1_500_000);
+ assert.equal(bridge.state.mainMessages.at(-1).content[0].text.length,1_600_000);
+});
+
+test('coalesced persistence failure is contained and cannot escape the timer callback',async()=>{
+ class FailingSaveBridge extends Bridge {
+  fail=false;
+  override call(method:string,argsJson:string):string {
+   if(this.fail&&method.startsWith('store.save'))throw new Error('forced durable failure');
+   return super.call(method,argsJson);
+  }
+ }
+ const bridge=new FailingSaveBridge(),runtime=new PocketRuntime(bridge);
+ bridge.fail=true;(runtime as any).coalesce();
+ await delay(250);
+ assert.match(runtime.state().lastError,/forced durable failure/);
+});
+
+test('stop all always clears its stopping latch when cancellation setup fails',async()=>{
+ const runtime=new PocketRuntime(new Bridge()),internal=runtime as any;
+ internal.runtime.listConversations=()=>{throw new Error('forced cancellation setup failure');};
+ await internal.stopAll();
+ assert.equal(internal.stoppingAll,false);
+ assert.match(runtime.state().lastError,/forced cancellation setup failure/);
+});
+
 test('voice-scoped interruption aborts only its matching turn and removes stale queued speech',()=>{
  const runtime=new PocketRuntime(new Bridge());
  const old='9ac6c359-d522-4fa3-a00b-a7efdf0c9571';
