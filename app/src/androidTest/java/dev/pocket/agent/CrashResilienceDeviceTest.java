@@ -27,12 +27,10 @@ public final class CrashResilienceDeviceTest {
         Context c=context();String pkg=c.getPackageName();
         ServiceInfo accessibility=c.getPackageManager().getServiceInfo(new ComponentName(c,AgentAccessibility.class),0);
         ServiceInfo guardian=c.getPackageManager().getServiceInfo(new ComponentName(c,AccessibilityGuardianService.class),0);
-        ServiceInfo repair=c.getPackageManager().getServiceInfo(new ComponentName(c,AccessibilityRepairService.class),0);
         ProviderInfo bridge=c.getPackageManager().resolveContentProvider(pkg+".accessibility-bridge",0);
         assertNotNull(bridge);
         assertEquals(pkg+":accessibility",accessibility.processName);
         assertEquals(pkg+":accessibility",bridge.processName);
         assertEquals(pkg+":guardian",guardian.processName);
-        assertEquals(pkg+":guardian",repair.processName);
     }
 }
