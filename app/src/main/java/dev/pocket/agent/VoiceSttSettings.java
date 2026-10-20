@@ -27,6 +27,10 @@ final class VoiceSttSettings {
         boolean usesDeepgramStt() {
             return this != ANDROID_DEFAULT_ONLY;
         }
+
+        boolean needsDeepgramInterruptionBridge() {
+            return this == ANDROID_DEFAULT_ONLY;
+        }
     }
 
     static final int DEFAULT_SHORT_UTTERANCE_MS = 3000;

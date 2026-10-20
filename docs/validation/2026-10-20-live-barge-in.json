@@ -1,0 +1,32 @@
+{
+  "date": "2026-10-20",
+  "branch": "fix/voice-interruption-regression-20261020",
+  "base_app_revision": "c5f4b6e05cd8d344ed1186dbec7406d990248d1a",
+  "environment": "lightweight host-side live Deepgram protocol probe; no Android emulator",
+  "agent_speech": {
+    "provider": "Deepgram Aura-2 Thalia",
+    "played_before_interrupt_ms": 1720,
+    "buffered_at_interrupt_ms": 2240,
+    "flush_arrived_before_interrupt": false
+  },
+  "interruption": {
+    "text": "Stop. Give me only the final answer.",
+    "provider": "Deepgram Aura-2 Thalia -> Flux v2",
+    "audio_duration_ms": 2680,
+    "flux_transcript": "Stop. Give me only the final answer.",
+    "flux_start_of_turn_ms_after_audio_started": 1239
+  },
+  "barge_in": {
+    "local_playback_stop_ms_after_start_of_turn": 0,
+    "playback_advanced_after_interrupt": false,
+    "deepgram_clear_acknowledged": true,
+    "success": true
+  },
+  "resource_scope": {
+    "android_emulator_started": false,
+    "full_android_build_started": false,
+    "live_provider_calls": "two short Aura TTS streams and one Flux stream"
+  },
+  "credential_handling": "Short-lived Deepgram credential from the existing voice.ind token endpoint; credential not printed or persisted.",
+  "caveat": "This verifies live provider barge-in signaling and playback cancellation semantics, not physical phone speaker-to-microphone acoustics or OEM audio routing."
+}

@@ -90,6 +90,30 @@ public final class InstantVoiceCaptureDeviceTest {
         }
     }
 
+    @Test public void microphoneCanRestartAfterAndroidInterruptionHandoff() throws Exception {
+        Context context = InstrumentationRegistry.getInstrumentation().getTargetContext();
+        requireMicrophonePermission(context);
+        FakeConnector network = new FakeConnector();
+        DeepgramVoice voice = new DeepgramVoice(context, "test-only", new SilentCallback(),
+            network, "wss://api.deepgram.com/v2/listen");
+        network.voice = voice;
+        try {
+            voice.listen();
+            assertTrue(voice.isCapturing());
+            assertEquals(1, network.connections.get());
+            voice.stopListening();
+            assertFalse(voice.isCapturing());
+            assertEquals(0, voice.bufferedInputBytes());
+
+            voice.listen();
+            assertTrue("Barge-in capture must reacquire the microphone after Android handoff",
+                voice.isCapturing());
+            assertEquals(2, network.connections.get());
+        } finally {
+            voice.close();
+        }
+    }
+
     @Test public void wakeTailIsSentAheadOfLiveMicFrames() throws Exception {
         Context context = InstrumentationRegistry.getInstrumentation().getTargetContext();
         requireMicrophonePermission(context);

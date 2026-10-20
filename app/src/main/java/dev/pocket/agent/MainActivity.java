@@ -597,7 +597,7 @@ public final class MainActivity extends Activity implements AgentService.Observe
             thresholdReset.setAlpha(hybrid ? 1.0f : 0.45f);
             updateShortThreshold.accept(shortThreshold.getProgress());
             if (selectedMode == VoiceSttSettings.Mode.ANDROID_DEFAULT_ONLY) {
-                sttModeHelp.setText("Android default only uses the phone's normal system SpeechRecognizer with its own microphone, matching the standalone test path. Deepgram STT and hybrid arbitration are disabled; Deepgram is still used for speech synthesis. After Hey Jarvis, speak after the ready beep so the system recognizer owns the microphone.");
+                sttModeHelp.setText("Android default only uses the phone's normal system SpeechRecognizer for normal turns, matching the standalone test path. Hybrid arbitration stays disabled. While Pocket Agent is thinking or speaking, Deepgram Flux temporarily provides full-duplex barge-in so you can interrupt without waiting for playback to finish; an interrupted utterance is completed on that same stream before Android recognition resumes.");
             } else if (selectedMode == VoiceSttSettings.Mode.DEEPGRAM_ONLY) {
                 sttModeHelp.setText("Deepgram only uses the existing streaming Deepgram STT path. Android recognition, parallel arbitration, and the switch threshold are disabled.");
             } else {
