@@ -52,6 +52,7 @@ public final class VoiceListeningService extends Service implements AgentService
     private VoiceAnnouncement currentAnnouncement;
     private String activeTurn;
     private boolean responding, userSpeaking, started, keepListening, microphoneEnabled, streamingReady, wakeStarted;
+    private boolean androidBargeInListening, androidBargeInTurn;
     private boolean systemWakeReadyCuePending;
     private long utteranceAt, firstTokenAt;
     private final Runnable idleStop = () -> {
@@ -175,23 +176,41 @@ public final class VoiceListeningService extends Service implements AgentService
                 main.post(() -> {
                     if (sttMode.usesDeepgramStt())
                         deepgramUtterance(text, -1L);
+                    else if (androidBargeInTurn)
+                        androidBargeInUtterance(text);
                 });
             }
             @Override public void onUtterance(String text, long spokenDurationMs) {
                 main.post(() -> {
                     if (sttMode.usesDeepgramStt())
                         deepgramUtterance(text, spokenDurationMs);
+                    else if (androidBargeInTurn)
+                        androidBargeInUtterance(text);
                 });
             }
             @Override public void onSpeechStarted() {
                 main.post(() -> {
                     if (sttMode.usesDeepgramStt())
                         deepgramSpeechStarted();
+                    else if (androidBargeInListening && responding) {
+                        androidBargeInTurn = true;
+                        speechStarted();
+                    }
                 });
             }
             @Override public void onEmptyTurn() {
                 main.post(() -> {
-                    if (!started || sttMode.usesDirectAndroidRecognizer()) return;
+                    if (!started) return;
+                    if (sttMode.usesDirectAndroidRecognizer()) {
+                        if (androidBargeInTurn) {
+                            androidBargeInTurn = false;
+                            userSpeaking = false;
+                            stopAndroidBargeInBridge();
+                            if (!responding && keepListening && microphoneEnabled)
+                                scheduleDefaultSpeechRestart("Listening for follow-up");
+                        }
+                        return;
+                    }
                     boolean waitingForSystem = false;
                     if (transcriptArbiter != null) {
                         transcriptArbiter.deepgramEmptyTurn(activeRecognitionCycle);
@@ -214,7 +233,11 @@ public final class VoiceListeningService extends Service implements AgentService
             @Override public void onInterim(String text) {
                 main.post(() -> {
                     if (started && sttMode.usesDeepgramStt()
-                            && !text.trim().isEmpty()) {
+                            && text != null && !text.trim().isEmpty()) {
+                        userSpeaking = true;
+                        main.removeCallbacks(idleStop);
+                    } else if (started && androidBargeInTurn
+                            && text != null && !text.trim().isEmpty()) {
                         userSpeaking = true;
                         main.removeCallbacks(idleStop);
                     }
@@ -230,7 +253,7 @@ public final class VoiceListeningService extends Service implements AgentService
                             " first_audio_ms=" + firstAudioMs);
                     }
                     boolean canInterrupt = microphoneEnabled
-                        && sttMode.usesDeepgramStt();
+                        && (sttMode.usesDeepgramStt() || androidBargeInListening);
                     showStatus(canInterrupt ? "Speaking · listening for interruption" : "Speaking");
                 });
             }
@@ -258,14 +281,23 @@ public final class VoiceListeningService extends Service implements AgentService
                 main.post(() -> {
                     if (!started) return;
                     showStatus(status);
-                    if (sttMode.usesDeepgramStt()
-                            && (status.startsWith("Microphone") || status.startsWith("Speech recognition"))) {
+                    boolean inputFailure = status.startsWith("Microphone")
+                        || status.startsWith("Speech recognition");
+                    if (sttMode.usesDeepgramStt() && inputFailure) {
                         microphoneEnabled = false;
                         active = false;
                         streamingReady = false;
                         userSpeaking = false;
                         keepListening = false;
                         if (!responding) afterPlayback();
+                    } else if (sttMode.needsDeepgramInterruptionBridge()
+                            && androidBargeInListening && inputFailure && !voice.isCapturing()) {
+                        boolean interruptedTurn = androidBargeInTurn;
+                        androidBargeInListening = false;
+                        androidBargeInTurn = false;
+                        if (interruptedTurn) userSpeaking = false;
+                        if (!responding && keepListening && microphoneEnabled)
+                            scheduleDefaultSpeechRestart("Interruption stream ended · listening again");
                     }
                 });
             }
@@ -337,6 +369,7 @@ public final class VoiceListeningService extends Service implements AgentService
         main.removeCallbacks(idleStop);
         pauseDefaultSpeechForOutput();
         responding = true;
+        startAndroidBargeInBridge();
         activeTurn = null;
         voice.startReply();
         voice.appendReply(currentAnnouncement.message);
@@ -352,7 +385,8 @@ public final class VoiceListeningService extends Service implements AgentService
             showStatus("Listening for follow-up");
             if (!userSpeaking) {
                 if (sttMode.usesDirectAndroidRecognizer()) {
-                    if (!startDefaultSpeechRecognition()) stopSelf();
+                    stopAndroidBargeInBridge();
+                    scheduleDefaultSpeechRestart("Listening for follow-up");
                 } else {
                     if (sttMode.usesHybridArbitration())
                         prepareNextRecognitionTurn();
@@ -382,6 +416,21 @@ public final class VoiceListeningService extends Service implements AgentService
         main.removeCallbacks(idleStop);
         streamingReady = false;
         if (defaultSpeech != null && defaultSpeech.isActive()) defaultSpeech.cancel();
+    }
+
+    private void startAndroidBargeInBridge() {
+        if (!started || !sttMode.needsDeepgramInterruptionBridge()
+                || !microphoneEnabled || voice == null || androidBargeInListening) return;
+        androidBargeInTurn = false;
+        voice.listen();
+        androidBargeInListening = voice.isCapturing();
+    }
+
+    private void stopAndroidBargeInBridge() {
+        if (!sttMode.needsDeepgramInterruptionBridge() || voice == null) return;
+        androidBargeInListening = false;
+        androidBargeInTurn = false;
+        voice.stopListening();
     }
 
     private void defaultSpeechReady() {
@@ -648,6 +697,20 @@ public final class VoiceListeningService extends Service implements AgentService
         acceptTranscriptChoice(choice);
     }
 
+    private void androidBargeInUtterance(String text) {
+        if (!started || !sttMode.needsDeepgramInterruptionBridge()
+                || !androidBargeInListening || !androidBargeInTurn) return;
+        androidBargeInTurn = false;
+        if (text == null || text.trim().isEmpty()) {
+            userSpeaking = false;
+            stopAndroidBargeInBridge();
+            if (!responding && keepListening && microphoneEnabled)
+                scheduleDefaultSpeechRestart("Listening for follow-up");
+            return;
+        }
+        sendUtterance(text);
+    }
+
     private void acceptTranscriptChoice(HybridTranscriptArbiter.Choice choice) {
         if (choice != null) {
             cancelSystemResultFallback();
@@ -698,11 +761,12 @@ public final class VoiceListeningService extends Service implements AgentService
         main.removeCallbacks(idleStop);
         pauseDefaultSpeechForOutput();
         responding = true;
+        startAndroidBargeInBridge();
         activeTurn = UUID.randomUUID().toString();
         utteranceAt = SystemClock.elapsedRealtime();
         firstTokenAt = 0;
         voice.startReply();
-        showStatus(sttMode.usesDirectAndroidRecognizer()
+        showStatus(sttMode.usesDirectAndroidRecognizer() && !androidBargeInListening
             ? "Thinking" : "Thinking · listening for interruption");
         try {
             command(new JSONObject().put("action", "send")
@@ -744,6 +808,8 @@ public final class VoiceListeningService extends Service implements AgentService
         started = false;
         active = false;
         streamingReady = false;
+        androidBargeInListening = false;
+        androidBargeInTurn = false;
         wakeStarted = false;
         systemWakeReadyCuePending = false;
         main.removeCallbacks(idleStop);

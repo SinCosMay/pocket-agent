@@ -41,6 +41,40 @@ public class CodexAuthDeviceTest {
         CredentialStore credentials=new CredentialStore(context());credentials.signOutCodex();
         assertFalse("Account remained signed in after test cleanup",credentials.get().optString("authMode").equals("codex-account"));
     }
+    @Test public void mcpSecretsStayEncryptedAcrossEveryCredentialWritePath() throws Exception {
+        Assume.assumeTrue("Synthetic credential tests require an emulator",CredentialStore.isEmulator());
+        CredentialStore credentials=new CredentialStore(context());JSONObject saved=credentials.get();
+        String bearer="synthetic-mcp-bearer-secret",custom="synthetic-mcp-header-secret";
+        try {
+            JSONObject server=new JSONObject().put("name","Test MCP").put("url","https://mcp.example.test/mcp")
+                    .put("enabled",false).put("authMode","headers").put("headers",new JSONArray()
+                            .put(new JSONObject().put("name","X-First").put("value",custom))
+                            .put(new JSONObject().put("name","X-Second").put("value","second-secret")));
+            credentials.saveMcpServer(server);
+            JSONObject first=credentials.mcpServers().getJSONObject(0);
+            assertFalse(first.getBoolean("enabled"));assertEquals(2,first.getJSONArray("headers").length());
+            credentials.save(new JSONObject().put("authMode","scripted").put("model","scripted"));
+            assertEquals(custom,credentials.mcpServers().getJSONObject(0).getJSONArray("headers").getJSONObject(0).getString("value"));
+            JSONObject synthetic=account("mcp-refresh-before","mcp-provider");credentials.save(synthetic);
+            JSONObject rotated=account("mcp-refresh-after","mcp-provider").put("oldRefreshToken","mcp-refresh-before");
+            credentials.updateCodex(rotated);
+            assertEquals(2,credentials.mcpServers().getJSONObject(0).getJSONArray("headers").length());
+            credentials.signOutCodex();assertEquals("Test MCP",credentials.mcpServers().getJSONObject(0).getString("name"));
+            credentials.saveMcpServer(new JSONObject().put("id",first.getString("id")).put("name","Test MCP")
+                    .put("url","https://mcp.example.test/mcp").put("authMode","bearer").put("bearerToken",bearer));
+            String encrypted=context().getSharedPreferences("provider-secrets",Context.MODE_PRIVATE).getString("encrypted","");
+            assertFalse("MCP bearer token leaked to preferences",encrypted.contains(bearer));
+            assertFalse("MCP custom header leaked to preferences",encrypted.contains(custom));
+        } finally { credentials.save(saved); }
+    }
+    @Test public void startupDiagnosticsRedactAllMcpAuthenticationFormats() throws Exception {
+        JSONObject credentials=new JSONObject().put("mcpServers",new JSONArray()
+                .put(new JSONObject().put("bearerToken","bearer-secret"))
+                .put(new JSONObject().put("headerValue","legacy-secret"))
+                .put(new JSONObject().put("headers",new JSONArray().put(new JSONObject().put("value","custom-secret")))));
+        String result=RuntimeHost.redactMcpStartupSecrets("bearer-secret legacy-secret custom-secret",credentials);
+        assertEquals("[redacted] [redacted] [redacted]",result);
+    }
     @Test public void importEncryptAndSignOut() throws Exception {
         Assume.assumeTrue("Synthetic account tests require an emulator",CredentialStore.isEmulator());
         CredentialStore credentials=new CredentialStore(context());JSONObject saved=credentials.get();

@@ -45,13 +45,16 @@ public final class VoiceSttSettingsDeviceTest {
         assertFalse(android.usesHybridArbitration());
         assertTrue(android.usesDirectAndroidRecognizer());
         assertFalse(android.usesDeepgramStt());
+        assertTrue(android.needsDeepgramInterruptionBridge());
         assertFalse(VoiceSttSettings.thresholdEnabled(android));
 
         VoiceSttSettings.Mode deepgram = VoiceSttSettings.Mode.DEEPGRAM_ONLY;
         assertFalse(deepgram.usesHybridArbitration());
         assertFalse(deepgram.usesDirectAndroidRecognizer());
         assertTrue(deepgram.usesDeepgramStt());
+        assertFalse(deepgram.needsDeepgramInterruptionBridge());
         assertFalse(VoiceSttSettings.thresholdEnabled(deepgram));
+        assertFalse(hybrid.needsDeepgramInterruptionBridge());
     }
 
     @Test public void changingSavedModeIsObservedByTheNextSettingsRead() {

@@ -49,6 +49,7 @@ public final class MainActivity extends Activity implements AgentService.Observe
     private Spinner modelPicker;
     private Spinner reasoningPicker;
     private String modelRequestId;
+    private String mcpRequestId;
     private String[] modelIds = {};
     private final java.util.Map<String, String[]> modelReasoningEfforts = new java.util.HashMap<>();
     private final java.util.Map<String, String> modelDefaultReasoningEfforts = new java.util.HashMap<>();
@@ -166,6 +167,14 @@ public final class MainActivity extends Activity implements AgentService.Observe
             modelPicker.setAdapter(new ArrayAdapter<>(this, android.R.layout.simple_spinner_dropdown_item, labels));
             modelPicker.setSelection(0);
             toast("Discovered " + models.length() + " models");
+        }
+        else if (type.equals("mcp_tools") && event.optString("requestId").equals(mcpRequestId)) {
+            String failure=event.optString("error");
+            if(!failure.isEmpty()){toast("MCP discovery failed · " + failure);return;}
+            JSONObject server=event.optJSONObject("server");JSONArray tools=server==null?null:server.optJSONArray("tools");
+            StringBuilder names=new StringBuilder();
+            if(tools!=null)for(int i=0;i<tools.length();i++){if(i>0)names.append(", ");names.append(tools.optString(i));}
+            toast("Connected · " + (tools==null?0:tools.length()) + " tools" + (names.length()==0?"":" · "+names));
         }
         else if (type.equals("error")) { status.setText("Error · " + event.optString("error", "Runtime unavailable")); }
         else if (type.equals("voice_delivery_error")) { status.setText("Voice error · " + event.optString("error", "Unable to start speech")); }
@@ -535,6 +544,7 @@ public final class MainActivity extends Activity implements AgentService.Observe
         panel.addView(button("Enable Shizuku virtual displays", this::enableVirtualDisplays));
         panel.addView(button("Notification access settings", () -> startActivity(new Intent(Settings.ACTION_NOTIFICATION_LISTENER_SETTINGS))));
         panel.addView(button("Choose phone permissions", this::permissions));
+        panel.addView(button("Remote MCP servers", this::mcpSettings));
         panel.addView(text("Speech-to-text mode"));
         Spinner sttMode = new Spinner(this);
         String[] sttModeNames = {
@@ -587,7 +597,7 @@ public final class MainActivity extends Activity implements AgentService.Observe
             thresholdReset.setAlpha(hybrid ? 1.0f : 0.45f);
             updateShortThreshold.accept(shortThreshold.getProgress());
             if (selectedMode == VoiceSttSettings.Mode.ANDROID_DEFAULT_ONLY) {
-                sttModeHelp.setText("Android default only uses the phone's normal system SpeechRecognizer with its own microphone, matching the standalone test path. Deepgram STT and hybrid arbitration are disabled; Deepgram is still used for speech synthesis. After Hey Jarvis, speak after the ready beep so the system recognizer owns the microphone.");
+                sttModeHelp.setText("Android default only uses the phone's normal system SpeechRecognizer for normal turns, matching the standalone test path. Hybrid arbitration stays disabled. While Pocket Agent is thinking or speaking, Deepgram Flux temporarily provides full-duplex barge-in so you can interrupt without waiting for playback to finish; an interrupted utterance is completed on that same stream before Android recognition resumes.");
             } else if (selectedMode == VoiceSttSettings.Mode.DEEPGRAM_ONLY) {
                 sttModeHelp.setText("Deepgram only uses the existing streaming Deepgram STT path. Android recognition, parallel arbitration, and the switch threshold are disabled.");
             } else {
@@ -750,6 +760,68 @@ public final class MainActivity extends Activity implements AgentService.Observe
             }
         });
         dialog.show();
+    }
+    private void mcpSettings() {
+        if (activeWork()) { toast("Stop active work before changing MCP servers"); return; }
+        CredentialStore credentials=new CredentialStore(this);
+        try {
+            JSONArray saved=credentials.mcpServers();
+            String[] labels=new String[saved.length()+1];labels[0]="Add remote MCP server";
+            for(int i=0;i<saved.length();i++){
+                JSONObject server=saved.optJSONObject(i);
+                labels[i+1]=(server==null?"MCP server":server.optString("name"))+" · "+(server==null?"":server.optString("url"));
+            }
+            new AlertDialog.Builder(this).setTitle("Remote MCP servers").setItems(labels,(dialog,which)->{
+                if(which==0){editMcpServer(credentials,null);return;}
+                JSONObject server=saved.optJSONObject(which-1);if(server==null)return;
+                String[] actions={"Edit", "Test and discover tools", "Delete"};
+                new AlertDialog.Builder(this).setTitle(server.optString("name")).setItems(actions,(actionDialog,action)->{
+                    if(action==0)editMcpServer(credentials,server);
+                    else if(action==1){mcpRequestId=Long.toHexString(System.nanoTime());command(json("action","mcp_discover","requestId",mcpRequestId,"serverId",server.optString("id")));toast("Connecting to MCP server…");}
+                    else try {if(activeWork()){toast("Stop active work before changing MCP servers");return;}credentials.deleteMcpServer(server.optString("id"));if(AgentService.isRunning())command(json("action","mcp_reload"));toast("MCP server removed");}
+                    catch(Exception error){toast("Could not remove MCP server");}
+                }).show();
+            }).setNegativeButton("Close",null).show();
+        } catch(Exception error){toast("Could not read protected MCP settings");}
+    }
+    private void editMcpServer(CredentialStore credentials,JSONObject existing) {
+        LinearLayout panel=column();panel.setPadding(dp(18),dp(8),dp(18),0);
+        EditText name=field(panel,"Server name",existing==null?"":existing.optString("name"));
+        EditText url=field(panel,"MCP URL (HTTPS)",existing==null?"":existing.optString("url"));url.setInputType(InputType.TYPE_CLASS_TEXT|InputType.TYPE_TEXT_VARIATION_URI);
+        android.widget.CheckBox enabled=new android.widget.CheckBox(this);enabled.setText("Enabled");enabled.setChecked(existing==null||existing.optBoolean("enabled",true));panel.addView(enabled);
+        Spinner auth=new Spinner(this);auth.setAdapter(new android.widget.ArrayAdapter<>(this,android.R.layout.simple_spinner_dropdown_item,new String[]{"None","Bearer token","Custom headers"}));
+        String savedMode=existing==null?"none":existing.optString("authMode",existing.has("headerName")?"headers":"none");auth.setSelection(savedMode.equals("bearer")?1:savedMode.equals("headers")?2:0);panel.addView(text("Authentication"));panel.addView(auth);
+        EditText bearer=new EditText(this);bearer.setSingleLine(true);bearer.setHint(existing!=null&&!existing.optString("bearerToken").isEmpty()?"Saved encrypted token · blank keeps it":"Server-issued token");bearer.setInputType(InputType.TYPE_CLASS_TEXT|InputType.TYPE_TEXT_VARIATION_PASSWORD);bearer.setSaveEnabled(false);bearer.setImportantForAutofill(View.IMPORTANT_FOR_AUTOFILL_NO_EXCLUDE_DESCENDANTS);panel.addView(bearer);
+        LinearLayout headers=column();panel.addView(headers);java.util.ArrayList<EditText[]> headerRows=new java.util.ArrayList<>();JSONArray oldHeaders=existing==null?new JSONArray():existing.optJSONArray("headers");
+        if(oldHeaders==null){oldHeaders=new JSONArray();if(existing!=null&&existing.has("headerName"))oldHeaders.put(json("name",existing.optString("headerName"),"value",existing.optString("headerValue")));}
+        final JSONArray priorHeaders=oldHeaders;
+        Runnable addHeader=()->{if(headerRows.size()>=8){toast("Up to 8 custom headers");return;}LinearLayout row=column();EditText key=field(row,"Header name","");EditText secret=field(row,"Header value · blank keeps saved value","");secret.setInputType(InputType.TYPE_CLASS_TEXT|InputType.TYPE_TEXT_VARIATION_PASSWORD);secret.setSaveEnabled(false);secret.setImportantForAutofill(View.IMPORTANT_FOR_AUTOFILL_NO_EXCLUDE_DESCENDANTS);headerRows.add(new EditText[]{key,secret});headers.addView(row);};
+        if(savedMode.equals("headers"))for(int i=0;i<priorHeaders.length();i++){JSONObject h=priorHeaders.optJSONObject(i);addHeader.run();if(h!=null){EditText[] row=headerRows.get(headerRows.size()-1);row[0].setText(h.optString("name"));row[1].setHint("Saved encrypted value · blank keeps it");}}
+        panel.addView(button("Add custom header",addHeader));
+        Runnable updateAuth=()->{int mode=auth.getSelectedItemPosition();bearer.setVisibility(mode==1?View.VISIBLE:View.GONE);headers.setVisibility(mode==2?View.VISIBLE:View.GONE);};auth.setOnItemSelectedListener(new android.widget.AdapterView.OnItemSelectedListener(){public void onItemSelected(android.widget.AdapterView<?> p,View v,int pos,long id){updateAuth.run();}public void onNothingSelected(android.widget.AdapterView<?> p){}});updateAuth.run();
+        panel.addView(text("Leave a saved secret blank to keep it encrypted. Custom headers support up to 8 pairs."));
+        panel.addView(text("Remote tools can receive conversation details sent by the model. Connect only servers you trust."));
+        AlertDialog dialog=new AlertDialog.Builder(this).setTitle(existing==null?"Add MCP server":"Edit MCP server").setView(panel).setNegativeButton("Cancel",null).setPositiveButton("Save",null).create();
+        dialog.setOnShowListener(ignored->dialog.getButton(AlertDialog.BUTTON_POSITIVE).setOnClickListener(view->{
+            try {
+                if(activeWork())throw new IllegalStateException("Stop active work before changing MCP servers");
+                int authIndex=auth.getSelectedItemPosition();String authMode=authIndex==1?"bearer":authIndex==2?"headers":"none";
+                JSONObject config=new JSONObject().put("name",name.getText().toString()).put("url",url.getText().toString()).put("enabled",enabled.isChecked()).put("authMode",authMode);
+                if(existing!=null)config.put("id",existing.optString("id"));
+                if(authMode.equals("bearer")){
+                    String token=bearer.getText().toString();if(token.isEmpty()&&existing!=null&&savedMode.equals("bearer"))token=existing.optString("bearerToken");
+                    if(!token.isEmpty())config.put("bearerToken",token);
+                }else if(authMode.equals("headers")){
+                    JSONArray values=new JSONArray();
+                    for(EditText[] row:headerRows){String headerName=row[0].getText().toString().trim(),headerValue=row[1].getText().toString();if(headerName.isEmpty())continue;
+                        if(headerValue.isEmpty())for(int i=0;i<priorHeaders.length();i++){JSONObject old=priorHeaders.optJSONObject(i);if(old!=null&&old.optString("name").equalsIgnoreCase(headerName)){headerValue=old.optString("value");break;}}
+                        values.put(json("name",headerName,"value",headerValue));}
+                    config.put("headers",values);
+                }
+                credentials.saveMcpServer(config);if(AgentService.isRunning())command(json("action","mcp_reload"));
+                dialog.dismiss();toast("MCP server saved encrypted");
+            } catch(Exception error){toast(error instanceof IllegalArgumentException||error instanceof IllegalStateException?error.getMessage():"Could not save MCP server");}
+        }));dialog.show();
     }
     private void voiceKeySettings() {
         EditText key = new EditText(this);
