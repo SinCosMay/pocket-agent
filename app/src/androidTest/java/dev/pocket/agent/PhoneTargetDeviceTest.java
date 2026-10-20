@@ -47,13 +47,18 @@ public class PhoneTargetDeviceTest {
         }
         throw new AssertionError("Missing display state: "+expected);
     }
-    private boolean activeRootOnDisplay(int displayId) {
+    private boolean activeRootOnDisplay(int displayId) {return activeRootOnDisplay(displayId,0);}
+    private boolean activeRootOnDisplay(int displayId,int type) {
         AccessibilityNodeInfo root=automation.getRootInActiveWindow();
         if(root==null)return false;
+        AccessibilityWindowInfo window=null;
         try {
-            AccessibilityWindowInfo window=root.getWindow();
-            return window!=null&&window.getDisplayId()==displayId;
-        } finally {root.recycle();}
+            window=root.getWindow();
+            return window!=null&&window.getDisplayId()==displayId&&(type==0||window.getType()==type);
+        } finally {
+            if(window!=null)window.recycle();
+            root.recycle();
+        }
     }
 
     private final class Chooser implements AutoCloseable {
@@ -184,6 +189,37 @@ public class PhoneTargetDeviceTest {
             assertTrue(physicalObservation.nodes().stream().anyMatch(n->n.text().equals("STATUS_READY")));
             assertFalse(physicalObservation.nodes().stream().anyMatch(n->n.text().startsWith("CHOOSER_")));
         } finally {physical.release();}
+    }
+
+    @Test public void physicalBackendObservesActiveSystemWindow() throws Exception {
+        Assume.assumeTrue(android.os.Build.VERSION.SDK_INT>=33);
+        DeviceTestAccess.ensureAccessibility();
+        AccessibilityProxyBackend physical=new AccessibilityProxyBackend(context,Display.DEFAULT_DISPLAY);
+        try {
+            shell("cmd statusbar expand-notifications");
+            long deadline=System.currentTimeMillis()+4000;
+            while(System.currentTimeMillis()<deadline
+                &&!activeRootOnDisplay(Display.DEFAULT_DISPLAY,AccessibilityWindowInfo.TYPE_SYSTEM))Thread.sleep(50);
+            assertTrue("Notification shade never became the active physical system window",
+                activeRootOnDisplay(Display.DEFAULT_DISPLAY,AccessibilityWindowInfo.TYPE_SYSTEM));
+
+            Observation observation=null;
+            deadline=System.currentTimeMillis()+4000;
+            while(System.currentTimeMillis()<deadline) {
+                try {
+                    observation=physical.observe(false,720,200);
+                    if("com.android.systemui".equals(observation.packageName()))break;
+                } catch(ControlException e) {
+                    if(e.code!=ControlException.Code.NOT_READY&&e.code!=ControlException.Code.STALE_OBSERVATION)throw e;
+                }
+                Thread.sleep(100);
+            }
+            assertNotNull("Physical system-window observation was never returned",observation);
+            assertEquals("Physical observation must follow the visible system window","com.android.systemui",observation.packageName());
+        } finally {
+            try {shell("cmd statusbar collapse");} catch(Exception ignored) {}
+            physical.release();
+        }
     }
 
     @Test public void workerTaskDoesNotMigrateIntoPhysicalRecentsWhenDisplayIsReleased() throws Exception {

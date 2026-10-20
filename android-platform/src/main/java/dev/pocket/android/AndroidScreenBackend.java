@@ -101,11 +101,17 @@ public final class AndroidScreenBackend implements ControlBackend {
         }
         return ((WindowManager) service.getSystemService(Context.WINDOW_SERVICE)).getMaximumWindowMetrics().getBounds();
     }
-    private AccessibilityNodeInfo applicationRoot(List<AccessibilityWindowInfo> windows,boolean activeOnly) {
+    private static boolean controllableWindow(AccessibilityWindowInfo window) {
+        int type=window.getType();
+        return type==AccessibilityWindowInfo.TYPE_APPLICATION||type==AccessibilityWindowInfo.TYPE_SYSTEM;
+    }
+    private AccessibilityNodeInfo windowRoot(List<AccessibilityWindowInfo> windows,boolean active,boolean focused,int type) {
         if(windows==null)return null;
         for(AccessibilityWindowInfo window:windows) {
-            if(window.getType()!=AccessibilityWindowInfo.TYPE_APPLICATION)continue;
-            if(activeOnly&&!window.isActive()&&!window.isFocused())continue;
+            if(!controllableWindow(window))continue;
+            if(active&&!window.isActive())continue;
+            if(focused&&!window.isFocused())continue;
+            if(type!=0&&window.getType()!=type)continue;
             AccessibilityNodeInfo candidate=window.getRoot();
             if(candidate!=null)return candidate;
         }
@@ -115,8 +121,10 @@ public final class AndroidScreenBackend implements ControlBackend {
         if (android.os.Build.VERSION.SDK_INT>=33) service.clearCache();
         SparseArray<List<AccessibilityWindowInfo>> all=service.getWindowsOnAllDisplays();
         List<AccessibilityWindowInfo> windows=all==null?null:all.get(displayId);
-        AccessibilityNodeInfo root=applicationRoot(windows,true);
-        if(root==null)root=applicationRoot(windows,false);
+        AccessibilityNodeInfo root=windowRoot(windows,true,false,0);
+        if(root==null)root=windowRoot(windows,false,true,0);
+        if(root==null)root=windowRoot(windows,false,false,AccessibilityWindowInfo.TYPE_APPLICATION);
+        if(root==null)root=windowRoot(windows,false,false,AccessibilityWindowInfo.TYPE_SYSTEM);
         if(root!=null && android.os.Build.VERSION.SDK_INT<33 && !root.refresh()) {root.recycle();return null;}
         return root;
     }
