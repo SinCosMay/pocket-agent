@@ -32,15 +32,34 @@ test('Pi validates the full mutation ID contract before dispatch; historical rec
  assert.equal(validateToolArguments(lookup,{type:'toolCall',id:'history-call',name:lookup.name,arguments:{operation_id:'old-history-id'}}).operation_id,'old-history-id');
 });
 
-test('runtime redacts bearer and every custom or legacy MCP secret',()=>{
+test('runtime redacts bearer and every custom or legacy MCP secret without corrupting JSON',()=>{
  const bridge=new Bridge();bridge.credentials={authMode:'scripted',mcpServers:[
   {id:'one',bearerToken:'bearer-secret'},
-  {id:'two',headers:[{name:'X-Key',value:'custom-secret'}]},
+  {id:'two',headers:[{name:'X-Key',value:'1'},{name:'X-Escaped',value:'a"b'}]},
   {id:'three',headerValue:'legacy-secret'},
  ]};
  const runtime=new PocketRuntime(bridge);
- const redacted=(runtime as any).redact('bearer-secret custom-secret legacy-secret');
- assert.equal(redacted,'[redacted] [redacted] [redacted]');
+ const redacted=(runtime as any).redact('bearer-secret 1 a"b legacy-secret');
+ assert.equal(redacted,'[redacted] [redacted] [redacted] [redacted]');
+ const encoded=(runtime as any).redactJson({value:'order 1 says a"b',nested:['legacy-secret']});
+ assert.deepEqual(JSON.parse(encoded),{value:'order [redacted] says [redacted]',nested:['[redacted]']});
+ assert.doesNotThrow(()=>runtime.publish());
+ assert.doesNotThrow(()=>runtime.save());
+ assert.ok(bridge.events.length>0);
+});
+
+test('MCP reload updates only MCP settings and preserves provider session state',()=>{
+ const bridge=new Bridge();bridge.credentials={authMode:'scripted',model:'stored-model',mcpServers:[]};
+ const runtime=new PocketRuntime(bridge);
+ const credentials=(runtime as any).credentials;
+ (runtime as any).config={...(runtime as any).config,model:'session-override'};
+ bridge.credentials={authMode:'scripted',model:'new-stored-model',mcpServers:[{id:'disabled',name:'Disabled',url:'https://mcp.example.test/mcp',enabled:false,authMode:'none'}]};
+ const result=JSON.parse(runtime.dispatch(JSON.stringify({action:'mcp_reload'})));
+ assert.equal(result.ok,true);
+ assert.equal((runtime as any).credentials,credentials);
+ assert.equal(runtime.state().provider.model,'session-override');
+ assert.equal((runtime as any).credentials.model,'stored-model');
+ assert.equal((runtime as any).credentials.mcpServers[0].id,'disabled');
 });
 
 test('MCP reload is rejected before changes can apply during active work',()=>{
