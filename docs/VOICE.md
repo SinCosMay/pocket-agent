@@ -10,10 +10,12 @@ Deepgram receives live PCM from the first sample and, on Android 13+, the same P
 an available Android system recognizer without opening a second microphone. Its switch threshold is
 configurable from Settings and defaults to three seconds. Flux word timestamps are the preferred
 spoken-duration measurement; Android wins below the threshold when available and Deepgram wins at
-or above it. **Android default only** disables Deepgram STT and hybrid arbitration and lets the
-normal system `SpeechRecognizer` own the microphone, matching the standalone Android test path.
-**Deepgram only** disables Android recognition and threshold logic. Deepgram TTS remains common to
-all three modes.
+or above it. **Android default only** keeps the normal system `SpeechRecognizer` as the
+transcript source for ordinary turns, matching the standalone Android test path, and keeps hybrid
+arbitration disabled. While Pocket Agent is thinking or speaking, Flux temporarily owns the
+microphone as a full-duplex interruption bridge; if the user barges in, that stream finishes the
+interrupted utterance before Android recognition resumes. **Deepgram only** disables Android
+recognition and threshold logic. Deepgram TTS remains common to all three modes.
 A nonempty selected transcript, after any wake-word prefix is removed, is submitted as **one normal main-agent user message**; wake-word-only turns are ignored. Only
 text deltas produced in that particular main response are sent to Deepgram streaming
 TTS. Subsequent Pi9 worker completion messages and ordinary text messages remain
