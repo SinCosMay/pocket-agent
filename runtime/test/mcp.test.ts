@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { McpToolRegistry, mcpAuthHeaders, normalizeMcpSchema, validateMcpServer } from '../src/mcp.js';
+import { McpToolRegistry, boundMcpJsonResponse, mcpAuthHeaders, normalizeMcpSchema, validateMcpServer } from '../src/mcp.js';
 import { PocketRuntime, type NativeBridge } from '../src/runtime.js';
 import { delay } from '../src/scripted.js';
 
@@ -30,6 +30,27 @@ test('tool schemas are bounded object schemas',()=>{
   assert.deepEqual(normalizeMcpSchema({}),{type:'object',properties:{}});
   assert.throws(()=>normalizeMcpSchema({type:'array'}),/object schema/);
   assert.throws(()=>normalizeMcpSchema({description:'x'.repeat(17_000)}),/16 KB/);
+});
+
+test('JSON transport responses are byte bounded even without Content-Length',async()=>{
+  const small=await boundMcpJsonResponse(new Response(JSON.stringify({ok:true}),{headers:{'content-type':'application/json'}}));
+  assert.deepEqual(await small.json(),{ok:true});
+  const stream=new ReadableStream<Uint8Array>({start(controller){controller.enqueue(new Uint8Array(2*1024*1024));controller.enqueue(new Uint8Array(2*1024*1024+1));controller.close();}});
+  await assert.rejects(boundMcpJsonResponse(new Response(stream,{headers:{'content-type':'application/json'}})),/exceeds 4 MB/);
+  const text=new Response('x'.repeat(128),{headers:{'content-type':'text/plain'}});
+  assert.equal(await (await boundMcpJsonResponse(text)).text(),'x'.repeat(128));
+});
+
+test('registry close is bounded during a pending refresh and closes a late client',async()=>{
+  let release!:()=>void,closeCount=0;
+  const gate=new Promise<void>(resolve=>{release=resolve;});
+  const registry=new McpToolRegistry(undefined,async()=>{await gate;return {client:{close:async()=>{closeCount++;},callTool:async()=>({content:[]})},tools:[]} as any;});
+  const refresh=registry.refresh([server()]);
+  await delay(10);
+  const started=Date.now();await registry.close();
+  assert.ok(Date.now()-started<800,'close should not wait for a slow MCP refresh');
+  release();await refresh;
+  assert.equal(closeCount,1);
 });
 
 test('registry exposes bounded, redacted remote tools and closes clients on refresh',async()=>{
@@ -110,7 +131,7 @@ test('Pi runtime keeps native tools and adds a namespaced MCP tool with redacted
   };
   let closeCount=0;
   const runtime=new PocketRuntime(bridge,undefined,async()=>({
-    client:{close:async()=>{closeCount++;},callTool:async(_name,args)=>({content:[{type:'text',text:`result ${JSON.stringify(args)} secret-token`}],isError:false})},
+    client:{close:async()=>{closeCount++;},callTool:async(_name,args)=>({content:[{type:'text',text:`result ${JSON.stringify(args)} ${'x'.repeat(3000)} secret-token`}],isError:false})},
     tools:[{name:'lookup/search',title:'Search',inputSchema:{type:'object',properties:{query:{type:'string'}}}}],
   } as any));
   const deadline=Date.now()+2000;
@@ -126,6 +147,7 @@ test('Pi runtime keeps native tools and adds a namespaced MCP tool with redacted
   const result=await remote.execute('call-1',{query:'example'});
   assert.equal(result.isError,false);
   assert.match(result.content[0].text,/\[redacted\]/);
+  assert.ok(result.content[0].text.length>3000,'runtime must not truncate MCP text at the generic 2 KB sanitizer limit');
   assert.doesNotMatch(JSON.stringify(result),/secret-token/);
   assert.doesNotThrow(()=>JSON.stringify(result));
   runtime.dispatch(JSON.stringify({action:'prepare_shutdown'}));
