@@ -38,6 +38,12 @@ on:
       - 'app/src/androidTest/java/dev/pocket/agent/HybridSttDeviceTest.java'
       - 'app/src/androidTest/java/dev/pocket/agent/VoiceSttSettingsDeviceTest.java'
   workflow_dispatch:
+    inputs:
+      live_only:
+        description: Run only the cheap live Deepgram barge-in probe
+        required: false
+        default: true
+        type: boolean
 permissions:
   contents: read
 concurrency:
@@ -54,15 +60,21 @@ jobs:
           python3 -m pip install --disable-pip-version-check --quiet aiohttp==3.13.5
           python3 scripts/live_deepgram_barge_in.py | tee live-deepgram-barge-in.json
       - uses: actions/setup-java@v4
+        if: github.event_name != 'workflow_dispatch' || inputs.live_only != true
         with:
           distribution: temurin
           java-version: '17'
       - uses: android-actions/setup-android@v4
-      - run: sdkmanager 'platforms;android-36' 'build-tools;36.0.0' 'ndk;27.2.12479018'
+        if: github.event_name != 'workflow_dispatch' || inputs.live_only != true
+      - if: github.event_name != 'workflow_dispatch' || inputs.live_only != true
+        run: sdkmanager 'platforms;android-36' 'build-tools;36.0.0' 'ndk;27.2.12479018'
       - uses: gradle/actions/setup-gradle@v4
+        if: github.event_name != 'workflow_dispatch' || inputs.live_only != true
       - name: Allow hardware-assisted emulator execution
+        if: github.event_name != 'workflow_dispatch' || inputs.live_only != true
         run: sudo chmod 666 /dev/kvm
       - name: Test local Jarvis inference and delayed Deepgram microphone capture
+        if: github.event_name != 'workflow_dispatch' || inputs.live_only != true
         uses: reactivecircus/android-emulator-runner@v2
         with:
           api-level: 35
