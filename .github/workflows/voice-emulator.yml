@@ -4,6 +4,7 @@ on:
     paths:
       - '.github/workflows/voice-emulator.yml'
       - '.github/scripts/run-voice-emulator-tests.sh'
+      - 'scripts/live_deepgram_barge_in.py'
       - 'gradlew'
       - 'gradle/**'
       - 'gradle.properties'
@@ -39,12 +40,19 @@ on:
   workflow_dispatch:
 permissions:
   contents: read
+concurrency:
+  group: voice-emulator-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
 jobs:
   capture:
     runs-on: ubuntu-24.04
     timeout-minutes: 35
     steps:
       - uses: actions/checkout@v4
+      - name: Verify live Deepgram barge-in protocol
+        run: |
+          python3 -m pip install --disable-pip-version-check --quiet aiohttp==3.13.5
+          python3 scripts/live_deepgram_barge_in.py | tee live-deepgram-barge-in.json
       - uses: actions/setup-java@v4
         with:
           distribution: temurin
@@ -70,5 +78,6 @@ jobs:
           path: |
             app/build/outputs/androidTest-results/connected/
             app/build/outputs/voice-emulator-test-evidence/
+            live-deepgram-barge-in.json
           retention-days: 30
           if-no-files-found: ignore
