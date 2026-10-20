@@ -101,19 +101,22 @@ public final class AndroidScreenBackend implements ControlBackend {
         }
         return ((WindowManager) service.getSystemService(Context.WINDOW_SERVICE)).getMaximumWindowMetrics().getBounds();
     }
+    private AccessibilityNodeInfo applicationRoot(List<AccessibilityWindowInfo> windows,boolean activeOnly) {
+        if(windows==null)return null;
+        for(AccessibilityWindowInfo window:windows) {
+            if(window.getType()!=AccessibilityWindowInfo.TYPE_APPLICATION)continue;
+            if(activeOnly&&!window.isActive()&&!window.isFocused())continue;
+            AccessibilityNodeInfo candidate=window.getRoot();
+            if(candidate!=null)return candidate;
+        }
+        return null;
+    }
     private AccessibilityNodeInfo freshRoot() {
         if (android.os.Build.VERSION.SDK_INT>=33) service.clearCache();
-        AccessibilityNodeInfo root=null;
-        if(displayId==Display.DEFAULT_DISPLAY)root=service.getRootInActiveWindow();
-        else {
-            SparseArray<List<AccessibilityWindowInfo>> all=service.getWindowsOnAllDisplays();
-            List<AccessibilityWindowInfo> windows=all==null?null:all.get(displayId);
-            if(windows!=null)for(AccessibilityWindowInfo window:windows){
-                if(window.getType()!=AccessibilityWindowInfo.TYPE_APPLICATION)continue;
-                AccessibilityNodeInfo candidate=window.getRoot();
-                if(candidate!=null){root=candidate;break;}
-            }
-        }
+        SparseArray<List<AccessibilityWindowInfo>> all=service.getWindowsOnAllDisplays();
+        List<AccessibilityWindowInfo> windows=all==null?null:all.get(displayId);
+        AccessibilityNodeInfo root=applicationRoot(windows,true);
+        if(root==null)root=applicationRoot(windows,false);
         if(root!=null && android.os.Build.VERSION.SDK_INT<33 && !root.refresh()) {root.recycle();return null;}
         return root;
     }
