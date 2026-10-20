@@ -1,13 +1,27 @@
 import { McpClient, StreamableHttpTransport, toLlmContent, type ListToolsResult, type Tool } from '@earendil-works/pi-mcp';
 import { Type } from 'typebox';
 
-const MAX_SERVERS=10, MAX_TOOLS=100, MAX_TEXT=32_000, MAX_IMAGE=2_000_000;
+const MAX_SERVERS=10, MAX_TOOLS=100, MAX_TEXT=32_000, MAX_IMAGE=2_000_000, MAX_JSON_RESPONSE=4*1024*1024;
 type McpHeader={name:string,value:string};
 type McpServer={id:string,name:string,url:string,enabled?:boolean,authMode?:'none'|'bearer'|'headers',bearerToken?:string,headers?:McpHeader[],headerName?:string,headerValue?:string};
 type RemoteClient=Pick<McpClient,'close'|'callTool'>;
 type Entry={server:McpServer,client:RemoteClient,tools:Tool[]};
 export type McpConnector=(server:McpServer)=>Promise<{client:RemoteClient,tools:Tool[]}>;
 const safeIdentifier=(value:string)=>value.replace(/[^A-Za-z0-9_-]/g,'_').slice(0,40)||'tool';
+const delay=(ms:number)=>new Promise<void>(resolve=>setTimeout(resolve,ms));
+export async function boundMcpJsonResponse(response:Response):Promise<Response> {
+  const contentType=(response.headers.get('content-type')??'').toLowerCase();
+  if(!response.body||(!contentType.includes('application/json')&&!contentType.includes('+json')))return response;
+  const declared=Number(response.headers.get('content-length'));
+  if(Number.isFinite(declared)&&declared>MAX_JSON_RESPONSE){await response.body.cancel().catch(()=>{});throw new Error('MCP JSON response exceeds 4 MB');}
+  const reader=response.body.getReader(),chunks:Uint8Array[]=[];let size=0;
+  try {
+    while(true){const next=await reader.read();if(next.done)break;size+=next.value.byteLength;if(size>MAX_JSON_RESPONSE){await reader.cancel().catch(()=>{});throw new Error('MCP JSON response exceeds 4 MB');}chunks.push(next.value);}
+  } catch(error) {try{await reader.cancel();}catch{}throw error;}
+  const body=new Uint8Array(size);let offset=0;for(const chunk of chunks){body.set(chunk,offset);offset+=chunk.byteLength;}
+  return new Response(body,{status:response.status,statusText:response.statusText,headers:response.headers});
+}
+async function remoteFetch(input:RequestInfo|URL,init?:RequestInit):Promise<Response>{return boundMcpJsonResponse(await fetch(input,{...init,redirect:'error'}));}
 async function listBoundedTools(client:McpClient):Promise<Tool[]> {
   const tools:Tool[]=[],cursors=new Set<string>();let cursor:string|undefined,pages=0;
   do {
@@ -71,15 +85,27 @@ export class McpToolRegistry {
   private dynamic:any[]=[];
   private errors=new Map<string,string>();
   private refreshQueue:Promise<void>=Promise.resolve();
+  private connecting=new Set<RemoteClient>();
+  private closed=false;
   constructor(private readonly sanitize:(value:string)=>string=(value)=>value,
       private readonly connector?: McpConnector){}
   get tools():any[]{return this.dynamic;}
   get toolNames():string[]{return this.dynamic.map(tool=>tool.name);}
   status():any[]{return this.entries.map(entry=>({id:entry.server.id,name:entry.server.name,tools:entry.tools.map(tool=>tool.name)}));}
   errorsForSettings():any[]{return [...this.errors].map(([id,error])=>({id,error}));}
-  async close():Promise<void>{await this.refreshQueue;await this.closeEntries();}
-  private async closeEntries():Promise<void>{const entries=this.entries;this.entries=[];this.dynamic=[];this.errors.clear();await Promise.allSettled(entries.map(entry=>entry.client.close()));}
+  async close():Promise<void>{
+    this.closed=true;
+    const current=[...this.connecting,...this.entries.map(entry=>entry.client)];
+    this.entries=[];this.dynamic=[];this.errors.clear();
+    await Promise.race([Promise.allSettled(current.map(client=>client.close())),delay(250)]);
+    await Promise.race([this.refreshQueue,delay(250)]);
+    const late=[...this.connecting,...this.entries.map(entry=>entry.client)];
+    this.entries=[];this.dynamic=[];this.errors.clear();
+    await Promise.race([Promise.allSettled(late.map(client=>client.close())),delay(250)]);
+  }
+  private async closeEntries():Promise<void>{const entries=this.entries;this.entries=[];this.dynamic=[];this.errors.clear();await Promise.race([Promise.allSettled(entries.map(entry=>entry.client.close())),delay(500)]);}
   refresh(configs:McpServer[]):Promise<void>{
+    if(this.closed)return Promise.resolve();
     const snapshot=Array.isArray(configs)?configs.map(server=>({...server})):configs;
     const pending=this.refreshQueue.then(()=>this.refreshNow(snapshot));
     this.refreshQueue=pending.catch(()=>{});
@@ -87,6 +113,7 @@ export class McpToolRegistry {
   }
   private async refreshNow(configs:McpServer[]):Promise<void>{
     await this.closeEntries();
+    if(this.closed)return;
     if(!Array.isArray(configs)||configs.length>MAX_SERVERS)throw new Error('MCP server limit exceeded');
     const names=new Set<string>();
     for(const raw of configs) {
@@ -97,24 +124,28 @@ export class McpToolRegistry {
         let client:RemoteClient|undefined,tools:Tool[];
         try {
           if(server.enabled===false)continue;
-          if(this.connector){const connected=await this.connector(server);client=connected.client;tools=connected.tools;}
+          if(this.connector){const connected=await this.connector(server);client=connected.client;tools=connected.tools;if(this.closed){await client.close().catch(()=>{});return;}}
           else {
             const headers=mcpAuthHeaders(server);
             const liveClient=new McpClient({name:'Pocket Agent',version:'0.1.0',requestTimeoutMs:15000});
-            client=liveClient;
-            await liveClient.connect(new StreamableHttpTransport({url:server.url,headers,openGetStream:false,maxMessageBytes:1_000_000,fetch:(input,init)=>fetch(input,{...init,redirect:'error'})}));
+            client=liveClient;this.connecting.add(liveClient);
+            await liveClient.connect(new StreamableHttpTransport({url:server.url,headers,openGetStream:false,maxMessageBytes:1_000_000,fetch:remoteFetch}));
+            if(this.closed){this.connecting.delete(liveClient);await liveClient.close().catch(()=>{});return;}
             tools=await listBoundedTools(liveClient);
+            if(this.closed){this.connecting.delete(liveClient);await liveClient.close().catch(()=>{});return;}
           }
           if(tools.length>MAX_TOOLS)throw new Error(`MCP server advertises more than ${MAX_TOOLS} tools`);
           for(const tool of tools)normalizeMcpSchema(tool.inputSchema);
+          if(this.closed){if(client)await client.close().catch(()=>{});return;}
+          if(client)this.connecting.delete(client);
           this.entries.push({server,client:client!,tools});
-        } catch(error) { if(client)await client.close().catch(()=>{}); throw error; }
+        } catch(error) { if(client){this.connecting.delete(client);await client.close().catch(()=>{});} if(this.closed)return; throw error; }
       } catch(error) {
         const message=this.sanitize(String((error as any)?.message??'MCP connection failed')).slice(0,300);
         this.errors.set(server.id,message||'MCP connection failed');
       }
     }
-    this.dynamic=this.createTools();
+    if(!this.closed)this.dynamic=this.createTools();
   }
   private createTools():any[]{
     const used=new Set<string>();
