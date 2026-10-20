@@ -69,7 +69,8 @@ export class PocketRuntime {
   private cachedModels?:{at:number,models:CatalogModel[]};
   private readonly workerReasoningProofs=new Map<string,{model:string,levels:ReasoningEffort[]}>();
   private catalogEpoch=0;
-  private redact=(text:string)=>{for(const credentials of this.credentialHistory){text=redactProviderSecrets(text,credentials);for(const server of credentials.mcpServers??[]){const secrets=[server?.bearerToken,server?.headerValue,...(Array.isArray(server?.headers)?server.headers.map((header:any)=>header?.value):[])];for(let secret of secrets)if(typeof secret==='string'&&secret){text=text.replaceAll(secret,'[redacted]');secret=secret.replace(/^(?:Bearer|Basic)\s+/i,'');if(secret)text=text.replaceAll(secret,'[redacted]');}}}return text;};
+  private redact=(text:string)=>{for(const credentials of this.credentialHistory){text=redactProviderSecrets(text,credentials);for(const server of credentials.mcpServers??[]){const secrets=[server?.bearerToken,server?.headerValue,...(Array.isArray(server?.headers)?server.headers.map((header:any)=>header?.value):[])];const variants=new Set<string>();for(const raw of secrets)if(typeof raw==='string'&&raw){for(const secret of [raw,raw.replace(/^(?:Bearer|Basic)\s+/i,'')])if(secret){variants.add(secret);variants.add(JSON.stringify(secret).slice(1,-1));}}for(const secret of [...variants].sort((a,b)=>b.length-a.length))text=text.replaceAll(secret,'[redacted]');}}return text;};
+  private redactJson=(value:any)=>JSON.stringify(value,(_key,child)=>typeof child==='string'?this.redact(child):child);
   private sanitize=(text:string)=>this.redact(text).slice(0,2000);
   private readonly mcp:McpToolRegistry;
   readonly reportError=(e:any)=>{
@@ -79,7 +80,7 @@ export class PocketRuntime {
     this.emit({type:'error',error:message});
   };
   constructor(readonly native:NativeBridge,limits={maxExecuting:4,maxConversations:12},mcpConnector?:McpConnector) {
-    this.mcp=new McpToolRegistry(this.sanitize,mcpConnector);
+    this.mcp=new McpToolRegistry(this.redact,mcpConnector);
     const phoneTools=[...nativeTools(this,'placeholder').map(x=>x.name),...MEMORY_TOOL_NAMES,'speak_to_user'];
     this.registry.agents.set('phone-operator',{name:'phone-operator',description:'Performs bounded Android workflows and verifies native outcomes.',source:'project',systemPrompt:WORKER_PROMPT,tools:[...phoneTools,'subagent']});
     this.registry.agents.set('researcher',{name:'researcher',description:'Reads phone capabilities and app data with no screen mutations.',source:'project',systemPrompt:'Read-only bounded worker. Report evidence and uncertainty.',tools:['phone_capabilities','phone_apps','phone_contacts','phone_calendars','phone_calendar_events','phone_notifications','phone_notification_read','phone_operation','memory_search','memory_profile','speak_to_user','subagent']});
@@ -142,13 +143,13 @@ export class PocketRuntime {
     queueMicrotask(()=>void this.pump());
   }
   call(method:string,args:any):any {
-    const serialized=JSON.stringify(args);
-    const result=JSON.parse(this.native.call(method,method.startsWith('store.save')?this.redact(serialized):serialized));
+    const serialized=method.startsWith('store.save')?this.redactJson(args):JSON.stringify(args);
+    const result=JSON.parse(this.native.call(method,serialized));
     if(!result.ok)throw new Error(result.error?.message??result.error??`${method} failed`);
     return result.result;
   }
   emit(event:any):void {
-    try {this.native.emit(this.redact(JSON.stringify(event)));} catch {}
+    try {this.native.emit(this.redactJson(event));} catch {}
   }
   private reloadCredentials():void {
     this.credentials=this.call('credentials.get',{})??{};
@@ -418,7 +419,8 @@ export class PocketRuntime {
           .catch(error=>this.emit({type:'mcp_tools',requestId,error:this.sanitize(String(error?.message??error))}));
       } else if(cmd.action==='mcp_reload') {
         if(this.busy||this.pumping||this.deliveryTransaction||this.observing||(this.inbox.length&&!this.mainPaused)||this.runtime.listConversations().some(c=>c.currentGeneration||c.isStopping))throw new Error('Stop active work before changing MCP servers');
-        this.reloadCredentials();void this.refreshMcpTools();
+        const latest=this.call('credentials.get',{})??{};this.credentialHistory.add(latest);
+        this.credentials.mcpServers=Array.isArray(latest.mcpServers)?latest.mcpServers:[];void this.refreshMcpTools();
       } else if(cmd.action==='configure') {
         if(this.busy||this.pumping||this.deliveryTransaction||this.observing||(this.inbox.length&&!this.mainPaused)||this.runtime.listConversations().some(c=>c.currentGeneration||c.isStopping))throw new Error('Stop active work before changing providers');
         let nextMainSystemPrompt=this.mainSystemPrompt;
@@ -547,8 +549,8 @@ export class PocketRuntime {
       if(this.observerSession){try{this.observerSession.abort();}catch{}try{this.observerSession.dispose();}catch{}this.observerSession=undefined;}
       for(const session of this.sessions.values())try{session.dispose();}catch{}
       try{this.main.dispose();}catch{}
-      await this.mcp.close();
       persisted=this.save()&&persisted;
+      await this.mcp.close();
     } catch(e) {this.reportError(e);}
     finally {
       if(persisted)this.emit({type:'shutdown_ready',clean});
@@ -599,16 +601,16 @@ export class PocketRuntime {
       const workerMessages:any={};
       for(const [id,s] of this.sessions)workerMessages[id]=stripImages(s.messages);
       let state:any={version:1,config:this.config,providerRevision:this.credentials.providerRevision,busy:this.busy,lastError:this.lastError,mainPaused:this.mainPaused,totalStarts:this.totalStarts,mainSystemPrompt:this.mainSystemPrompt,mainMessages:stripImages(this.main.messages),workers:this.runtime.listConversations(),workerMessages,workerReasoningProofs:Object.fromEntries(this.workerReasoningProofs),inbox:this.inbox,delivered:[...this.delivered],mainTurns:this.mainTurns,observationPending:this.observationPending};
-      let serialized=this.redact(JSON.stringify(state));
+      let serialized=this.redactJson(state);
       if(utf8Bytes(serialized)>MAX_DURABLE_CHECKPOINT_BYTES) {
         const compactWorkers:any={};
         for(const [id,messages] of Object.entries(workerMessages))compactWorkers[id]=durableTail(messages as any[],1_250_000);
         state={...state,checkpointCompacted:true,mainMessages:durableTail(state.mainMessages,6_000_000),workerMessages:compactWorkers};
-        serialized=this.redact(JSON.stringify(state));
+        serialized=this.redactJson(state);
       }
       if(utf8Bytes(serialized)>MAX_DURABLE_CHECKPOINT_BYTES)
         throw new Error('Durable checkpoint exceeds the bounded 24 MB UTF-8 retention budget');
-      const direct=JSON.stringify({state});
+      const direct=this.redactJson({state});
       if(direct.length<=DIRECT_STORE_LIMIT) {this.call('store.save',{state});return true;}
       this.call('store.save.begin',{chars:serialized.length});chunked=true;
       for(let offset=0;offset<serialized.length;) {
