@@ -25,7 +25,7 @@ jobs:
       SOURCE_RUN_ID: ${{ inputs.source_run_id }}
       RELEASE_TAG: ${{ inputs.release_tag }}
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
       - name: Validate selected build and draft release
         run: |
           [[ "$SOURCE_RUN_ID" =~ ^[0-9]+$ ]]
@@ -33,7 +33,7 @@ jobs:
           test "$(gh run view "$SOURCE_RUN_ID" --json conclusion --jq .conclusion)" = success
           test "$(gh release view "$RELEASE_TAG" --json isDraft --jq .isDraft)" = true
           test "$(gh release view "$RELEASE_TAG" --json isPrerelease --jq .isPrerelease)" = true
-      - uses: actions/download-artifact@v4
+      - uses: actions/download-artifact@v7
         with:
           name: pocket-agent-release
           path: artifacts
