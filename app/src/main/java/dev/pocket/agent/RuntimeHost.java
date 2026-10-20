@@ -233,12 +233,25 @@ public final class RuntimeHost implements AutoCloseable {
                     String secret=protectedValues.optString(key);
                     if(!secret.isEmpty())detail=detail.replace(secret,"[redacted]");
                 }
+                detail=redactMcpStartupSecrets(detail,protectedValues);
                 event.put("startupDiagnostic",detail.substring(0,Math.min(detail.length(),800)));
             }
             emit(event);
         }
         catch (Exception ignored) { }
     }
+    static String redactMcpStartupSecrets(String detail, JSONObject credentials) {
+        org.json.JSONArray servers=credentials.optJSONArray("mcpServers");if(servers==null)return detail;
+        for(int i=0;i<servers.length();i++){
+            JSONObject server=servers.optJSONObject(i);if(server==null)continue;
+            detail=redact(detail,server.optString("bearerToken"));
+            detail=redact(detail,server.optString("headerValue"));
+            org.json.JSONArray headers=server.optJSONArray("headers");
+            if(headers!=null)for(int j=0;j<headers.length();j++){JSONObject header=headers.optJSONObject(j);if(header!=null)detail=redact(detail,header.optString("value"));}
+        }
+        return detail;
+    }
+    private static String redact(String text,String secret){return secret.isEmpty()?text:text.replace(secret,"[redacted]");}
     public final class Bridge {
         @V8Function public String call(String method, String argsJson) {
             try {

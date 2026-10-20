@@ -25,6 +25,8 @@ Requires **Android 12 or later**. This is a separate app, `dev.pocket.agent`, an
 
 Settings also offers **Scripted model (local validation)**, which uses no cloud inference and is intended for the included fixture tests. It is not a general conversational model. Credentials are encrypted with Android Keystore; replace the saved key explicitly when switching providers. See [model connections](docs/AUTH.md).
 
+**Remote MCP servers:** Open Settings → **Remote MCP servers** to add, edit, enable, disable, test, discover tools from, or delete up to ten Streamable HTTP servers. Server URLs must use HTTPS. Optional authentication supports no auth, a bearer token, or up to eight custom headers; credentials share the Android Keystore encrypted store. OAuth is not available, so servers that require OAuth cannot be connected. MCP tools are available to the main assistant and phone-operator workers, but not the read-only researcher. Connect only servers you trust because their tools receive the arguments the model sends.
+
 ## Codex account testing on an emulator
 
 Use an existing local Codex login directly in the emulator:
