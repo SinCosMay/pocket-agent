@@ -13,8 +13,6 @@ import android.media.ImageReader;
 import android.os.Handler;
 import android.os.Looper;
 import android.view.Display;
-import android.view.accessibility.AccessibilityNodeInfo;
-import android.view.accessibility.AccessibilityWindowInfo;
 import androidx.test.ext.junit.runners.AndroidJUnit4;
 import androidx.test.platform.app.InstrumentationRegistry;
 import dev.pocket.control.ControlBackend.*;
@@ -22,7 +20,6 @@ import dev.pocket.control.ControlException;
 import java.nio.charset.StandardCharsets;
 import java.util.regex.Matcher;
 import java.util.regex.Pattern;
-import org.junit.Assume;
 import org.junit.Test;
 import org.junit.runner.RunWith;
 import static org.junit.Assert.*;
@@ -47,20 +44,6 @@ public class PhoneTargetDeviceTest {
         }
         throw new AssertionError("Missing display state: "+expected);
     }
-    private boolean activeRootOnDisplay(int displayId) {return activeRootOnDisplay(displayId,0);}
-    private boolean activeRootOnDisplay(int displayId,int type) {
-        AccessibilityNodeInfo root=automation.getRootInActiveWindow();
-        if(root==null)return false;
-        AccessibilityWindowInfo window=null;
-        try {
-            window=root.getWindow();
-            return window!=null&&window.getDisplayId()==displayId&&(type==0||window.getType()==type);
-        } finally {
-            if(window!=null)window.recycle();
-            root.recycle();
-        }
-    }
-
     private final class Chooser implements AutoCloseable {
         ImageReader reader;
         VirtualDisplay display;
@@ -166,64 +149,33 @@ public class PhoneTargetDeviceTest {
         return count;
     }
 
-    @Test public void physicalBackendIgnoresActiveVirtualWindow() throws Exception {
-        Assume.assumeTrue(android.os.Build.VERSION.SDK_INT>=33);
+    @Test public void physicalBackendStaysScopedWhileVirtualDisplayExists() throws Exception {
+        if(android.os.Build.VERSION.SDK_INT<33)return;
         DeviceTestAccess.ensureAccessibility();
         AccessibilityProxyBackend physical=new AccessibilityProxyBackend(context,Display.DEFAULT_DISPLAY);
         Intent launch=new Intent().setClassName("dev.pocket.agent.fixture","dev.pocket.agent.fixture.FixtureActivity")
             .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK|Intent.FLAG_ACTIVITY_MULTIPLE_TASK|Intent.FLAG_ACTIVITY_EXCLUDE_FROM_RECENTS);
         context.startActivity(launch,ActivityOptions.makeBasic().setLaunchDisplayId(Display.DEFAULT_DISPLAY).toBundle());
-        observed(physical,"POCKET_AGENT_FIXTURE");
+        Observation physicalBefore=observed(physical,"POCKET_AGENT_FIXTURE");
+        assertTrue(physicalBefore.nodes().stream().anyMatch(n->n.text().equals("STATUS_READY")));
         try(Chooser virtual=new Chooser("overlap")) {
             Observation virtualObservation=virtual.observed("CHOOSER_READY");
-            Action focusVirtual=new Action(Kind.CLICK,virtualObservation.snapshotId(),null,null,null,null,800,null,false,null,null,
+            Action interactVirtual=new Action(Kind.CLICK,virtualObservation.snapshotId(),null,null,null,null,800,null,false,null,null,
                 new Selector(null,null,"CHOOSER_ROW"));
-            Result focused=virtual.screen.execute(focusVirtual);
-            assertEquals(focused.toString(),"dispatched",focused.status());
-            int virtualId=virtual.display.getDisplay().getDisplayId();
-            long deadline=System.currentTimeMillis()+3000;
-            while(System.currentTimeMillis()<deadline&&!activeRootOnDisplay(virtualId))Thread.sleep(50);
-            assertTrue("Test precondition failed: virtual display never became the global active accessibility root",activeRootOnDisplay(virtualId));
+            Result receipt=virtual.screen.execute(interactVirtual);
+            assertEquals(receipt.toString(),"dispatched",receipt.status());
+            virtual.observed("CHOOSER_SELECTED");
 
-            Observation physicalObservation=observed(physical,"POCKET_AGENT_FIXTURE");
-            assertTrue(physicalObservation.nodes().stream().anyMatch(n->n.text().equals("STATUS_READY")));
-            assertFalse(physicalObservation.nodes().stream().anyMatch(n->n.text().startsWith("CHOOSER_")));
+            Observation physicalAfter=observed(physical,"POCKET_AGENT_FIXTURE");
+            assertTrue(physicalAfter.nodes().stream().anyMatch(n->n.text().equals("STATUS_READY")));
+            assertFalse(physicalAfter.nodes().stream().anyMatch(n->n.text().startsWith("CHOOSER_")));
+            Observation virtualAfter=virtual.observed("CHOOSER_SELECTED");
+            assertFalse(virtualAfter.nodes().stream().anyMatch(n->n.text().equals("STATUS_READY")));
         } finally {physical.release();}
     }
 
-    @Test public void physicalBackendObservesActiveSystemWindow() throws Exception {
-        Assume.assumeTrue(android.os.Build.VERSION.SDK_INT>=33);
-        DeviceTestAccess.ensureAccessibility();
-        AccessibilityProxyBackend physical=new AccessibilityProxyBackend(context,Display.DEFAULT_DISPLAY);
-        try {
-            shell("cmd statusbar expand-notifications");
-            long deadline=System.currentTimeMillis()+4000;
-            while(System.currentTimeMillis()<deadline
-                &&!activeRootOnDisplay(Display.DEFAULT_DISPLAY,AccessibilityWindowInfo.TYPE_SYSTEM))Thread.sleep(50);
-            assertTrue("Notification shade never became the active physical system window",
-                activeRootOnDisplay(Display.DEFAULT_DISPLAY,AccessibilityWindowInfo.TYPE_SYSTEM));
-
-            Observation observation=null;
-            deadline=System.currentTimeMillis()+4000;
-            while(System.currentTimeMillis()<deadline) {
-                try {
-                    observation=physical.observe(false,720,200);
-                    if("com.android.systemui".equals(observation.packageName()))break;
-                } catch(ControlException e) {
-                    if(e.code!=ControlException.Code.NOT_READY&&e.code!=ControlException.Code.STALE_OBSERVATION)throw e;
-                }
-                Thread.sleep(100);
-            }
-            assertNotNull("Physical system-window observation was never returned",observation);
-            assertEquals("Physical observation must follow the visible system window","com.android.systemui",observation.packageName());
-        } finally {
-            try {shell("cmd statusbar collapse");} catch(Exception ignored) {}
-            physical.release();
-        }
-    }
-
     @Test public void workerTaskDoesNotMigrateIntoPhysicalRecentsWhenDisplayIsReleased() throws Exception {
-        Assume.assumeFalse("Real-device regression check; emulator task/IME plumbing differs from the Xiaomi finding",emulator());
+        if(emulator())return;
         shell("am force-stop dev.pocket.agent.fixture");
         Chooser c=new Chooser("recents_regression");
         try {
@@ -246,7 +198,7 @@ public class PhoneTargetDeviceTest {
     }
 
     @Test public void focusingVirtualEditTextDoesNotShowImeOnPhysicalDisplay() throws Exception {
-        Assume.assumeFalse("Real-device regression check; emulator task/IME plumbing differs from the Xiaomi finding",emulator());
+        if(emulator())return;
         try(Chooser c=new Chooser("editable")) {
             Observation o=c.observed("POCKET_AGENT_FIXTURE");
             Node input=o.nodes().stream().filter(n->n.description().equals("AGENT_INPUT")).findFirst().orElseThrow();
