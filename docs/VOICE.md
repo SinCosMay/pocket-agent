@@ -10,10 +10,12 @@ Deepgram receives live PCM from the first sample and, on Android 13+, the same P
 an available Android system recognizer without opening a second microphone. Its switch threshold is
 configurable from Settings and defaults to three seconds. Flux word timestamps are the preferred
 spoken-duration measurement; Android wins below the threshold when available and Deepgram wins at
-or above it. **Android default only** disables Deepgram STT and hybrid arbitration and lets the
-normal system `SpeechRecognizer` own the microphone, matching the standalone Android test path.
-**Deepgram only** disables Android recognition and threshold logic. Deepgram TTS remains common to
-all three modes.
+or above it. **Android default only** keeps the normal system `SpeechRecognizer` as the
+transcript source for ordinary turns, matching the standalone Android test path, and keeps hybrid
+arbitration disabled. While Pocket Agent is thinking or speaking, Flux temporarily owns the
+microphone as a full-duplex interruption bridge; if the user barges in, that stream finishes the
+interrupted utterance before Android recognition resumes. **Deepgram only** disables Android
+recognition and threshold logic. Deepgram TTS remains common to all three modes.
 A nonempty selected transcript, after any wake-word prefix is removed, is submitted as **one normal main-agent user message**; wake-word-only turns are ignored. Only
 text deltas produced in that particular main response are sent to Deepgram streaming
 TTS. Subsequent Pi9 worker completion messages and ordinary text messages remain
@@ -188,10 +190,18 @@ and microphone restrictions still apply.
 
 ### Current verification boundary
 
-The previous live Deepgram and real Pi audio round trips apply to the initial
-half-duplex implementation. Full-duplex background capture, barge-in and silence
-expiry require the new signed APK and Android device testing; a successful build
-alone does not prove acoustics or device-specific background reliability.
+A lightweight live Deepgram barge-in probe is available at
+`scripts/live_deepgram_barge_in.py`. It synthesizes a short interruption with Aura
+while a longer Aura response is streaming, feeds the interruption to Flux in paced
+80 ms PCM frames, waits for `StartOfTurn`, clears the response TTS stream, and
+requires both immediate local playback cancellation and Deepgram's `Cleared`
+acknowledgement. It uses a short-lived credential from the existing voice.ind token
+endpoint and does not boot an emulator or persist the credential. The 2026-10-20
+run is recorded in `validation/2026-10-20-live-barge-in.json`.
+
+The previous real Pi audio round trip and the live barge-in probe do not prove
+physical Android microphone/speaker acoustics. Device-specific echo cancellation,
+audio routing, and background behavior still require the signed APK on a real phone.
 
 ## Optional agent-initiated announcements
 
