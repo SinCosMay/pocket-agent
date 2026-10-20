@@ -9,6 +9,7 @@ import { messageText } from './scripted.js';
 import { modelFor,makeStream,normalizeReasoningEffort,REASONING_EFFORTS,type ReasoningEffort } from './provider.js';
 import { discoverProviderModels, type CatalogModel } from './model-catalog.js';
 import { registerCodexCredentialUpdater,redactProviderSecrets,hasPendingCodexRefresh } from './codex-auth.js';
+import { McpToolRegistry,type McpConnector } from './mcp.js';
 
 export const DEFAULT_MAIN_PROMPT=`You are the user's persistent phone assistant. Delegate substantial multi-step phone navigation, screenshots and computer use promptly to phone-operator using subagent spawn. Your model is the user's chosen main chat model; never change it through delegation. For a worker needing a different model or reasoning effort, call subagent action=models to see the current provider catalog and supported reasoning levels, then set spawns[].model and optionally spawns[].reasoning. Omit reasoning to inherit your current reasoning effort. Select smaller models for straightforward tasks and more capable models for difficult tasks, but do not invent prices or capabilities. If a model cannot call required tools, retry with a suitable listed model. Give a concise assignment, relevant facts, outcome and verification criteria. End your turn after async dispatch, remain available and let the host deliver completion. Do not poll workers or block main with join on unfinished work. Use speak_to_user only when an unsolicited spoken announcement is warranted or requested; worker completion alone must not cause speech. The tool queues audio, not confirmed delivery. You may do a genuinely short lookup directly. Never claim requested/dispatched actions prove outcomes. Read phone_capabilities before mutation. Use its operation_prefix plus an underscore and a unique 8..48 character nonce (ASCII letters, digits, underscore or hyphen) for each mutation. Include owner/generation/action/attempt or a timestamp for uniqueness; a valid suffix example is _type_0001, never reuse the example across actions; inspect phone_operation after uncertain outcomes and reuse the same ID/arguments. Prefer direct APIs, then app actions, accessibility, screenshot fallback. Virtual displays are acquired automatically on UI tools; do not acquire a display for SMS, calls or direct APIs. Release the virtual display when the UI phase is finished. Main Stop does not stop workers.`;
 const WORKER_PROMPT=`You are a bounded phone operator worker. Complete the assignment using the granted direct native tools, verify actual outcome, report evidence and uncertainties. Read phone_capabilities first. Never invent unavailable permissions or task success. Prefer APIs, then app actions, accessibility and image/gesture fallback. Virtual screens are allocated automatically for UI tools, with a FIFO queue if all three are occupied. Never request a display for native-only actions (SMS, calls, contacts, calendars). Release a display after the UI phase is complete; waiting for a display is not a task failure. Use fresh observations and honor display ownership. Mutations require operation_prefix plus underscore and a unique 8..48 character nonce containing only ASCII letters, digits, underscore or hyphen. Include owner/generation/action/attempt or a timestamp for uniqueness; a valid suffix example is _type_0001, never reuse the example across actions; preserve operation IDs across uncertain retries and inspect receipts before repeating. A phone_act STALE_OBSERVATION with dispatch_status=not_dispatched permits reobserving and replanning with a new operation ID; do not reuse the recorded ID with changed arguments. RESULT_UNKNOWN never permits blind replay. Use speak_to_user only for useful or requested audio, never automatically on completion; queued is not delivered. Recursive delegation is available with a shared concurrency cap. You may choose any discovered provider model and supported reasoning level for each nested spawn by first using subagent action=models (paginate with offset/limit or filter with query); leave model absent to inherit the main model and leave reasoning absent to inherit your current reasoning effort. Join child dependencies, and return concise verified results. If interrupted after process death inspect app state/receipts before any side-effect replay.`;
@@ -68,19 +69,22 @@ export class PocketRuntime {
   private cachedModels?:{at:number,models:CatalogModel[]};
   private readonly workerReasoningProofs=new Map<string,{model:string,levels:ReasoningEffort[]}>();
   private catalogEpoch=0;
-  private redact=(text:string)=>{for(const credentials of this.credentialHistory)text=redactProviderSecrets(text,credentials);return text;};
+  private redact=(text:string)=>{for(const credentials of this.credentialHistory){text=redactProviderSecrets(text,credentials);for(const server of credentials.mcpServers??[]){const secrets=[server?.bearerToken,server?.headerValue,...(Array.isArray(server?.headers)?server.headers.map((header:any)=>header?.value):[])];for(let secret of secrets)if(typeof secret==='string'&&secret){text=text.replaceAll(secret,'[redacted]');secret=secret.replace(/^(?:Bearer|Basic)\s+/i,'');if(secret)text=text.replaceAll(secret,'[redacted]');}}}return text;};
   private sanitize=(text:string)=>this.redact(text).slice(0,2000);
+  private readonly mcp:McpToolRegistry;
   readonly reportError=(e:any)=>{
     let message='Pocket runtime error';
     try {message=this.sanitize(String(e?.message??e));} catch {}
     this.lastError=message;
     this.emit({type:'error',error:message});
   };
-  constructor(readonly native:NativeBridge,limits={maxExecuting:4,maxConversations:12}) {
+  constructor(readonly native:NativeBridge,limits={maxExecuting:4,maxConversations:12},mcpConnector?:McpConnector) {
+    this.mcp=new McpToolRegistry(this.sanitize,mcpConnector);
     const phoneTools=[...nativeTools(this,'placeholder').map(x=>x.name),...MEMORY_TOOL_NAMES,'speak_to_user'];
     this.registry.agents.set('phone-operator',{name:'phone-operator',description:'Performs bounded Android workflows and verifies native outcomes.',source:'project',systemPrompt:WORKER_PROMPT,tools:[...phoneTools,'subagent']});
     this.registry.agents.set('researcher',{name:'researcher',description:'Reads phone capabilities and app data with no screen mutations.',source:'project',systemPrompt:'Read-only bounded worker. Report evidence and uncertainty.',tools:['phone_capabilities','phone_apps','phone_contacts','phone_calendars','phone_calendar_events','phone_notifications','phone_notification_read','phone_operation','memory_search','memory_profile','speak_to_user','subagent']});
     this.reloadCredentials();
+    void this.refreshMcpTools();
     this.runtime=new SubagentRuntime(this.registry,limits.maxExecuting,this.execute as any,limits.maxConversations);
     const saved=this.call('store.load',{}) ?? {};
     const freshMainRequested=saved.freshMainRequested===true;
@@ -171,7 +175,22 @@ export class PocketRuntime {
   }
   private configureSessionTools(session:MobileSession,parent?:any):void {
     const grant=parent?.requestedConfig.tools??parent?.definition.tools;
-    session.agent.state.tools=[...nativeTools(this,session.owner,grant),...memoryTools(this,session.owner,grant),...(!grant||grant.includes('speak_to_user')?[speakToUserTool(this,session.owner)]:[]),...(!grant||grant.includes('subagent')?[subagentTool(this,parent)]:[])];
+    const remote=(!grant||this.mcp.toolNames.some(name=>grant.includes(name)))?this.mcp.tools.filter(tool=>!grant||grant.includes(tool.name)):[];
+    session.agent.state.tools=[...nativeTools(this,session.owner,grant),...memoryTools(this,session.owner,grant),...(!grant||grant.includes('speak_to_user')?[speakToUserTool(this,session.owner)]:[]),...(!grant||grant.includes('subagent')?[subagentTool(this,parent)]:[]),...remote];
+  }
+  private async refreshMcpTools():Promise<any[]> {
+    try {
+      await this.mcp.refresh(Array.isArray(this.credentials.mcpServers)?this.credentials.mcpServers:[]);
+      const definition=this.registry.agents.get('phone-operator');
+      if(definition)definition.tools=[...nativeTools(this,'placeholder').map(tool=>tool.name),...MEMORY_TOOL_NAMES,'speak_to_user',...this.mcp.toolNames,'subagent'];
+      if(this.main)this.configureSessionTools(this.main);
+      for(const [id,session] of this.sessions) {
+        const conversation=this.runtime?.conversation(id);
+        if(conversation)this.configureSessionTools(session,conversation);
+      }
+      this.publish();
+      return this.mcp.status();
+    } catch(error) {this.reportError(`MCP setup failed: ${String((error as any)?.message??error)}`);return [];}
   }
   private createSession(owner:string,parent?:any,messages:any[]=[]):MobileSession {
     const systemPrompt=(parent?.definition?.systemPrompt??(owner==='main'?this.mainSystemPrompt:WORKER_PROMPT))+'\n'+MEMORY_GUIDANCE;
@@ -389,6 +408,17 @@ export class PocketRuntime {
         const requestId=cmd.requestId;
         void this.refreshModels(true).then(models=>this.emit({type:'models',requestId,models}))
           .catch(error=>this.emit({type:'models',requestId,error:this.sanitize(String(error?.message??error))}));
+      } else if(cmd.action==='mcp_discover') {
+        if(typeof cmd.requestId!=='string'||!/^[A-Za-z0-9_-]{1,64}$/.test(cmd.requestId)||typeof cmd.serverId!=='string'||cmd.serverId.length>64)throw new Error('Invalid MCP discovery request');
+        if(this.busy||this.pumping||this.deliveryTransaction||this.observing||(this.inbox.length&&!this.mainPaused)||this.runtime.listConversations().some(c=>c.currentGeneration||c.isStopping))throw new Error('Stop active work before changing MCP servers');
+        const requestId=cmd.requestId,serverId=cmd.serverId;
+        const credentials=this.call('credentials.get',{});this.credentialHistory.add(credentials);
+        void this.mcp.discover(credentials.mcpServers??[],serverId)
+          .then(server=>this.emit({type:'mcp_tools',requestId,server}))
+          .catch(error=>this.emit({type:'mcp_tools',requestId,error:this.sanitize(String(error?.message??error))}));
+      } else if(cmd.action==='mcp_reload') {
+        if(this.busy||this.pumping||this.deliveryTransaction||this.observing||(this.inbox.length&&!this.mainPaused)||this.runtime.listConversations().some(c=>c.currentGeneration||c.isStopping))throw new Error('Stop active work before changing MCP servers');
+        this.reloadCredentials();void this.refreshMcpTools();
       } else if(cmd.action==='configure') {
         if(this.busy||this.pumping||this.deliveryTransaction||this.observing||(this.inbox.length&&!this.mainPaused)||this.runtime.listConversations().some(c=>c.currentGeneration||c.isStopping))throw new Error('Stop active work before changing providers');
         let nextMainSystemPrompt=this.mainSystemPrompt;
@@ -399,6 +429,7 @@ export class PocketRuntime {
         }
         const previous=this.config, previousAccount=this.credentials.accountId, previousApiKey=this.credentials.apiKey, previousRevision=this.credentials.providerRevision;
         this.reloadCredentials();
+        void this.refreshMcpTools();
         if(cmd.config)this.config={...this.config,...{mode:cmd.config.mode??this.config.mode,model:cmd.config.model??this.config.model,endpoint:cmd.config.endpoint??this.config.endpoint,
           reasoningEffort:normalizeReasoningEffort(cmd.config.reasoningEffort??this.config.reasoningEffort)}};
         this.catalogEpoch++;
@@ -516,6 +547,7 @@ export class PocketRuntime {
       if(this.observerSession){try{this.observerSession.abort();}catch{}try{this.observerSession.dispose();}catch{}this.observerSession=undefined;}
       for(const session of this.sessions.values())try{session.dispose();}catch{}
       try{this.main.dispose();}catch{}
+      await this.mcp.close();
       persisted=this.save()&&persisted;
     } catch(e) {this.reportError(e);}
     finally {

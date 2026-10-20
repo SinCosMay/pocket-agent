@@ -13,6 +13,16 @@
     "commit": "dc939913f6142adce7c09da5707fdd6451b37fb0",
     "packages": {"@earendil-works/pi-agent-core": "1.2.0", "@earendil-works/pi-ai": "1.2.0"}
   },
+  "piMcp": {
+    "package": "@earendil-works/pi-mcp",
+    "version": "1.2.0",
+    "repository": "https://github.com/earendil-works/pi/tree/v1.2.0/packages/mcp",
+    "commit": "06a466935536f8c9bcacb2d5efc0fc021be1bdff",
+    "npmTarball": "https://registry.npmjs.org/@earendil-works/pi-mcp/-/pi-mcp-1.2.0.tgz",
+    "integrity": "sha512-ertUv40rUBgssTzw2lIPlejjIBdhvdg4uw+whWCDJYKYHU+ldp1ezhbB0BzwpBfnwef6/YN+m6eKLscj+r3p7w==",
+    "transport": "Streamable HTTP; HTTPS only; OAuth intentionally unsupported",
+    "licenses": ["MIT", "Model Context Protocol TypeScript SDK MIT notice"]
+  },
   "typebox": "1.3.27",
   "esbuild": "0.25.12",
   "tsx": "4.20.6",

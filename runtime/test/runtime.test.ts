@@ -32,6 +32,25 @@ test('Pi validates the full mutation ID contract before dispatch; historical rec
  assert.equal(validateToolArguments(lookup,{type:'toolCall',id:'history-call',name:lookup.name,arguments:{operation_id:'old-history-id'}}).operation_id,'old-history-id');
 });
 
+test('runtime redacts bearer and every custom or legacy MCP secret',()=>{
+ const bridge=new Bridge();bridge.credentials={authMode:'scripted',mcpServers:[
+  {id:'one',bearerToken:'bearer-secret'},
+  {id:'two',headers:[{name:'X-Key',value:'custom-secret'}]},
+  {id:'three',headerValue:'legacy-secret'},
+ ]};
+ const runtime=new PocketRuntime(bridge);
+ const redacted=(runtime as any).redact('bearer-secret custom-secret legacy-secret');
+ assert.equal(redacted,'[redacted] [redacted] [redacted]');
+});
+
+test('MCP reload is rejected before changes can apply during active work',()=>{
+ const bridge=new Bridge();bridge.credentials={authMode:'scripted',mcpServers:[]};
+ const runtime=new PocketRuntime(bridge);(runtime as any).busy=true;
+ const rejected=JSON.parse(runtime.dispatch(JSON.stringify({action:'mcp_reload'})));
+ (runtime as any).busy=false;
+ assert.equal(rejected.ok,false);assert.match(rejected.error,/Stop active work/);
+});
+
 test('mobile spawn schema omits unsupported overrides while upstream actions and inherited grants stay intact',()=>{
  const mobile:any=MobileSubagentParams,upstream:any=SubagentParams;
  assert.deepEqual(Object.keys(mobile.properties.spawns.items.properties).sort(),['agent','label','model','prompt','reasoning']);

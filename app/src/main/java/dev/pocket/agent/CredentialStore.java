@@ -10,6 +10,8 @@ import java.nio.charset.StandardCharsets;
 import java.security.KeyStore;
 import java.security.MessageDigest;
 import java.util.UUID;
+import java.util.HashSet;
+import java.util.Set;
 import javax.crypto.Cipher;
 import javax.crypto.KeyGenerator;
 import javax.crypto.SecretKey;
@@ -71,6 +73,7 @@ public final class CredentialStore {
             current.remove("reasoningEffortModel"); current.remove("reasoningEfforts"); changed = true;
         }
         if (changed) write(current);
+        current.put("mcpServers", sanitizedMcpServers(current.optJSONArray("mcpServers")));
         return current;
     } }
     private JSONObject read() throws Exception {
@@ -109,6 +112,8 @@ public final class CredentialStore {
                     : settings.has("reasoningEffort") && !CODEX_ACCOUNT.equals(mode) ? effort : currentPreferred);
             JSONObject allowed = new JSONObject().put("authMode", mode).put("reasoningEffort", effort)
                     .put("preferredReasoningEffort", preferredEffort);
+            allowed.put("mcpServers", sanitizedMcpServers(settings.optJSONArray("mcpServers") == null
+                    ? current.optJSONArray("mcpServers") : settings.optJSONArray("mcpServers")));
             if (CODEX_ACCOUNT.equals(mode)) {
                 JSONObject source = settings.has("accessToken") ? settings : current;
                 if (!CODEX_ACCOUNT.equals(source.optString("authMode")) && !settings.has("accessToken")) throw new IllegalArgumentException("Sign in or import an account first");
@@ -144,6 +149,85 @@ public final class CredentialStore {
             write(allowed);
         }
     }
+    public JSONArray mcpServers() throws Exception { synchronized (LOCK) {
+        return sanitizedMcpServers(read().optJSONArray("mcpServers"));
+    } }
+    public JSONObject saveMcpServer(JSONObject server) throws Exception { synchronized (LOCK) {
+        JSONArray servers = sanitizedMcpServers(read().optJSONArray("mcpServers"));
+        String id = server.optString("id").trim();
+        if (id.isEmpty()) id = UUID.randomUUID().toString();
+        if (!id.matches("[a-fA-F0-9-]{36}")) throw new IllegalArgumentException("Invalid MCP server identifier");
+        JSONObject validated = validateMcpServer(server, id);
+        JSONArray next = new JSONArray(); boolean replaced = false;
+        for (int i = 0; i < servers.length(); i++) {
+            JSONObject item = servers.optJSONObject(i);
+            if (item == null) continue;
+            if (id.equals(item.optString("id"))) { next.put(validated); replaced = true; }
+            else next.put(item);
+        }
+        if (!replaced) {
+            if (next.length() >= 10) throw new IllegalArgumentException("Up to 10 MCP servers can be saved");
+            next.put(validated);
+        }
+        JSONObject current = read(); current.put("mcpServers", next); write(current);
+        return new JSONObject(validated.toString());
+    } }
+    public void deleteMcpServer(String id) throws Exception { synchronized (LOCK) {
+        JSONArray next = new JSONArray(), servers = sanitizedMcpServers(read().optJSONArray("mcpServers"));
+        for (int i = 0; i < servers.length(); i++) {
+            JSONObject item = servers.optJSONObject(i);
+            if (item != null && !id.equals(item.optString("id"))) next.put(item);
+        }
+        JSONObject current = read(); current.put("mcpServers", next); write(current);
+    } }
+    private static JSONArray sanitizedMcpServers(JSONArray values) throws Exception {
+        JSONArray result = new JSONArray(); Set<String> ids = new HashSet<>();
+        if (values == null) return result;
+        if (values.length() > 10) throw new IllegalArgumentException("Up to 10 MCP servers can be saved");
+        for (int i = 0; i < values.length(); i++) {
+            JSONObject raw = values.optJSONObject(i);
+            if (raw == null) continue;
+            String id = raw.optString("id");
+            if (id.isEmpty() || !ids.add(id)) continue;
+            result.put(validateMcpServer(raw, id));
+        }
+        return result;
+    }
+    private static JSONObject validateMcpServer(JSONObject value, String id) throws Exception {
+        String name=value.optString("name").trim(), url=value.optString("url").trim();
+        String authMode=value.optString("authMode", value.has("headerName")?"headers":"none");
+        String bearerToken=value.optString("bearerToken");
+        JSONArray headers=value.optJSONArray("headers");
+        if(value.has("headers")&&headers==null)throw new IllegalArgumentException("MCP custom headers are invalid");
+        if(headers==null){headers=new JSONArray();String legacyName=value.optString("headerName").trim();
+            if(!legacyName.isEmpty())headers.put(new JSONObject().put("name",legacyName).put("value",value.optString("headerValue")));}
+        if(name.isEmpty()||name.length()>60)throw new IllegalArgumentException("MCP server name must be 1..60 characters");
+        if(!authMode.equals("none")&&!authMode.equals("bearer")&&!authMode.equals("headers"))throw new IllegalArgumentException("Choose None, Bearer token, or Custom headers");
+        if(bearerToken.length()>2000||hasLineBreakOrNul(bearerToken))throw new IllegalArgumentException("MCP authentication value is invalid or too long");
+        if(headers.length()>8)throw new IllegalArgumentException("MCP supports up to 8 custom headers");
+        JSONArray cleanHeaders=new JSONArray(); Set<String> headerNames=new HashSet<>();
+        for(int i=0;i<headers.length();i++){
+            JSONObject header=headers.optJSONObject(i);if(header==null)throw new IllegalArgumentException("MCP custom header is invalid");
+            String headerName=header.optString("name").trim(),headerValue=header.optString("value");
+            if(headerName.length()>100||headerValue.length()>2000||hasLineBreakOrNul(headerValue)
+                    ||!headerName.matches("[!#$%&'*+.^_`|~0-9A-Za-z-]{1,100}"))throw new IllegalArgumentException("MCP authentication header is invalid or too long");
+            if(!headerNames.add(headerName.toLowerCase(java.util.Locale.ROOT)))throw new IllegalArgumentException("MCP custom header names must be unique");
+            cleanHeaders.put(new JSONObject().put("name",headerName).put("value",headerValue));
+        }
+        if((authMode.equals("none")&&(!bearerToken.isEmpty()||cleanHeaders.length()>0||!value.optString("headerValue").isEmpty()))
+                ||(authMode.equals("bearer")&&(cleanHeaders.length()>0||!value.optString("headerValue").isEmpty()))
+                ||(authMode.equals("headers")&&!bearerToken.isEmpty()))throw new IllegalArgumentException("MCP authentication fields do not match the selected mode");
+        URI uri;
+        try { uri=new URI(url); } catch(Exception invalid) { throw new IllegalArgumentException("Enter a valid MCP HTTPS URL"); }
+        if(!"https".equalsIgnoreCase(uri.getScheme())||uri.getHost()==null||uri.getUserInfo()!=null||uri.getQuery()!=null||uri.getFragment()!=null||url.length()>2048)
+            throw new IllegalArgumentException("MCP server URL must use HTTPS and contain no embedded credentials, query or fragment");
+        JSONObject clean=new JSONObject().put("id",id).put("name",name).put("url",uri.toASCIIString())
+                .put("enabled",value.optBoolean("enabled",true)).put("authMode",authMode);
+        if(authMode.equals("bearer")&&!bearerToken.isEmpty())clean.put("bearerToken",bearerToken);
+        if(authMode.equals("headers"))clean.put("headers",cleanHeaders);
+        return clean;
+    }
+    private static boolean hasLineBreakOrNul(String value) { return value.indexOf('\r')>=0||value.indexOf('\n')>=0||value.indexOf('\0')>=0; }
     /** Compare-and-save prevents an older concurrent refresh from overwriting rotated tokens. */
     public JSONObject updateCodex(JSONObject update) throws Exception {
         synchronized (LOCK) {
@@ -166,6 +250,7 @@ public final class CredentialStore {
                 effort = DEFAULT_REASONING_EFFORT;
             JSONObject allowed = new JSONObject().put("authMode", CODEX_ACCOUNT)
                     .put("model", selectedModel).put("reasoningEffort", effort).put("preferredReasoningEffort", preferredEffort);
+            allowed.put("mcpServers", sanitizedMcpServers(current.optJSONArray("mcpServers")));
             if (validProof) {
                 allowed.put("reasoningEffortModel", selectedModel);
                 allowed.put("reasoningEfforts", supported);
@@ -184,7 +269,8 @@ public final class CredentialStore {
             String effort = reasoningEffort(current.optString("reasoningEffort", DEFAULT_REASONING_EFFORT));
             String preferredEffort = reasoningEffort(current.optString("preferredReasoningEffort", effort));
             if (CODEX_ACCOUNT.equals(current.optString("authMode"))) write(new JSONObject().put("authMode", "scripted").put("model", "scripted").put("endpoint", "https://api.openai.com/v1")
-                    .put("reasoningEffort", preferredEffort).put("preferredReasoningEffort", preferredEffort).put("providerRevision", UUID.randomUUID().toString()));
+                    .put("reasoningEffort", preferredEffort).put("preferredReasoningEffort", preferredEffort).put("providerRevision", UUID.randomUUID().toString())
+                    .put("mcpServers", sanitizedMcpServers(current.optJSONArray("mcpServers"))));
         }
     }
     private static String canonicalMode(String mode) {
