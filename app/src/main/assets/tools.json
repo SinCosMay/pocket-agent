@@ -17,7 +17,7 @@
   },
   {
     "name": "phone_observe",
-    "description": "Observe screen nodes and optional screenshot. Coordinates use full device dimensions; resized images need scaling. Screenshot is omitted by default. Get a fresh snapshot before every action.",
+    "description": "Observe screen nodes and optional screenshot. display_target defaults to the private virtual display; use physical only to inspect the visible device screen at the user's request. Coordinates use full target-display dimensions; resized images need scaling. Screenshot is omitted by default. Get a fresh snapshot before every action.",
     "inputSchema": {
       "type": "object",
       "properties": {
@@ -35,6 +35,15 @@
           "maximum": 500,
           "default": 40,
           "description": "Maximum accessibility nodes to request. The default is 40 and observations are additionally byte-bounded; nodes_truncated reports either limit."
+        },
+        "display_target": {
+          "type": "string",
+          "enum": [
+            "virtual",
+            "physical"
+          ],
+          "default": "virtual",
+          "description": "Target the private agent virtual display by default. Use physical only when the user explicitly wants Pocket Agent to inspect, control, or present content on the visible device screen."
         }
       },
       "required": [],
@@ -49,7 +58,7 @@
   },
   {
     "name": "phone_act",
-    "description": "Perform an Android screen action using a recent snapshot_id. Prefer exact unique semantic selectors for click/type/scroll. Enter uses real IME action. Input acceptance is not task completion. Reuse operation_id and identical arguments after network loss. operation_id must be phone_capabilities.operation_prefix + underscore + a unique 8..48 character nonce; reuse identical IDs and arguments after uncertain results.",
+    "description": "Perform an Android screen action using a recent snapshot_id. display_target must match the observed snapshot and defaults to the private virtual display; use physical only when the user explicitly wants visible-screen control. Prefer exact unique semantic selectors for click/type/scroll. Enter uses real IME action. Input acceptance is not task completion. Reuse operation_id and identical arguments after network loss. operation_id must be phone_capabilities.operation_prefix + underscore + a unique 8..48 character nonce; reuse identical IDs and arguments after uncertain results.",
     "inputSchema": {
       "type": "object",
       "properties": {
@@ -156,6 +165,15 @@
           "maxLength": 78,
           "description": "Current phone_capabilities.operation_prefix + '_' + a unique 8..48 character nonce using only ASCII letters, digits, '_' or '-'. Include owner/generation/action/attempt or a timestamp for uniqueness. A valid suffix example is _type_0001; never reuse the example across actions. Preserve identical IDs/arguments after uncertain results.",
           "pattern": "^[0-9]{1,12}-[0-9a-f]{16}_[A-Za-z0-9_-]{8,48}$"
+        },
+        "display_target": {
+          "type": "string",
+          "enum": [
+            "virtual",
+            "physical"
+          ],
+          "default": "virtual",
+          "description": "Target the private agent virtual display by default. Use physical only when the user explicitly wants Pocket Agent to inspect, control, or present content on the visible device screen."
         }
       },
       "required": [
@@ -190,7 +208,7 @@
   },
   {
     "name": "phone_open_app",
-    "description": "Request app launch. Verify foreground package afterward: OEM background restrictions can reject a launch silently. operation_id must be phone_capabilities.operation_prefix + underscore + a unique 8..48 character nonce; reuse identical IDs and arguments after uncertain results.",
+    "description": "Request app launch. display_target defaults to the private virtual display; set physical only when the user explicitly wants the app brought onto the visible device screen. Verify foreground package afterward: OEM restrictions can reject a launch silently. operation_id must be phone_capabilities.operation_prefix + underscore + a unique 8..48 character nonce; reuse identical IDs and arguments after uncertain results.",
     "inputSchema": {
       "type": "object",
       "properties": {
@@ -205,6 +223,15 @@
           "maxLength": 78,
           "description": "Current phone_capabilities.operation_prefix + '_' + a unique 8..48 character nonce using only ASCII letters, digits, '_' or '-'. Include owner/generation/action/attempt or a timestamp for uniqueness. A valid suffix example is _type_0001; never reuse the example across actions. Preserve identical IDs/arguments after uncertain results.",
           "pattern": "^[0-9]{1,12}-[0-9a-f]{16}_[A-Za-z0-9_-]{8,48}$"
+        },
+        "display_target": {
+          "type": "string",
+          "enum": [
+            "virtual",
+            "physical"
+          ],
+          "default": "virtual",
+          "description": "Target the private agent virtual display by default. Use physical only when the user explicitly wants Pocket Agent to inspect, control, or present content on the visible device screen."
         }
       },
       "required": [
@@ -222,7 +249,7 @@
   },
   {
     "name": "phone_open_url",
-    "description": "Open a validated HTTP(S) URL via Android ACTION_VIEW on the private agent display. Verify the actual browser after launch; not a page-read API.",
+    "description": "Open a validated HTTP(S) URL via Android ACTION_VIEW. display_target defaults to the private agent display; set physical only when the user explicitly wants the URL shown on the visible device screen. Verify the actual browser after launch; not a page-read API.",
     "inputSchema": {
       "type": "object",
       "properties": {
@@ -237,6 +264,15 @@
           "maxLength": 78,
           "description": "Current phone_capabilities.operation_prefix + '_' + a unique 8..48 character nonce using only ASCII letters, digits, '_' or '-'. Include owner/generation/action/attempt or a timestamp for uniqueness. A valid suffix example is _type_0001; never reuse the example across actions. Preserve identical IDs/arguments after uncertain results.",
           "pattern": "^[0-9]{1,12}-[0-9a-f]{16}_[A-Za-z0-9_-]{8,48}$"
+        },
+        "display_target": {
+          "type": "string",
+          "enum": [
+            "virtual",
+            "physical"
+          ],
+          "default": "virtual",
+          "description": "Target the private agent virtual display by default. Use physical only when the user explicitly wants Pocket Agent to inspect, control, or present content on the visible device screen."
         }
       },
       "required": [
@@ -516,7 +552,7 @@
   },
   {
     "name": "phone_clock_screen",
-    "description": "Open the device Clock alarms or timers page via standard Android intent on private agent display. Read on-screen list through phone_observe; no universal alarm-list API.",
+    "description": "Open the device Clock alarms or timers page via standard Android intent. display_target defaults to the private agent display; set physical only when the user explicitly wants the Clock screen shown visibly. Read on-screen list through phone_observe; no universal alarm-list API.",
     "inputSchema": {
       "type": "object",
       "properties": {
@@ -533,6 +569,15 @@
           "maxLength": 78,
           "description": "Current phone_capabilities.operation_prefix + '_' + a unique 8..48 character nonce using only ASCII letters, digits, '_' or '-'. Include owner/generation/action/attempt or a timestamp for uniqueness. A valid suffix example is _type_0001; never reuse the example across actions. Preserve identical IDs/arguments after uncertain results.",
           "pattern": "^[0-9]{1,12}-[0-9a-f]{16}_[A-Za-z0-9_-]{8,48}$"
+        },
+        "display_target": {
+          "type": "string",
+          "enum": [
+            "virtual",
+            "physical"
+          ],
+          "default": "virtual",
+          "description": "Target the private agent virtual display by default. Use physical only when the user explicitly wants Pocket Agent to inspect, control, or present content on the visible device screen."
         }
       },
       "required": [

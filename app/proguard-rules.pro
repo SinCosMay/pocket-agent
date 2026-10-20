@@ -24,6 +24,10 @@
 # Device instrumentation links these directly; R8 must retain them in the minified target APK.
 -keep class dev.pocket.agent.VoiceTranscript { *; }
 -keep class dev.pocket.agent.VoiceTextChunker { *; }
+# Release androidTest R8 can reuse this target helper; preserve its ABI across the separately minified APKs.
+-keepclassmembers class dev.pocket.agent.AccessibilityProxyBackend {
+    static boolean connected(android.content.Context);
+}
 -keep class dev.pocket.agent.VoiceCredentialStore { *; }
 -keep class dev.pocket.agent.VoiceAnnouncement { *; }
 -keep class dev.pocket.agent.VoiceListeningService { *; }

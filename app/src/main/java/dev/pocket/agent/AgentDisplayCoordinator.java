@@ -1,15 +1,20 @@
 package dev.pocket.agent;
 
-import android.content.Context;
+import android.app.ActivityOptions;
 import android.content.ComponentName;
+import android.content.Context;
+import android.content.Intent;
+import android.net.Uri;
+import android.provider.AlarmClock;
 import android.provider.Settings;
+import android.view.Display;
 import dev.pocket.control.ControlException;
 import java.util.LinkedHashMap;
 import java.util.Map;
 import org.json.JSONObject;
 import static dev.pocket.control.ControlException.Code.*;
 
-/** Maps each conversation to one independent shell-owned display, never display zero. */
+/** Maps each conversation to one independent shell-owned display, with explicit opt-in access to display zero. */
 final class AgentDisplayCoordinator implements AutoCloseable {
     static final int MAX_DISPLAYS=3;
     private final Context context;
@@ -55,8 +60,12 @@ final class AgentDisplayCoordinator implements AutoCloseable {
         return id;
     }
 
-    synchronized AccessibilityProxyBackend screen(String owner) throws ControlException {
-        int id=display(owner);
+    synchronized int display(String owner,boolean physical) throws ControlException {
+        return physical?Display.DEFAULT_DISPLAY:display(owner);
+    }
+
+    synchronized AccessibilityProxyBackend screen(String owner,boolean physical) throws ControlException {
+        int id=display(owner,physical);
         AccessibilityProxyBackend backend=new AccessibilityProxyBackend(context,id);
         AccessibilityProxyBackend.ConnectionState state=AccessibilityProxyBackend.connectionState(context);
         if(state==AccessibilityProxyBackend.ConnectionState.UNKNOWN)
@@ -77,14 +86,15 @@ final class AgentDisplayCoordinator implements AutoCloseable {
         } catch(RuntimeException ignored) {}
         return false;
     }
+
     private void recoverAccessibility() throws ControlException {
         ComponentName component=new ComponentName(context,AgentAccessibility.class);
         boolean enabled=accessibilityEnabledByUser(component);
         boolean pending=AccessibilityRepairState.pending(context);
         if(!enabled&&!pending)
-            throw new ControlException(PERMISSION_REQUIRED,"Enable Pocket Agent accessibility to use virtual displays");
+            throw new ControlException(PERMISSION_REQUIRED,"Enable Pocket Agent accessibility to control Android displays");
         try {
-            context.startForegroundService(new android.content.Intent(context,AccessibilityRepairService.class));
+            context.startForegroundService(new Intent(context,AccessibilityRepairService.class));
         } catch(RuntimeException failure) {
             throw new ControlException(NOT_READY,"Pocket Agent accessibility recovery could not be started");
         }
@@ -100,10 +110,34 @@ final class AgentDisplayCoordinator implements AutoCloseable {
             throw new ControlException(PERMISSION_REQUIRED,"Pocket Agent accessibility is disabled");
     }
 
-    synchronized void launch(String owner,String component) throws ControlException {client().launch(display(owner),component);}
-    synchronized void openUrl(String owner,String url) throws ControlException {int id=display(owner);client().openUrl(id,url);}
-    synchronized void showClock(String owner,String screen) throws ControlException {int id=display(owner);client().showClock(id,screen);}
-    synchronized void key(String owner,int code) throws ControlException {client().key(display(owner),code);}
+    private void startPhysical(String owner,Intent source) throws ControlException {
+        screen(owner,true).startActivity(source);
+    }
+
+    synchronized void launch(String owner,Intent launch,boolean physical) throws ControlException {
+        if(physical){startPhysical(owner,launch);return;}
+        if(launch.getComponent()==null)throw new ControlException(UNSUPPORTED,"No launcher component visible for this package");
+        int id=display(owner);client().launch(id,launch.getComponent().flattenToString());
+    }
+
+    synchronized void openUrl(String owner,String url,boolean physical) throws ControlException {
+        if(physical){startPhysical(owner,new Intent(Intent.ACTION_VIEW,Uri.parse(url)));return;}
+        int id=display(owner);client().openUrl(id,url);
+    }
+
+    synchronized void showClock(String owner,String screen,boolean physical) throws ControlException {
+        if(physical) {
+            String action=switch(screen) {
+                case "alarms"->AlarmClock.ACTION_SHOW_ALARMS;
+                case "timers"->AlarmClock.ACTION_SHOW_TIMERS;
+                default->throw new ControlException(INVALID_ARGUMENT,"Expected alarms or timers");
+            };
+            startPhysical(owner,new Intent(action));return;
+        }
+        int id=display(owner);client().showClock(id,screen);
+    }
+
+    synchronized void key(String owner,int code) throws ControlException {int id=display(owner);client().key(id,code);}
 
     synchronized void release(String owner) {
         Integer id=displays.remove(owner);

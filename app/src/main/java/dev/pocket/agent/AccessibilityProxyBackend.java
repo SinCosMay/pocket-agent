@@ -1,6 +1,7 @@
 package dev.pocket.agent;
 
 import android.content.Context;
+import android.content.Intent;
 import android.os.Bundle;
 import dev.pocket.control.ControlBackend;
 import dev.pocket.control.ControlException;
@@ -75,7 +76,7 @@ final class AccessibilityProxyBackend implements ControlBackend {
     }
     private Bundle call(String method,Bundle extras) throws ControlException {
         extras.putInt("displayId",displayId);
-        boolean mutation="execute".equals(method);
+        boolean mutation="execute".equals(method)||"startActivity".equals(method);
         long timeout=switch(method) {
             case "observe" -> extras.getBoolean("includeImage")?OBSERVE_IPC_TIMEOUT_MS:VALIDATE_IPC_TIMEOUT_MS;
             case "validate" -> VALIDATE_IPC_TIMEOUT_MS;
@@ -120,6 +121,11 @@ final class AccessibilityProxyBackend implements ControlBackend {
     }
     void validateAction(ControlBackend.Action action) throws ControlException {call("validate",action(action));}
     void noteInteraction(long eventTime) throws ControlException {Bundle args=new Bundle();args.putLong("eventTime",eventTime);call("noteInteraction",args);}
+    void startActivity(Intent intent) throws ControlException {
+        if(displayId!=android.view.Display.DEFAULT_DISPLAY)
+            throw new ControlException(ControlException.Code.INVALID_ARGUMENT,"Visible-screen launch requires the physical display");
+        Bundle args=new Bundle();args.putParcelable("intent",new Intent(intent));call("startActivity",args);
+    }
     void release() {try {call("release",new Bundle());} catch(ControlException ignored) {}}
 
     @Override public ControlBackend.Observation observe(boolean includeImage,int maxImageDimension,int maxNodes) throws ControlException {

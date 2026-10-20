@@ -12,6 +12,7 @@ import android.media.Image;
 import android.media.ImageReader;
 import android.os.Handler;
 import android.os.Looper;
+import android.view.Display;
 import androidx.test.ext.junit.runners.AndroidJUnit4;
 import androidx.test.platform.app.InstrumentationRegistry;
 import dev.pocket.control.ControlBackend.*;
@@ -19,7 +20,6 @@ import dev.pocket.control.ControlException;
 import java.nio.charset.StandardCharsets;
 import java.util.regex.Matcher;
 import java.util.regex.Pattern;
-import org.junit.Assume;
 import org.junit.Test;
 import org.junit.runner.RunWith;
 import static org.junit.Assert.*;
@@ -31,6 +31,19 @@ public class PhoneTargetDeviceTest {
     private final UiAutomation automation=InstrumentationRegistry.getInstrumentation()
         .getUiAutomation(UiAutomation.FLAG_DONT_SUPPRESS_ACCESSIBILITY_SERVICES);
 
+    private Observation observed(AccessibilityProxyBackend screen,String expected) throws Exception {
+        long end=System.currentTimeMillis()+6000;
+        while(System.currentTimeMillis()<end) {
+            try {
+                Observation o=screen.observe(false,720,200);
+                if(o.nodes().stream().anyMatch(n->n.text().equals(expected)))return o;
+            } catch(ControlException e) {
+                if(e.code!=ControlException.Code.NOT_READY&&e.code!=ControlException.Code.STALE_OBSERVATION)throw e;
+            }
+            Thread.sleep(100);
+        }
+        throw new AssertionError("Missing display state: "+expected);
+    }
     private final class Chooser implements AutoCloseable {
         ImageReader reader;
         VirtualDisplay display;
@@ -136,8 +149,33 @@ public class PhoneTargetDeviceTest {
         return count;
     }
 
+    @Test public void physicalBackendStaysScopedWhileVirtualDisplayExists() throws Exception {
+        if(android.os.Build.VERSION.SDK_INT<33)return;
+        DeviceTestAccess.ensureAccessibility();
+        AccessibilityProxyBackend physical=new AccessibilityProxyBackend(context,Display.DEFAULT_DISPLAY);
+        Intent launch=new Intent().setClassName("dev.pocket.agent.fixture","dev.pocket.agent.fixture.FixtureActivity")
+            .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK|Intent.FLAG_ACTIVITY_MULTIPLE_TASK|Intent.FLAG_ACTIVITY_EXCLUDE_FROM_RECENTS);
+        context.startActivity(launch,ActivityOptions.makeBasic().setLaunchDisplayId(Display.DEFAULT_DISPLAY).toBundle());
+        Observation physicalBefore=observed(physical,"POCKET_AGENT_FIXTURE");
+        assertTrue(physicalBefore.nodes().stream().anyMatch(n->n.text().equals("STATUS_READY")));
+        try(Chooser virtual=new Chooser("overlap")) {
+            Observation virtualObservation=virtual.observed("CHOOSER_READY");
+            Action interactVirtual=new Action(Kind.CLICK,virtualObservation.snapshotId(),null,null,null,null,800,null,false,null,null,
+                new Selector(null,null,"CHOOSER_ROW"));
+            Result receipt=virtual.screen.execute(interactVirtual);
+            assertEquals(receipt.toString(),"dispatched",receipt.status());
+            virtual.observed("CHOOSER_SELECTED");
+
+            Observation physicalAfter=observed(physical,"POCKET_AGENT_FIXTURE");
+            assertTrue(physicalAfter.nodes().stream().anyMatch(n->n.text().equals("STATUS_READY")));
+            assertFalse(physicalAfter.nodes().stream().anyMatch(n->n.text().startsWith("CHOOSER_")));
+            Observation virtualAfter=virtual.observed("CHOOSER_SELECTED");
+            assertFalse(virtualAfter.nodes().stream().anyMatch(n->n.text().equals("STATUS_READY")));
+        } finally {physical.release();}
+    }
+
     @Test public void workerTaskDoesNotMigrateIntoPhysicalRecentsWhenDisplayIsReleased() throws Exception {
-        Assume.assumeFalse("Real-device regression check; emulator task/IME plumbing differs from the Xiaomi finding",emulator());
+        if(emulator())return;
         shell("am force-stop dev.pocket.agent.fixture");
         Chooser c=new Chooser("recents_regression");
         try {
@@ -160,7 +198,7 @@ public class PhoneTargetDeviceTest {
     }
 
     @Test public void focusingVirtualEditTextDoesNotShowImeOnPhysicalDisplay() throws Exception {
-        Assume.assumeFalse("Real-device regression check; emulator task/IME plumbing differs from the Xiaomi finding",emulator());
+        if(emulator())return;
         try(Chooser c=new Chooser("editable")) {
             Observation o=c.observed("POCKET_AGENT_FIXTURE");
             Node input=o.nodes().stream().filter(n->n.description().equals("AGENT_INPUT")).findFirst().orElseThrow();

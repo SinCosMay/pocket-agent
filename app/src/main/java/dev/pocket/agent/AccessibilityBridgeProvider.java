@@ -1,7 +1,9 @@
 package dev.pocket.agent;
 
+import android.app.ActivityOptions;
 import android.content.ContentProvider;
 import android.content.ContentValues;
+import android.content.Intent;
 import android.database.Cursor;
 import android.net.Uri;
 import android.os.Bundle;
@@ -90,6 +92,23 @@ public final class AccessibilityBridgeProvider extends ContentProvider {
             }
             if(service==null)throw new ControlException(ControlException.Code.PERMISSION_REQUIRED,"Pocket Agent accessibility is enabled but not currently bound");
             if(extras==null)throw new ControlException(ControlException.Code.INVALID_ARGUMENT,"Missing accessibility bridge arguments");
+            if("startActivity".equals(method)) {
+                int displayId=extras.getInt("displayId",-1);
+                if(displayId!=android.view.Display.DEFAULT_DISPLAY)
+                    throw new ControlException(ControlException.Code.INVALID_ARGUMENT,"Visible-screen launch requires the physical display");
+                Intent source=(Intent)extras.getParcelable("intent");
+                if(source==null)throw new ControlException(ControlException.Code.INVALID_ARGUMENT,"Missing launch intent");
+                Intent intent=new Intent(source).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK);
+                try {
+                    ActivityOptions options=ActivityOptions.makeBasic();options.setLaunchDisplayId(displayId);
+                    service.startActivity(intent,options.toBundle());
+                } catch(SecurityException denied) {
+                    throw new ControlException(ControlException.Code.PERMISSION_REQUIRED,"Android blocked opening content on the visible display");
+                } catch(RuntimeException rejected) {
+                    throw new ControlException(ControlException.Code.ACTION_REJECTED,"Android rejected opening content on the visible display");
+                }
+                return new Bundle();
+            }
             AndroidScreenBackend backend=backend(service,extras.getInt("displayId",-1));
             if("observe".equals(method))
                 return observation(backend.observe(extras.getBoolean("includeImage"),extras.getInt("maxImageDimension"),extras.getInt("maxNodes")));
