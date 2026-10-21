@@ -121,7 +121,9 @@ function fixedCompletionsFetch(mode: string, fetcher: typeof fetch, requestSigna
   }) as typeof fetch;
 }
 
-const CODEX_INFERENCE_ATTEMPTS = 3;
+const CODEX_INFERENCE_RETRIES = 3;
+const CODEX_INFERENCE_ATTEMPTS = 1 + CODEX_INFERENCE_RETRIES;
+const RETRYABLE_CODEX_STREAM_ERRORS = new Set(['server_error','internal_error','overloaded','service_unavailable','rate_limit_exceeded','upstream_error']);
 const RETRYABLE_HTTP = new Set([408,429,500,502,503,504]);
 const RETRYABLE_NETWORK = new Set(['ECONNRESET','ECONNREFUSED','EPIPE','ETIMEDOUT','EAI_AGAIN','ENETUNREACH','UND_ERR_CONNECT_TIMEOUT','UND_ERR_SOCKET']);
 function retryableNetwork(error: unknown): boolean {
@@ -139,7 +141,7 @@ function retryDelay(headers: Headers | undefined, attempt: number): number {
     const date = Date.parse(after);
     if (Number.isFinite(date)) return Math.max(0,date-Date.now());
   }
-  return 250 * 2**attempt;
+  return 1000 * 2**attempt;
 }
 function retryWait(ms: number, signal: AbortSignal): Promise<void> {
   return new Promise((resolve,reject)=>{
@@ -168,22 +170,22 @@ async function terminalCodexError(response: Response): Promise<boolean> {
   finally {try {await reader.cancel();} catch {/* Discard remote diagnostics. */}}
 }
 
-function fixedCodexFetch(fetcher: typeof fetch, requestSignal?: AbortSignal): typeof fetch {
+function fixedCodexFetch(fetcher: typeof fetch, budget: {attempts:number}, deadline: AbortSignal, requestSignal?: AbortSignal): typeof fetch {
   return (async(input: any, init?: RequestInit)=>{
     if (String(input) !== CODEX_RESPONSES_URL) throw new Error('Unexpected Codex inference destination.');
-    const timeout = AbortSignal.timeout(120000);
-    // Pi releases its header-only combined signal after fetch resolves. Keep
-    // the original conversation signal attached for the entire response body.
-    const signal = AbortSignal.any([timeout,...(init?.signal?[init.signal]:[]),...(requestSignal?[requestSignal]:[])]);
+    // A single wall-clock deadline covers transport retries, SSE restarts and
+    // the response body; Pi's header-only signal is not sufficient alone.
+    const signal = AbortSignal.any([deadline,...(init?.signal?[init.signal]:[]),...(requestSignal?[requestSignal]:[])]);
     // Retry only inference transport before successful headers. Pi never retries the
     // agent loop or streamed output, and credential refresh/persistence is outside here.
     let response!: Response;
-    for (let attempt=0;attempt<CODEX_INFERENCE_ATTEMPTS;attempt++) {
+    while (budget.attempts < CODEX_INFERENCE_ATTEMPTS) {
       if (signal.aborted) throw new Error('Codex inference interrupted.');
+      const attempt = budget.attempts++;
       try {
         response = await fetcher(CODEX_RESPONSES_URL,{...init,redirect:'error',signal});
       } catch (error) {
-        if (signal.aborted || !retryableNetwork(error) || attempt+1===CODEX_INFERENCE_ATTEMPTS)
+        if (signal.aborted || !retryableNetwork(error) || budget.attempts===CODEX_INFERENCE_ATTEMPTS)
           throw new Error('Codex inference connection failed.');
         await retryWait(retryDelay(undefined,attempt),signal);
         continue;
@@ -193,7 +195,7 @@ function fixedCodexFetch(fetcher: typeof fetch, requestSignal?: AbortSignal): ty
       const delay = retryDelay(response.headers,attempt);
       if (signal.aborted) throw new Error('Codex inference interrupted.');
       // Do not ignore a provider's long Retry-After or extend the shared 120s deadline.
-      if (terminal || !RETRYABLE_HTTP.has(response.status) || attempt+1===CODEX_INFERENCE_ATTEMPTS || delay>5000) {
+      if (terminal || !RETRYABLE_HTTP.has(response.status) || budget.attempts===CODEX_INFERENCE_ATTEMPTS || delay>5000) {
         return new Response(JSON.stringify({error:{message:`Codex inference rejected the request (HTTP ${response.status}).`}}),{status:response.status,headers:{'content-type':'application/json'}});
       }
       await retryWait(delay,signal);
@@ -246,9 +248,19 @@ export function makeStream(config: ProviderConfig, credentials: ProviderCredenti
       const reasoning = account && requestedReasoning !== DEFAULT_REASONING_EFFORT && !reasoningVerified
         ? DEFAULT_REASONING_EFFORT : requestedReasoning;
       const shared = {...options,apiKey,transport:'sse' as const,maxRetries:0,timeoutMs:120000,reasoning};
-      const source = model.api === 'openai-codex-responses'
-        ? codexStreamSimple(model,context,{
-            ...shared,fetch:fixedCodexFetch(options?.fetch ?? globalThis.fetch,options?.signal),
+      const budget = {attempts:0};
+      // Credential refresh is deliberately outside this retry scope.
+      const deadline = account ? AbortSignal.timeout(120000) : undefined;
+      const retrySignal = account
+        ? AbortSignal.any([deadline!,...(options?.signal?[options.signal]:[])])
+        : undefined;
+      const sourceFor = (onCodexEvent?: (event:any)=>void) => model!.api === 'openai-codex-responses'
+        ? codexStreamSimple(model!,context,{
+            ...shared,fetch:fixedCodexFetch(options?.fetch ?? globalThis.fetch,budget,deadline!,options?.signal),
+            onProviderStreamEvent:async (event,selected)=>{
+              onCodexEvent?.(event);
+              await options?.onProviderStreamEvent?.(event,selected);
+            },
             onPayload:async(raw,selected)=>{
               const replacement = await options?.onPayload?.(raw,selected);
               const body = (replacement ?? raw) as any;
@@ -256,24 +268,64 @@ export function makeStream(config: ProviderConfig, credentials: ProviderCredenti
                 ...(Array.isArray(body.tools) ? {tools:body.tools.map((tool:any)=>tool.type==='function'?{...tool,strict:false}:tool)} : {})};
             },
           })
-        : model.api === 'openai-completions'
-          ? completionsStreamSimple(model,context,{
+        : model!.api === 'openai-completions'
+          ? completionsStreamSimple(model!,context,{
               ...shared,
               fetch:fixedCompletionsFetch(mode,options?.fetch ?? globalThis.fetch,options?.signal),
             })
-          : streamSimple(model,context,shared);
+          : streamSimple(model!,context,shared);
       const guarded = new AssistantMessageEventStream();
       void(async()=>{
+        let forwardedStart = false;
         try {
-          for await (const event of source) {
-            if (event.type === 'error') {
-              if (account) {
-                // Do not persist raw provider diagnostics or remote failure bodies.
-                event.error = {...event.error,errorMessage:options?.signal?.aborted?'Request cancelled.':'Codex inference failed; check account sign-in and availability.'};
-                delete event.error.diagnostics;
-              } else event.error.errorMessage = redactProviderSecrets(event.error.errorMessage || 'Provider request failed.',credentials).slice(0,512);
+          while (true) {
+            let retryableStreamFailure = false;
+            let emittedProgress = false;
+            let providerProgress = false;
+            let restart = false;
+            const source = sourceFor((event:any)=>{
+              const type = event?.type;
+              if (typeof type !== 'string') return;
+              // The Pi adapter can buffer partial function calls before emitting
+              // any consumer event. Even a single argument delta makes replay unsafe.
+              if (type.startsWith('response.output_item.') || type.startsWith('response.function_call_arguments.') ||
+                  type.startsWith('response.output_text.') || type.startsWith('response.reasoning_') ||
+                  type.startsWith('response.refusal.') || type.startsWith('response.content_part.')) {
+                providerProgress = true;
+              }
+              if (type !== 'response.failed' && type !== 'error') return;
+              const code = event?.response?.error?.code ?? event?.error?.code ?? event?.code;
+              retryableStreamFailure = typeof code === 'string' && RETRYABLE_CODEX_STREAM_ERRORS.has(code.toLowerCase());
+            });
+            for await (const event of source) {
+              if (account && event.type === 'start') {
+                if (!forwardedStart) {
+                  // Pi mutates its partial message when a later SSE failure arrives.
+                  // Never expose the upstream object across a suppressed retry.
+                  guarded.push({...event,partial:structuredClone(event.partial)});
+                  forwardedStart = true;
+                }
+                continue;
+              }
+              // An SSE failure may be retried only before any visible content
+              // or tool-call event. Both HTTP and SSE consume one shared budget.
+              if (account && event.type === 'error' && retryableStreamFailure &&
+                  !emittedProgress && !providerProgress && budget.attempts < CODEX_INFERENCE_ATTEMPTS && !retrySignal!.aborted) {
+                restart = true;
+                break;
+              }
+              if (event.type !== 'error') emittedProgress = true;
+              if (event.type === 'error') {
+                if (account) {
+                  // Do not persist raw provider diagnostics or remote failure bodies.
+                  event.error = {...event.error,errorMessage:options?.signal?.aborted?'Request cancelled.':'Codex inference failed; check account sign-in and availability.'};
+                  delete event.error.diagnostics;
+                } else event.error.errorMessage = redactProviderSecrets(event.error.errorMessage || 'Provider request failed.',credentials).slice(0,512);
+              }
+              guarded.push(event);
             }
-            guarded.push(event);
+            if (!restart) break;
+            await retryWait(retryDelay(undefined,budget.attempts-1),retrySignal!);
           }
           // Terminal events carry the sanitized final message; do not replace it
           // with the upstream stream's unredacted error result.
