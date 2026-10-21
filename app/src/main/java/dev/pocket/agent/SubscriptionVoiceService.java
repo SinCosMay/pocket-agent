@@ -248,7 +248,8 @@ public final class SubscriptionVoiceService extends Service implements AgentServ
             // Native WebRTC starts a new microphone; wake preroll belongs to legacy PCM.
             byte[] preroll = intent.getByteArrayExtra(WakeWordService.EXTRA_WAKE_PREROLL);
             if (preroll != null) java.util.Arrays.fill(preroll, (byte) 0);
-            wakeNeedsReadyCue = lifecycle.state() == SubscriptionVoiceLifecycle.State.CLOSED;
+            wakeNeedsReadyCue = lifecycle.state() == SubscriptionVoiceLifecycle.State.CLOSED
+                || !lifecycle.microphoneAllowed();
             lifecycle.wake(SystemClock.elapsedRealtime());
         } else {
             if (!lifecycle.announce(pendingAnnouncement.id, pendingAnnouncement.message,

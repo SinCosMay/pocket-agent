@@ -57,6 +57,7 @@ final class SubscriptionVoiceLifecycle {
     SubscriptionVoiceLifecycle(Port port) { this.port = port; }
     State state() { return state; }
     long epoch() { return epoch; }
+    boolean microphoneAllowed() { return allowMicrophone; }
 
     void wake(long nowMs) {
         // A speech-only connection has no input track. A later explicit wake must
