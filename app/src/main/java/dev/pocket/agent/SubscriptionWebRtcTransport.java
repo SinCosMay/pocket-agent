@@ -112,6 +112,9 @@ final class SubscriptionWebRtcTransport implements AutoCloseable {
     private static final long CONNECT_TIMEOUT_MS = 15000;
     private static final long ICE_GATHER_TIMEOUT_MS = 7000;
     private static final long V3_PLAYBACK_QUIET_MS = 3500;
+    private static final long PLAYBACK_FIRST_AUDIO_MS = 60_000;
+    private static final long PLAYBACK_AUDIO_IDLE_MS = 30_000;
+    private static final long PLAYBACK_WATCHDOG_INTERVAL_MS = 5000;
 
     private static final Object WEBRTC_INIT_LOCK = new Object();
     private static boolean webrtcInitialized;
@@ -236,12 +239,13 @@ final class SubscriptionWebRtcTransport implements AutoCloseable {
                     if (!send(session, message)) fail(session, "Unable to return delegated speech");
                 }
                 if (active(session) && session.pendingSpeechPlayback) {
-                    int serial = session.speechSerial;
-                    worker.postDelayed(() -> {
-                        if (active(session) && session.pendingSpeechPlayback
-                                && session.speechSerial == serial)
-                            fail(session, "Voice playback did not finish");
-                    }, 60_000);
+                    long started = SystemClock.elapsedRealtime();
+                    // Long Pi answers can take minutes to speak. Bound resource
+                    // ownership, but do not time out while audio is advancing.
+                    long allowance = Math.min(600_000L,
+                            Math.max(90_000L, 60_000L + text.length() * 80L));
+                    schedulePlaybackWatchdog(session, session.speechSerial,
+                            started, started + allowance);
                 }
             } catch (JSONException invalid) {
                 fail(session, "Unable to encode voice response");
@@ -615,6 +619,20 @@ final class SubscriptionWebRtcTransport implements AutoCloseable {
     private boolean send(Session session, JSONObject event) {
         return session.sidebandConnected && session.sideband != null
                 && session.sideband.send(event.toString());
+    }
+
+    private void schedulePlaybackWatchdog(Session session, int serial,
+                                          long startedMs, long hardDeadlineMs) {
+        worker.postDelayed(() -> {
+            if (!active(session) || !session.pendingSpeechPlayback
+                    || session.speechSerial != serial) return;
+            if (session.playbackGate.playbackTimedOut(SystemClock.elapsedRealtime(),
+                    startedMs, hardDeadlineMs, PLAYBACK_FIRST_AUDIO_MS, PLAYBACK_AUDIO_IDLE_MS)) {
+                fail(session, "Voice playback did not finish");
+            } else {
+                schedulePlaybackWatchdog(session, serial, startedMs, hardDeadlineMs);
+            }
+        }, PLAYBACK_WATCHDOG_INTERVAL_MS);
     }
 
     private static void rememberRetiredId(LinkedHashSet<String> ids, String id) {

@@ -60,4 +60,11 @@ final class SubscriptionVoicePlaybackGate {
     long remaining(long nowMs, long quietMs) {
         return Math.max(0L, quietMs - (nowMs - lastAudioMs));
     }
+
+    boolean playbackTimedOut(long nowMs, long startedMs, long absoluteDeadlineMs,
+                             long initialAudioWaitMs, long audioIdleMs) {
+        if (nowMs >= absoluteDeadlineMs) return true;
+        return hasAudio ? nowMs - lastAudioMs >= audioIdleMs
+                : nowMs - startedMs >= initialAudioWaitMs;
+    }
 }

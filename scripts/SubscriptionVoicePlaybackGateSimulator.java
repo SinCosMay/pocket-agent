@@ -52,10 +52,31 @@ public final class SubscriptionVoicePlaybackGateSimulator {
         check(!gate.finishResponse("resp-B"), "Completion leaked into the following response");
     }
 
+    private static void longSpeechWatchdog() {
+        SubscriptionVoicePlaybackGate gate = new SubscriptionVoicePlaybackGate();
+        long start = 1000, absoluteDeadline = 601000;
+        check(!gate.playbackTimedOut(59000, start, absoluteDeadline, 60000, 30000),
+                "Playback timed out before its first-audio grace");
+        check(gate.playbackTimedOut(61000, start, absoluteDeadline, 60000, 30000),
+                "Missing first audio did not time out");
+        gate.audio(55000);
+        check(!gate.playbackTimedOut(61000, start, absoluteDeadline, 60000, 30000),
+                "Long answer was cut off at 60 seconds");
+        gate.audio(121000);
+        check(!gate.playbackTimedOut(140000, start, absoluteDeadline, 60000, 30000),
+                "Advancing audio did not extend watchdog");
+        check(gate.playbackTimedOut(151000, start, absoluteDeadline, 60000, 30000),
+                "Stalled audio did not time out");
+        gate.audio(600000);
+        check(gate.playbackTimedOut(601000, start, absoluteDeadline, 60000, 30000),
+                "Absolute resource deadline was not enforced");
+    }
+
     public static void main(String[] args) {
         gapRequiresCompletion();
         resetAndNoAudio();
         interruptedResponseMustNotFinishNext();
-        System.out.println("Subscription voice playback gate: 3 scenarios PASSED");
+        longSpeechWatchdog();
+        System.out.println("Subscription voice playback gate: 4 scenarios PASSED");
     }
 }

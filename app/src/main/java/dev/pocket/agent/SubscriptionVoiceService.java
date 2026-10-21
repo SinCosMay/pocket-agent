@@ -124,18 +124,24 @@ public final class SubscriptionVoiceService extends Service implements AgentServ
                 // Token refresh can require HTTPS and must never block Android's main thread.
                 credentialWorker.execute(() -> {
                     SubscriptionVoiceCredentials.Token token = null;
+                    boolean networkFailure = false;
                     try {
                         token = SubscriptionVoiceCredentials.load(getApplicationContext());
-                    } catch (Exception ignored) {
+                    } catch (java.io.IOException unavailable) {
+                        networkFailure = true;
+                    } catch (Exception rejected) {
                         // OAuth errors can include secret-bearing response metadata.
                     }
                     final SubscriptionVoiceCredentials.Token ready = token;
+                    final boolean retryable = networkFailure;
                     main.post(() -> {
                         if (!started || lifecycle == null || lifecycle.epoch() != epoch
                                 || lifecycle.state() != SubscriptionVoiceLifecycle.State.CONNECTING)
                             return;
                         if (ready == null) {
-                            notifyStatus("ChatGPT voice sign-in expired; sign in again");
+                            notifyStatus(retryable
+                                    ? "ChatGPT voice unavailable; check your connection"
+                                    : "ChatGPT voice sign-in expired; sign in again");
                             lifecycle.disconnected(epoch);
                             return;
                         }
