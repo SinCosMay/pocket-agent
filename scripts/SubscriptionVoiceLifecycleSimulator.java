@@ -6,13 +6,14 @@ import java.util.List;
 public final class SubscriptionVoiceLifecycleSimulator {
     private static final class FakePort implements SubscriptionVoiceLifecycle.Port {
         final List<String> calls = new ArrayList<>();
-        @Override public void connect(long epoch) { calls.add("connect:" + epoch); }
+        @Override public void connect(long epoch, boolean microphone) { calls.add("connect:" + epoch + ":" + microphone); }
         @Override public void close(long epoch) { calls.add("close:" + epoch); }
         @Override public void sendToPi(String turnId, String text) { calls.add("pi:" + turnId + ":" + text); }
         @Override public void cancelPi(String turnId) { calls.add("cancel:" + turnId); }
         @Override public void sendSpeech(String id, String text) { calls.add("speech:" + id + ":" + text); }
         @Override public void interruptSpeech() { calls.add("interrupt-speech"); }
         @Override public void status(String text) { }
+        @Override public void announcementFailed(String id, String reason) { calls.add("failed:" + id); }
         boolean has(String fragment) { return calls.stream().anyMatch(c -> c.contains(fragment)); }
         long count(String prefix) { return calls.stream().filter(c -> c.startsWith(prefix)).count(); }
         String lastPi() { return calls.stream().filter(c -> c.startsWith("pi:")).reduce((a,b)->b).orElse(""); }
@@ -57,12 +58,12 @@ public final class SubscriptionVoiceLifecycleSimulator {
     private static void announcementsAndShutdown() {
         FakePort p = new FakePort();
         SubscriptionVoiceLifecycle s = new SubscriptionVoiceLifecycle(p);
-        check(!s.announce(" ", true, 0), "empty speech accepted");
-        check(s.announce("Hello user", true, 100), "speech rejected");
+        check(!s.announce("empty", " ", true, 0), "empty speech accepted");
+        check(s.announce("hello", "Hello user", true, 100), "speech rejected");
         check(p.count("connect:") == 1, "on-demand speech didn't connect");
         s.connected(1, 200);
         check(p.has("speech:null:Hello user"), "announcement didn't speak");
-        s.announce("Goodbye", false, 201);
+        s.announce("bye", "Goodbye", false, 201);
         s.playbackFinished(1, 300);
         check(p.has("speech:null:Goodbye"), "announcement queue was not drained");
         s.playbackFinished(1, 400);
@@ -94,21 +95,44 @@ public final class SubscriptionVoiceLifecycleSimulator {
         check(p.count("cancel:") == 2, "active main turn not cancelled on failure");
         s.connected(1, 900);
         check(s.state() == SubscriptionVoiceLifecycle.State.CLOSED, "late ready resurrected closed service");
-        s.announce("Speaking while user interrupts", true, 1000);
+        s.announce("interrupted", "Speaking while user interrupts", true, 1000);
         s.connected(2, 1050);
         s.inputInterrupted(2, 1100);
         check(p.count("interrupt-speech") == 1, "speech playback was not interrupted");
+        s.speechStarted(2, 1100);
+        s.tick(5100);
+        check(s.state() == SubscriptionVoiceLifecycle.State.LISTENING,
+              "long utterance must not hit three-second idle deadline");
+        s.speechStopped(2, 5150);
         check(s.state() == SubscriptionVoiceLifecycle.State.LISTENING, "interruption did not resume listening");
-        s.tick(4099);
-        check(s.state() == SubscriptionVoiceLifecycle.State.LISTENING, "interruption idle expired early");
-        s.tick(4100);
+        s.tick(13149);
+        check(s.state() == SubscriptionVoiceLifecycle.State.LISTENING, "post-speech grace expired early");
+        s.tick(13150);
         check(s.state() == SubscriptionVoiceLifecycle.State.CLOSED, "interruption idle failed to close");
+    }
+
+    private static void outputOnlyAnnouncement() {
+        FakePort p = new FakePort();
+        SubscriptionVoiceLifecycle s = new SubscriptionVoiceLifecycle(p);
+        check(s.announce("speak", "Only speak, do not listen", false, 0), "speech-only request refused");
+        check(p.has("connect:1:false"), "output-only session requested microphone");
+        check(!s.announce("listen", "Ask a question", true, 50),
+            "cannot silently authorize microphone in an output-only session");
+        s.connected(1, 100);
+        check(p.has("speech:null:Only speak, do not listen"), "speech-only output not queued");
+        s.playbackFinished(1, 130);
+        check(s.state() == SubscriptionVoiceLifecycle.State.CLOSED, "output-only session stayed open");
+        check(!p.has("failed:speak"), "completed announcement incorrectly failed");
+        s.announce("lost", "Report on cancellation", false, 250);
+        s.disconnected(2);
+        check(p.has("failed:lost"), "lost announcement failed to report delivery failure");
     }
 
     public static void main(String[] args) {
         normalWakeAndPiHandoff();
         announcementsAndShutdown();
         interruptionAndDisconnect();
-        System.out.println("Subscription voice lifecycle simulator: 3 scenarios PASSED");
+        outputOnlyAnnouncement();
+        System.out.println("Subscription voice lifecycle simulator: 4 scenarios PASSED");
     }
 }

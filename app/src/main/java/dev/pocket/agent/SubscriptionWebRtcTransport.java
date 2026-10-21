@@ -11,8 +11,10 @@ import java.io.InputStream;
 import java.io.ByteArrayOutputStream;
 import java.nio.ByteBuffer;
 import java.nio.charset.StandardCharsets;
+import java.util.ArrayDeque;
 import java.util.Collections;
 import java.util.HashSet;
+import java.util.LinkedHashSet;
 import java.util.Set;
 import java.util.UUID;
 import java.util.concurrent.TimeUnit;
@@ -37,9 +39,11 @@ import org.webrtc.DataChannel;
 import org.webrtc.IceCandidate;
 import org.webrtc.MediaConstraints;
 import org.webrtc.MediaStream;
+import org.webrtc.MediaStreamTrack;
 import org.webrtc.PeerConnection;
 import org.webrtc.PeerConnectionFactory;
 import org.webrtc.RtpReceiver;
+import org.webrtc.RtpTransceiver;
 import org.webrtc.SdpObserver;
 import org.webrtc.SessionDescription;
 import org.webrtc.audio.JavaAudioDeviceModule;
@@ -82,6 +86,8 @@ final class SubscriptionWebRtcTransport implements AutoCloseable {
         void onDelegation(long epoch, String delegationId, String userText);
         void onActivity(long epoch);
         void onInterrupted(long epoch);
+        default void onSpeechStarted(long epoch) {}
+        default void onSpeechStopped(long epoch) {}
         void onPlaybackFinished(long epoch);
         void onDisconnected(long epoch);
         void onError(long epoch, String safeMessage);
@@ -126,9 +132,12 @@ final class SubscriptionWebRtcTransport implements AutoCloseable {
 
     private static final class Session {
         final long epoch;
+        final boolean allowMicrophone;
         final String requestId = UUID.randomUUID().toString();
         final Set<String> delegations = new HashSet<>();
         final Set<String> pendingSpeech = new HashSet<>();
+        final LinkedHashSet<String> eventIds = new LinkedHashSet<>();
+        final ArrayDeque<String[]> pendingDelegations = new ArrayDeque<>();
         Credentials credentials;
         PeerConnectionFactory factory;
         PeerConnection peer;
@@ -146,8 +155,11 @@ final class SubscriptionWebRtcTransport implements AutoCloseable {
         boolean sidebandConnected;
         boolean connectedNotified;
         boolean pendingSpeechPlayback;
+        int speechSerial;
+        boolean responseActive;
+        boolean cancelRequested;
         boolean finished;
-        Session(long epoch) { this.epoch = epoch; }
+        Session(long epoch, boolean microphone) { this.epoch = epoch; this.allowMicrophone = microphone; }
     }
 
     SubscriptionWebRtcTransport(Context context, CredentialProvider credentials, Listener listener) {
@@ -161,7 +173,7 @@ final class SubscriptionWebRtcTransport implements AutoCloseable {
     }
 
     /** Asynchronous; repeated calls with the same epoch reuse the running session. */
-    void connect(long epoch) {
+    void connect(long epoch, boolean microphone) {
         if (disposed.get() || epoch < 0) return;
         failureEpoch.set(-1);
         wantedEpoch.set(epoch);
@@ -169,7 +181,7 @@ final class SubscriptionWebRtcTransport implements AutoCloseable {
             if (wantedEpoch.get() != epoch || disposed.get()) return;
             if (current != null && current.epoch == epoch) return;
             disposeSession();
-            Session session = new Session(epoch);
+            Session session = new Session(epoch, microphone);
             current = session;
             worker.postDelayed(() -> {
                 if (active(session) && !session.connectedNotified)
@@ -208,6 +220,14 @@ final class SubscriptionWebRtcTransport implements AutoCloseable {
                     session.pendingSpeechPlayback = true;
                     if (!send(session, message)) fail(session, "Unable to return delegated speech");
                 }
+                if (active(session) && session.pendingSpeechPlayback) {
+                    int serial = ++session.speechSerial;
+                    worker.postDelayed(() -> {
+                        if (active(session) && session.pendingSpeechPlayback
+                                && session.speechSerial == serial)
+                            fail(session, "Voice playback did not finish");
+                    }, 60_000);
+                }
             } catch (JSONException invalid) {
                 fail(session, "Unable to encode voice response");
             }
@@ -221,7 +241,10 @@ final class SubscriptionWebRtcTransport implements AutoCloseable {
             if (!active(session) || session.epoch != epoch || !session.connectedNotified) return;
             session.pendingSpeechPlayback = false;
             try {
-                send(session, new JSONObject().put("type", "response.cancel"));
+                if (session.responseActive) {
+                    session.cancelRequested = send(session, new JSONObject().put("type", "response.cancel"));
+                    session.responseActive = false;
+                }
                 send(session, new JSONObject().put("type", "output_audio_buffer.clear"));
             } catch (JSONException ignored) {
                 // Static event types cannot fail JSON serialization.
@@ -252,7 +275,7 @@ final class SubscriptionWebRtcTransport implements AutoCloseable {
 
     private void initialize(Session session) {
         try {
-            if (context.checkSelfPermission(Manifest.permission.RECORD_AUDIO)
+            if (session.allowMicrophone && context.checkSelfPermission(Manifest.permission.RECORD_AUDIO)
                     != PackageManager.PERMISSION_GRANTED) {
                 fail(session, "Microphone permission is required for subscription voice");
                 return;
@@ -279,11 +302,18 @@ final class SubscriptionWebRtcTransport implements AutoCloseable {
             configuration.sdpSemantics = PeerConnection.SdpSemantics.UNIFIED_PLAN;
             session.peer = session.factory.createPeerConnection(configuration, peerObserver(session));
             if (session.peer == null) throw new IllegalStateException("WebRTC peer could not be created");
-            session.microphone = session.factory.createAudioSource(new MediaConstraints());
+            if (session.allowMicrophone) {
+                session.microphone = session.factory.createAudioSource(new MediaConstraints());
             session.track = session.factory.createAudioTrack("pocket-microphone", session.microphone);
             session.track.setEnabled(true);
             if (session.peer.addTrack(session.track, Collections.singletonList("pocket-audio")) == null)
                 throw new IllegalStateException("WebRTC microphone track could not be added");
+            } else {
+                RtpTransceiver receiver = session.peer.addTransceiver(
+                    MediaStreamTrack.MediaType.MEDIA_TYPE_AUDIO,
+                    new RtpTransceiver.RtpTransceiverInit(RtpTransceiver.RtpTransceiverDirection.RECV_ONLY));
+                if (receiver == null) throw new IllegalStateException("WebRTC receive-only track unavailable");
+            }
             session.channel = session.peer.createDataChannel("oai-events", new DataChannel.Init());
             if (session.channel == null) throw new IllegalStateException("WebRTC data channel unavailable");
             session.channel.registerObserver(channelObserver(session));
@@ -546,6 +576,10 @@ final class SubscriptionWebRtcTransport implements AutoCloseable {
                 || !session.dataConnected || !session.sidebandConnected) return;
         session.connectedNotified = true;
         onMain(session, () -> listener.onConnected(session.epoch));
+        while (!session.pendingDelegations.isEmpty()) {
+            String[] item = session.pendingDelegations.removeFirst();
+            onMain(session, () -> listener.onDelegation(session.epoch, item[0], item[1]));
+        }
     }
 
     private boolean send(Session session, JSONObject event) {
@@ -558,7 +592,17 @@ final class SubscriptionWebRtcTransport implements AutoCloseable {
         JSONObject event;
         try { event = new JSONObject(raw); }
         catch (JSONException invalid) { return; }
+        // Data channel and sideband mirror some events. Handle each event once.
+        String eventId = event.optString("event_id", "");
+        if (!eventId.isEmpty()) {
+            if (!session.eventIds.add(eventId)) return;
+            if (session.eventIds.size() > 512)
+                session.eventIds.remove(session.eventIds.iterator().next());
+        }
         String type = event.optString("type");
+        if ("turn.created".equals(type) || "response.created".equals(type)
+                || "session.output_audio.delta".equals(type)) session.responseActive = true;
+        if ("turn.done".equals(type) || "response.done".equals(type)) session.responseActive = false;
         switch (type) {
             case "delegation.created": {
                 JSONObject item = event.optJSONObject("item");
@@ -569,7 +613,10 @@ final class SubscriptionWebRtcTransport implements AutoCloseable {
                 if (spoken.isBlank()) spoken = textOf(event);
                 if (spoken.isBlank() || !session.delegations.add(id)) return;
                 String requestText = spoken;
-                onMain(session, () -> listener.onDelegation(session.epoch, id, requestText));
+                if (session.connectedNotified)
+                    onMain(session, () -> listener.onDelegation(session.epoch, id, requestText));
+                else if (session.pendingDelegations.size() < 16)
+                    session.pendingDelegations.addLast(new String[]{id, requestText});
                 break;
             }
             case "conversation.item.input_audio_transcription.completed":
@@ -583,14 +630,19 @@ final class SubscriptionWebRtcTransport implements AutoCloseable {
             }
             case "input_audio_buffer.speech_started":
             case "input_audio.speech_started":
+                if (!session.allowMicrophone) break;
                 onMain(session, () -> {
                     listener.onActivity(session.epoch);
+                    listener.onSpeechStarted(session.epoch);
                     listener.onInterrupted(session.epoch);
                 });
                 break;
-            case "response.output_audio.done":
-            case "output_audio.done":
+            case "input_audio_buffer.speech_stopped":
+            case "input_audio.speech_stopped":
+                onMain(session, () -> listener.onSpeechStopped(session.epoch));
+                break;
             case "output_audio_buffer.stopped":
+            case "session.output_audio.playback_done":
                 if (session.pendingSpeechPlayback) {
                     session.pendingSpeechPlayback = false;
                     onMain(session, () -> listener.onPlaybackFinished(session.epoch));
@@ -598,6 +650,12 @@ final class SubscriptionWebRtcTransport implements AutoCloseable {
                 break;
             case "error":
                 // Never pass provider error messages through: they may contain secrets.
+                JSONObject details = event.optJSONObject("error");
+                String code = details == null ? "" : details.optString("code", "");
+                if (session.cancelRequested && "response_cancel_not_active".equals(code)) {
+                    session.cancelRequested = false;
+                    break;
+                }
                 fail(session, "Subscription realtime service returned an error");
                 break;
             default:
@@ -683,6 +741,8 @@ final class SubscriptionWebRtcTransport implements AutoCloseable {
         session.credentials = null;
         session.delegations.clear();
         session.pendingSpeech.clear();
+        session.eventIds.clear();
+        session.pendingDelegations.clear();
     }
 
     private static void safely(Runnable cleanup) {

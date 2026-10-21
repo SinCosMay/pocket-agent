@@ -41,16 +41,22 @@ final class SubscriptionVoiceCredentials {
             return new Token(access, account);
         String oldRefresh = values.optString("refreshToken");
         if (oldRefresh.isEmpty()) throw new IllegalStateException("ChatGPT sign-in expired");
-        JSONObject rotated = refreshOnce(oldRefresh, account);
+        JSONObject rotated;
+        try {
+            rotated = refreshOnce(oldRefresh, account);
+        } catch (Exception refreshRejected) {
+            // Pi may have already rotated this one-use refresh token. Never retry it,
+            // but accept a newer encrypted token for the *same* ChatGPT account.
+            Token concurrent = concurrentRefresh(store, account, oldRefresh);
+            if (concurrent != null) return concurrent;
+            throw refreshRejected;
+        }
         // Atomic compare-and-save prevents an older refresh from overwriting newer Pi credentials.
         try {
             store.updateCodex(rotated.put("oldRefreshToken", oldRefresh));
         } catch (IllegalStateException stale) {
-            // A concurrent Pi refresh may have won: use only a provably fresh saved token.
-            JSONObject latest = store.get();
-            if (account.equals(latest.optString("accountId")) &&
-                latest.optLong("expiresAt") > System.currentTimeMillis() + EXPIRY_MARGIN_MS)
-                return new Token(latest.getString("accessToken"), account);
+            Token concurrent = concurrentRefresh(store, account, oldRefresh);
+            if (concurrent != null) return concurrent;
             throw new IllegalStateException("ChatGPT credentials changed; sign in again");
         }
         JSONObject saved = store.get();
@@ -58,6 +64,18 @@ final class SubscriptionVoiceCredentials {
             saved.optLong("expiresAt") <= System.currentTimeMillis() + EXPIRY_MARGIN_MS)
             throw new IllegalStateException("ChatGPT refresh could not be saved");
         return new Token(saved.getString("accessToken"), account);
+    }
+
+    private static Token concurrentRefresh(CredentialStore store, String account,
+                                           String previousRefresh) throws Exception {
+        JSONObject latest = store.get();
+        if (!CredentialStore.CODEX_ACCOUNT.equals(latest.optString("authMode")) ||
+            !account.equals(latest.optString("accountId")) ||
+            previousRefresh.equals(latest.optString("refreshToken")) ||
+            latest.optString("accessToken").isEmpty() ||
+            latest.optLong("expiresAt") <= System.currentTimeMillis() + EXPIRY_MARGIN_MS)
+            return null;
+        return new Token(latest.getString("accessToken"), account);
     }
 
     private static JSONObject refreshOnce(String refresh, String account) throws Exception {

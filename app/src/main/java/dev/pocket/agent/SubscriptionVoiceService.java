@@ -39,6 +39,8 @@ public final class SubscriptionVoiceService extends Service implements AgentServ
     private SubscriptionVoiceLifecycle lifecycle;
     private SubscriptionVoiceTransport transport;
     private boolean started;
+    private boolean wakeNeedsReadyCue;
+    private boolean microphoneForeground;
     private static volatile boolean active;
     static boolean isActive() { return active; }
     private final Runnable tick = new Runnable() {
@@ -51,7 +53,23 @@ public final class SubscriptionVoiceService extends Service implements AgentServ
     };
     private final SubscriptionVoiceTransport.Callback callbacks = new SubscriptionVoiceTransport.Callback() {
         @Override public void onConnected(long epoch) {
-            main.post(() -> { if (started) lifecycle.connected(epoch, SystemClock.elapsedRealtime()); });
+            main.post(() -> {
+                if (!started || lifecycle.epoch() != epoch) return;
+                lifecycle.connected(epoch, SystemClock.elapsedRealtime());
+                if (wakeNeedsReadyCue && lifecycle.state() == SubscriptionVoiceLifecycle.State.LISTENING) {
+                    wakeNeedsReadyCue = false;
+                    // Wake pre-roll cannot be fed to the native WebRTC microphone.
+                    // Audible readiness marks when the user may begin speaking.
+                    try {
+                        android.media.ToneGenerator tone = new android.media.ToneGenerator(
+                            android.media.AudioManager.STREAM_NOTIFICATION, 65);
+                        tone.startTone(android.media.ToneGenerator.TONE_PROP_BEEP, 180);
+                        main.postDelayed(tone::release, 450);
+                    } catch (RuntimeException unavailable) {
+                        Log.w("PocketSubscriptionVoice", "Ready cue unavailable");
+                    }
+                }
+            });
         }
         @Override public void onDelegation(long epoch, String id, String text) {
             main.post(() -> { if (started) lifecycle.delegated(epoch, id, text); });
@@ -61,6 +79,12 @@ public final class SubscriptionVoiceService extends Service implements AgentServ
         }
         @Override public void onActivity(long epoch) {
             main.post(() -> { if (started) lifecycle.activity(epoch, SystemClock.elapsedRealtime()); });
+        }
+        @Override public void onSpeechStarted(long epoch) {
+            main.post(() -> { if (started) lifecycle.speechStarted(epoch, SystemClock.elapsedRealtime()); });
+        }
+        @Override public void onSpeechStopped(long epoch) {
+            main.post(() -> { if (started) lifecycle.speechStopped(epoch, SystemClock.elapsedRealtime()); });
         }
         @Override public void onError(long epoch, String safeMessage) {
             main.post(() -> {
@@ -86,8 +110,8 @@ public final class SubscriptionVoiceService extends Service implements AgentServ
             new NotificationChannel(CHANNEL, "ChatGPT subscription voice", NotificationManager.IMPORTANCE_LOW));
         transport = new SubscriptionVoiceTransport(getApplicationContext(), callbacks);
         lifecycle = new SubscriptionVoiceLifecycle(new SubscriptionVoiceLifecycle.Port() {
-            @Override public void connect(long epoch) {
-                if (checkSelfPermission(Manifest.permission.RECORD_AUDIO) != PackageManager.PERMISSION_GRANTED) {
+            @Override public void connect(long epoch, boolean allowMicrophone) {
+                if (allowMicrophone && checkSelfPermission(Manifest.permission.RECORD_AUDIO) != PackageManager.PERMISSION_GRANTED) {
                     notifyStatus("Allow microphone access for subscription voice");
                     lifecycle.disconnected(epoch);
                     return;
@@ -110,7 +134,7 @@ public final class SubscriptionVoiceService extends Service implements AgentServ
                             lifecycle.disconnected(epoch);
                             return;
                         }
-                        try { transport.connect(epoch, ready.access, ready.account); }
+                        try { transport.connect(epoch, ready.access, ready.account, allowMicrophone); }
                         catch (RuntimeException invalid) {
                             notifyStatus("Unable to start ChatGPT voice");
                             lifecycle.disconnected(epoch);
@@ -139,10 +163,16 @@ public final class SubscriptionVoiceService extends Service implements AgentServ
                 transport.sendSpeech(delegationId, text);
             }
             @Override public void interruptSpeech() { transport.interruptSpeech(); }
+            @Override public void announcementFailed(String id, String reason) {
+                AgentService.reportVoiceFailure(SubscriptionVoiceService.this, id, reason);
+            }
             @Override public void status(String status) {
                 notifyStatus(status);
                 if (lifecycle != null && lifecycle.state() == SubscriptionVoiceLifecycle.State.CLOSED)
-                    main.post(() -> { if (started) stopSelf(); });
+                    main.post(() -> {
+                        if (started && lifecycle.state() == SubscriptionVoiceLifecycle.State.CLOSED)
+                            stopSelf();
+                    });
             }
         });
         started = true;
@@ -178,16 +208,34 @@ public final class SubscriptionVoiceService extends Service implements AgentServ
     }
 
     @Override public int onStartCommand(Intent intent, int flags, int startId) {
-        if (intent == null) return START_NOT_STICKY;
+        if (intent == null) { stopSelf(startId); return START_NOT_STICKY; }
         if (ACTION_STOP.equals(intent.getAction())) { lifecycle.close(); stopSelf(); return START_NOT_STICKY; }
-        if (!ACTION_WAKE.equals(intent.getAction()) && !ACTION_ANNOUNCE.equals(intent.getAction()))
+        if (!ACTION_WAKE.equals(intent.getAction()) && !ACTION_ANNOUNCE.equals(intent.getAction())) {
+            if (lifecycle.state() == SubscriptionVoiceLifecycle.State.CLOSED) stopSelf(startId);
             return START_NOT_STICKY;
+        }
+        VoiceAnnouncement pendingAnnouncement = null;
+        boolean wake = ACTION_WAKE.equals(intent.getAction());
+        if (!wake) {
+            try { pendingAnnouncement = VoiceAnnouncement.fromIntent(intent); }
+            catch (RuntimeException invalid) {
+                Log.w("PocketSubscriptionVoice", "Invalid subscription speech request");
+                if (lifecycle.state() == SubscriptionVoiceLifecycle.State.CLOSED) stopSelf(startId);
+                return START_NOT_STICKY;
+            }
+        }
+        boolean needsMicrophone = wake || pendingAnnouncement.listenAfter || microphoneForeground;
         try {
-            if (Build.VERSION.SDK_INT >= 34) startForeground(NOTIFICATION_ID, notification("Preparing ChatGPT voice"),
-                ServiceInfo.FOREGROUND_SERVICE_TYPE_MICROPHONE | ServiceInfo.FOREGROUND_SERVICE_TYPE_MEDIA_PLAYBACK);
-            else startForeground(NOTIFICATION_ID, notification("Preparing ChatGPT voice"));
+            if (Build.VERSION.SDK_INT >= 34) {
+                int serviceType = ServiceInfo.FOREGROUND_SERVICE_TYPE_MEDIA_PLAYBACK;
+                if (needsMicrophone) serviceType |= ServiceInfo.FOREGROUND_SERVICE_TYPE_MICROPHONE;
+                startForeground(NOTIFICATION_ID, notification("Preparing ChatGPT voice"), serviceType);
+            } else startForeground(NOTIFICATION_ID, notification("Preparing ChatGPT voice"));
+            microphoneForeground = needsMicrophone;
         } catch (RuntimeException denied) {
-            Log.w("PocketSubscriptionVoice", "Microphone foreground service denied");
+            Log.w("PocketSubscriptionVoice", "Voice foreground service denied");
+            if (pendingAnnouncement != null) AgentService.reportVoiceFailure(
+                this, pendingAnnouncement.id, "Android did not permit background voice playback");
             stopSelf();
             return START_NOT_STICKY;
         }
@@ -196,20 +244,21 @@ public final class SubscriptionVoiceService extends Service implements AgentServ
         WakeWordService.pauseForConversation();
         if (!AgentService.isRunning())
             startForegroundService(new Intent(this, AgentService.class).setAction(AgentService.ACTION_START));
-        if (ACTION_WAKE.equals(intent.getAction())) {
+        if (wake) {
             // Native WebRTC starts a new microphone; wake preroll belongs to legacy PCM.
             byte[] preroll = intent.getByteArrayExtra(WakeWordService.EXTRA_WAKE_PREROLL);
             if (preroll != null) java.util.Arrays.fill(preroll, (byte) 0);
+            wakeNeedsReadyCue = lifecycle.state() == SubscriptionVoiceLifecycle.State.CLOSED;
             lifecycle.wake(SystemClock.elapsedRealtime());
         } else {
-            try {
-                VoiceAnnouncement announce = VoiceAnnouncement.fromIntent(intent);
-                if (!lifecycle.announce(announce.message, announce.listenAfter,
-                        SystemClock.elapsedRealtime()))
-                    AgentService.reportVoiceFailure(this, announce.id, "Speech request could not be queued");
-            } catch (RuntimeException invalid) {
-                Log.w("PocketSubscriptionVoice", "Invalid subscription speech request");
-            }
+            if (!lifecycle.announce(pendingAnnouncement.id, pendingAnnouncement.message,
+                    pendingAnnouncement.listenAfter, SystemClock.elapsedRealtime()))
+                AgentService.reportVoiceFailure(this, pendingAnnouncement.id,
+                    "Speech request could not be queued or microphone access was unavailable");
+        }
+        if (lifecycle.state() == SubscriptionVoiceLifecycle.State.CLOSED) {
+            stopSelf(startId);
+            return START_NOT_STICKY;
         }
         main.removeCallbacks(tick);
         main.postDelayed(tick, 250);
