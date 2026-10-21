@@ -204,12 +204,30 @@ test('Codex retries a transient SSE failure before output with the same shared d
    if(calls===2)return new Response('busy',{status:503,headers:{'retry-after':'0'}});
    return codexResponse([]);
  }});
- for await(const event of stream) observed.push(event.type);
+ for await(const event of stream) observed.push(event);
  const result=await stream.result();
  assert.equal(calls,3);assert.equal(result.stopReason,'stop');
- assert.equal(observed.filter(type=>type==='start').length,1,'replayed starts must not leak');
+ assert.equal(observed.filter(event=>event.type==='start').length,1,'replayed starts must not leak');
+ assert.ok(!JSON.stringify(observed).includes(credentials.refreshToken),'earlier start.partial must not mutate to raw provider diagnostics');
  assert.deepEqual(requests[0],requests[1]);assert.deepEqual(requests[1],requests[2]);
  assert.ok(!JSON.stringify(result).includes(credentials.refreshToken));
+});
+
+test('Codex composes caller stream-event observers with internal retry classification',async()=>{
+ const credentials=accountCredential();let calls=0;const observed:string[]=[];
+ const result=await(await makeStream(accountConfig,credentials,'main')(modelFor(accountConfig,credentials),{messages:[]},{
+   onProviderStreamEvent:async(event)=>{
+     await Promise.resolve();
+     observed.push((event as any).type);
+   },
+   fetch:async()=>{
+     calls++;
+     if(calls===1)return new Response('data: '+JSON.stringify({type:'response.failed',response:{error:{code:'server_error',message:'temporary'}}})+'\n\n');
+     return codexResponse([]);
+   }
+ })).result();
+ assert.equal(result.stopReason,'stop');assert.equal(calls,2);
+ assert.deepEqual(observed,['response.failed','response.completed']);
 });
 
 test('Codex caps SSE failure restarts at exactly three retries', {timeout:12000},async()=>{

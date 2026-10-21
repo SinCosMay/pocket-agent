@@ -257,7 +257,10 @@ export function makeStream(config: ProviderConfig, credentials: ProviderCredenti
       const sourceFor = (onCodexEvent?: (event:any)=>void) => model!.api === 'openai-codex-responses'
         ? codexStreamSimple(model!,context,{
             ...shared,fetch:fixedCodexFetch(options?.fetch ?? globalThis.fetch,budget,deadline!,options?.signal),
-            onProviderStreamEvent:onCodexEvent,
+            onProviderStreamEvent:async (event,selected)=>{
+              onCodexEvent?.(event);
+              await options?.onProviderStreamEvent?.(event,selected);
+            },
             onPayload:async(raw,selected)=>{
               const replacement = await options?.onPayload?.(raw,selected);
               const body = (replacement ?? raw) as any;
@@ -296,7 +299,12 @@ export function makeStream(config: ProviderConfig, credentials: ProviderCredenti
             });
             for await (const event of source) {
               if (account && event.type === 'start') {
-                if (!forwardedStart) {guarded.push(event);forwardedStart = true;}
+                if (!forwardedStart) {
+                  // Pi mutates its partial message when a later SSE failure arrives.
+                  // Never expose the upstream object across a suppressed retry.
+                  guarded.push({...event,partial:structuredClone(event.partial)});
+                  forwardedStart = true;
+                }
                 continue;
               }
               // An SSE failure may be retried only before any visible content
