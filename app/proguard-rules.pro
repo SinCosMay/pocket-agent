@@ -60,3 +60,7 @@
 
 # Release instrumentation directly exercises persisted local wake tuning.
 -keep class dev.pocket.agent.WakeWordSettings { *; }
+
+# WebRTC's JNI entry points reference org.webrtc classes by their original names.
+# Preserve JNI-visible classes/methods in the minified release APK.
+-keep class org.webrtc.** { *; }
