@@ -23,6 +23,8 @@ final class SubscriptionVoiceLifecycle {
     }
 
     private static final long IDLE_MS = 3000L;
+    // Initial capture may precede the first delayed live transcript fragment.
+    private static final long FIRST_UTTERANCE_MS = 12_000L;
     private static final long MAX_UTTERANCE_MS = 60_000L;
     // Allow VAD finalization and delegation.created to arrive after speech stops.
     private static final long POST_SPEECH_MS = 8_000L;
@@ -91,10 +93,20 @@ final class SubscriptionVoiceLifecycle {
     void connected(long id, long nowMs) {
         if (state != State.CONNECTING || id != epoch) return;
         state = State.LISTENING;
-        deadline = nowMs + IDLE_MS;
+        deadline = nowMs + (allowMicrophone ? FIRST_UTTERANCE_MS : IDLE_MS);
         port.status(allowMicrophone ? "Ready · speak after the cue" : "Preparing announcement");
         playAnnouncement();
         if (!allowMicrophone && announcements.isEmpty() && state == State.LISTENING) close();
+    }
+
+    /** GPT-Live transcript fragments are meaningful speech evidence, not PCM silence. */
+    void transcriptActivity(long id, String text, long nowMs) {
+        if (id != epoch || !allowMicrophone || state == State.CLOSED ||
+                text == null || text.isBlank()) return;
+        if (state == State.SPEAKING) inputInterrupted(id, nowMs);
+        if (state == State.LISTENING)
+            deadline = speechActive ? Math.max(deadline, nowMs + POST_SPEECH_MS)
+                : nowMs + POST_SPEECH_MS;
     }
 
     /** Called for new or continuing input transcript and voice activity. */
@@ -188,6 +200,10 @@ final class SubscriptionVoiceLifecycle {
         if (id != epoch || state == State.CLOSED || state == State.CONNECTING) return;
         if (state == State.SPEAKING) {
             port.interruptSpeech();
+            if (activeAnnouncementId != null) {
+                port.announcementFailed(activeAnnouncementId, "Announcement interrupted before playback completion");
+                activeAnnouncementId = null;
+            }
             state = State.LISTENING;
             deadline = nowMs + (speechActive ? MAX_UTTERANCE_MS : IDLE_MS);
         }

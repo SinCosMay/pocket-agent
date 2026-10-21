@@ -99,6 +99,7 @@ public final class SubscriptionVoiceLifecycleSimulator {
         s.connected(2, 1050);
         s.inputInterrupted(2, 1100);
         check(p.count("interrupt-speech") == 1, "speech playback was not interrupted");
+        check(p.has("failed:interrupted"), "interrupted announcement must report its ID");
         s.speechStarted(2, 1100);
         s.tick(5100);
         check(s.state() == SubscriptionVoiceLifecycle.State.LISTENING,
@@ -128,11 +129,46 @@ public final class SubscriptionVoiceLifecycleSimulator {
         check(p.has("failed:lost"), "lost announcement failed to report delivery failure");
     }
 
+    private static void liveTranscriptWithoutVadEvents() {
+        FakePort p = new FakePort();
+        SubscriptionVoiceLifecycle s = new SubscriptionVoiceLifecycle(p);
+        s.wake(0);
+        s.connected(1, 100);
+        s.tick(3100);
+        check(s.state() == SubscriptionVoiceLifecycle.State.LISTENING,
+            "initial delayed transcript must not expire at three seconds");
+        s.transcriptActivity(1, "open", 3500);
+        s.transcriptActivity(1, " the browser", 8000);
+        s.tick(15999);
+        check(s.state() == SubscriptionVoiceLifecycle.State.LISTENING,
+            "streamed live transcript expired before post-speech grace");
+        s.tick(16000);
+        check(s.state() == SubscriptionVoiceLifecycle.State.CLOSED,
+            "last transcript fragment must not keep microphone open indefinitely");
+        FakePort longSpeechPort = new FakePort();
+        SubscriptionVoiceLifecycle longSpeech = new SubscriptionVoiceLifecycle(longSpeechPort);
+        longSpeech.wake(0);
+        longSpeech.connected(1, 100);
+        longSpeech.speechStarted(1, 500);
+        longSpeech.transcriptActivity(1, "continued speech", 1000);
+        longSpeech.tick(9000);
+        check(longSpeech.state() == SubscriptionVoiceLifecycle.State.LISTENING,
+            "transcript must not shorten an active VAD utterance deadline");
+        FakePort q = new FakePort();
+        SubscriptionVoiceLifecycle speaking = new SubscriptionVoiceLifecycle(q);
+        speaking.announce("notice", "Reminder", true, 0);
+        speaking.connected(1, 10);
+        speaking.transcriptActivity(1, "Stop", 100);
+        check(q.has("failed:notice") && q.has("interrupt-speech"),
+            "live transcript did not interrupt the announcement and record failure");
+    }
+
     public static void main(String[] args) {
         normalWakeAndPiHandoff();
         announcementsAndShutdown();
         interruptionAndDisconnect();
         outputOnlyAnnouncement();
-        System.out.println("Subscription voice lifecycle simulator: 4 scenarios PASSED");
+        liveTranscriptWithoutVadEvents();
+        System.out.println("Subscription voice lifecycle simulator: 5 scenarios PASSED");
     }
 }

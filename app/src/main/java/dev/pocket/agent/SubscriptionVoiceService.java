@@ -80,6 +80,11 @@ public final class SubscriptionVoiceService extends Service implements AgentServ
         @Override public void onActivity(long epoch) {
             main.post(() -> { if (started) lifecycle.activity(epoch, SystemClock.elapsedRealtime()); });
         }
+        @Override public void onTranscript(long epoch, String text) {
+            main.post(() -> {
+                if (started) lifecycle.transcriptActivity(epoch, text, SystemClock.elapsedRealtime());
+            });
+        }
         @Override public void onSpeechStarted(long epoch) {
             main.post(() -> { if (started) lifecycle.speechStarted(epoch, SystemClock.elapsedRealtime()); });
         }
@@ -267,23 +272,30 @@ public final class SubscriptionVoiceService extends Service implements AgentServ
     }
 
     @Override public void onAgentEvent(JSONObject event) {
-        if (!started || lifecycle == null) return;
+        if (!started || lifecycle == null || event == null) return;
+        // AgentService observers can run off the main looper. Serialize Pi output
+        // with WebRTC callbacks, timeout ticks and the foreground-service lifecycle.
         String turn = event.optString("sessionId", "");
-        switch (event.optString("type", "")) {
-            case "voice_delta":
-                lifecycle.piDelta(turn, event.optString("text"));
-                break;
-            case "voice_end":
-                lifecycle.piFinished(turn);
-                break;
-            case "voice_error":
-                lifecycle.piDelta(turn, "The phone assistant could not complete that request.");
-                lifecycle.piFinished(turn);
-                break;
-            case "stopped":
-                lifecycle.close();
-                break;
-        }
+        String type = event.optString("type", "");
+        String delta = event.optString("text", "");
+        main.post(() -> {
+            if (!started || lifecycle == null) return;
+            switch (type) {
+                case "voice_delta":
+                    lifecycle.piDelta(turn, delta);
+                    break;
+                case "voice_end":
+                    lifecycle.piFinished(turn);
+                    break;
+                case "voice_error":
+                    lifecycle.piDelta(turn, "The phone assistant could not complete that request.");
+                    lifecycle.piFinished(turn);
+                    break;
+                case "stopped":
+                    lifecycle.close();
+                    break;
+            }
+        });
     }
 
     @Override public void onDestroy() {
