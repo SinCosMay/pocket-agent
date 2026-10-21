@@ -46,6 +46,8 @@
         <service android:name=".WakeWordService" android:exported="false" android:foregroundServiceType="microphone" />
         <service android:name=".VoiceListeningService" android:exported="false"
             android:foregroundServiceType="microphone|mediaPlayback" />
+        <service android:name=".SubscriptionVoiceService" android:exported="false"
+            android:foregroundServiceType="microphone|mediaPlayback" />
         <service android:name=".AgentService" android:exported="false" android:foregroundServiceType="specialUse">
             <property android:name="android.app.PROPERTY_SPECIAL_USE_FGS_SUBTYPE" android:value="User-started conversational agent completing explicitly requested background phone tasks, with ongoing notification and Stop all control" />
         </service>

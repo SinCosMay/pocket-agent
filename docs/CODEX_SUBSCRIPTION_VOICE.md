@@ -1,72 +1,39 @@
-# Codex subscription voice integration (work in progress)
+# ChatGPT subscription voice backend
 
-Branch: `feat/codex-subscription-voice-wake` (branched from latest local `origin/main` on October 21, 2026).
+Branch: `feat/codex-subscription-voice-wake`. This experimental backend is **opt-in**. Normal Deepgram and Android speech routing remains the default and can be restored by unchecking the subscription-voice toggle in Settings.
 
-## Non-negotiable architecture
+## Architecture
 
-- **Pi remains the sole agent harness** for model reasoning, tool calls, Android control, worker scheduling, and saved conversations.
-- Codex realtime voice supplies the audio conversation through **ChatGPT account/subscription authentication**, not an OpenAI API key and not usage-based GPT-Live API billing.
-- Do **not** install a second Codex coding harness or require a PC/relay on the phone.
-- The existing Android/Deepgram voice path is unchanged until an independent Android Codex voice transport has been verified. Do not enable a nonfunctional experimental backend by default.
+- Pocket Agent's **Pi runtime is the only agent/tool execution harness**. The realtime voice service has no Android/tool privileges beyond the microphone, audio playback, and handing recognized input to Pi.
+- The Android foreground `SubscriptionVoiceService` owns `SubscriptionVoiceLifecycle` (idle timeout, Pi turn IDs, queueing, interruption). `SubscriptionVoiceTransport` wraps `SubscriptionWebRtcTransport`, which owns one WebRTC peer, native microphone/audio output and authenticated control WebSocket per epoch.
+- ChatGPT account tokens are read from encrypted `CredentialStore`. `SubscriptionVoiceCredentials` can perform one OAuth refresh off the main thread and atomically persist it. No OpenAI API key and no separate Codex executable are required.
+- The same UUID is used in `session-id`, `thread-id`, and `x-session-id`; model `gpt-live-1-codex`; voice `cove`; `delegation.type=client`; `openai-alpha=quicksilver=v2`; a consistent `originator` / `User-Agent` identity. These exact protocol fields were material to a successful direct session.
+- Wake word and Android assistant gestures open the new service when selected. Pi `speak_to_user` routes through the same service. A user turn has a UUID `voiceSessionId`, sent as the existing main Pi `send` command; cancellation uses scoped `stop_main` without stopping workers.
+- Realtime `delegation.created` supplies an input-text content item and unique delegation ID. Pi output is returned as a `delegation.context.append` with `channel=speakable`. No model-native tool calls run in the voice session.
+- An idle `LISTENING` period of three seconds closes the connection and microphone. Pending Pi work and output playback do not idle-close the session. An overall 45-second connect deadline includes potential credential refresh.
 
-## Wake, speaking, and session lifecycle
+## Verified Linux proof (October 21, 2026)
 
-The first committed component, `SubscriptionVoiceLifecycle`, is a platform-independent coordinator intended to sit between Android's voice foreground service and a subscription WebRTC transport. It uses a narrow `Port` for networking and Pi commands; it does not itself capture audio, speak, open sockets, or replace Pi.
+The constrained `scripts/codex_voice_subscription_smoke.py` uses an existing Codex/ChatGPT login, synthetic audio, Chrome WebRTC, Python Playwright and an authenticated v3 sideband without launching any Codex process. A successful test showed:
 
-1. Local wake detector or Android assistant gesture calls `wake`. It opens a single connection, not a second agent session or another Codex harness. Duplicate wakes reuse that connection.
-2. When connected, the voice transport listens with one Android microphone/audio track. A realtime **`delegation.created`** event delivers the user request to Pi via the existing main `send` command. Voice is the interface, not the executor.
-3. Pi `voice_delta` events are accumulated for the matching main turn; `voice_end` returns the result to Codex Voice as speakable delegation context. Other Pi workers remain completely independent. No side-effecting tools run in the voice model.
-4. Pi's existing `speak_to_user({message,listen_after})` should route to `announce`. It opens a voice connection on demand if none exists, speaks via session context, then listens when `listen_after=true`; otherwise it disconnects after playback.
-5. In `LISTENING` state only, three seconds without activity disconnects the WebRTC, sideband, and microphone. Active Pi responses, playback, or queued announcements do not trigger idle closure. Connection establishment is bounded to 15 seconds.
-6. A new user utterance during speech cancels queued audio and, when applicable, only the active voice-scoped main Pi turn. Pi workers continue. Stop voice always releases the transport and never cancels unrelated workers.
-7. Network disconnection, explicit stop, and stale callbacks use a generation ID and release session resources; a late callback from an older session cannot resurrect the microphone. App restarts never replay uncertain tool effects.
+- Call endpoint returned valid SDP, and WebRTC ICE/data channel connected.
+- Authenticated `wss://api.openai.com/v1/live/{call_id}` control socket opened.
+- One `delegation.created` event was observed on the data channel; the sideband accepted a simulated Pocket Agent `delegation.context.append`.
+- Audio arrived from the realtime model (e.g. **552 inbound RTP audio packets**, **613 outbound**), with no reported authorization error.
+- Delegation payload shape: `item.id`, `item.target=client`, and `item.content[0]={type:input_text,text:...}`; a second event stream may omit the event, so Android handles both data channel and sideband with a deduplication set.
 
-The coordinator needs to be wired to an Android foreground `Service`, a native WebRTC dependency and an authenticated Codex subscription voice adapter. This **is not complete yet**.
+Before the fix, the same request produced `Voice session access denied`; missing correlated thread/session headers, inconsistent client metadata and an unsupported voice selection explained the failing setup. The Android backend copies the corrected protocol shape; **a successful Linux call is not proof of Android audio functionality**.
 
-## Verified Linux findings and blocker
+Tests remain somewhat non-deterministic because the voice model may not delegate a particular synthetic utterance; zero delegations intentionally fails the stricter smoke assertion. No credentials, SDP or spoken content are logged.
 
-A minimal reproducible smoke test is in `scripts/codex_voice_subscription_smoke.py`.
+## Validation
 
-- Installed `codex-cli 0.163.0` with ChatGPT account sign-in and Codex **app-server**: WebRTC offer, authenticated answer, connected ICE/data channel, outgoing synthetic speech and incoming model audio all succeeded. This proves the subscription route with the Codex controller, **not** standalone Android compatibility.
-- A separate Linux probe **without running any Codex executable** sent a standards-compliant WebRTC offer directly to `https://chatgpt.com/backend-api/codex/realtime/calls?intent=quicksilver&architecture=avas`, with account access token and `openai-alpha: quicksilver=v2`. The endpoint returned an SDP answer and call location; thus a full Codex executable is not needed for *call creation*.
-- That standalone direct session did **not** reach a working speech round-trip: sideband WebSocket attachment to `wss://api.openai.com/v1/live/<callId>` failed with WebSocket `InvalidStatus`, and the peer eventually disconnected with zero inbound RTP packets. A standalone subscription voice implementation is therefore **not proven**.
-- Codex upstream's experimental v3 protocol uses `delegation.type=client`, `delegation.created`, and `delegation.context.append` with `channel=speakable`; input can also arrive as `turn.done` transcript events. The sideband connection must be authenticated and bound to the same live call; it cannot be omitted. Its service routing/authentication needs further proof before we ship an Android WebRTC dependency.
+- `scripts/SubscriptionVoiceLifecycleSimulator.java` compiles with the standalone Java coordinator and tests duplicate wake, timeout, UUID scoped Pi cancellation, stale events, queued announcements, interruption and idle close under a one-core, 256 MiB scope.
+- Native Android Java dependency is `io.github.webrtc-sdk:android:150.7871.01` (Maven Central), plus the existing OkHttp.
+- Android compilation and integration checks belong in GitHub Actions. Do not run a resource-heavy local Android build or emulator on the user's workstation. Real-device microphone and battery tests are left to the user.
 
-Useful upstream references:
-- `openai/codex/codex-rs/core/src/realtime_conversation.rs` and `sideband.rs`
-- `openai/codex/codex-rs/codex-api/src/endpoint/realtime_call.rs`
-- `openai/codex/codex-rs/codex-api/src/endpoint/realtime_websocket/{methods.rs,protocol_frameless_bidi.rs}`
+## Outstanding device validation
 
-## Resource-restricted testing
+A successful APK compile is not sufficient for release. Verify on a physical Android phone: account import/sign-in and expired-token refresh, microphone permission/foreground-service policy, one voice request delegated to Pi and read aloud, `speak_to_user` without preceding user input, interruption while Pi is busy, two consecutive turns, three-second idle teardown, wake-word recovery, and switching the experimental toggle off to use legacy voice. Leave the new backend opt-in until these pass.
 
-No Android emulator, APK build, dev server, Rust compilation, Codex installation, or full-repository tests were run.
-
-The self-contained simulator compiles just two Java files and exercises duplicate wake, stale callbacks, Pi handoff, idle cleanup, no-listen speech requests, queued announcements, barge-in, failure, and timeout:
-
-```sh
-systemd-run --user --scope -p MemoryMax=256M -p CPUQuota=100% --quiet \
-  taskset -c 0 nice -n 12 bash -c '
-    set -eu
-    d=$(mktemp -d)
-    trap "rm -rf \"$d\"" EXIT
-    javac -J-Xmx64m -d "$d" \
-      app/src/main/java/dev/pocket/agent/SubscriptionVoiceLifecycle.java \
-      scripts/SubscriptionVoiceLifecycleSimulator.java
-    java -Xmx48m -XX:ActiveProcessorCount=1 -cp "$d" \
-      dev.pocket.agent.SubscriptionVoiceLifecycleSimulator
-  '
-```
-
-Result: **3 scenarios passed** (one core, 256 MiB total cgroup limit, 48 MiB Java heap).
-
-The Linux realtime probe ran in a separate user scope capped at **850 MiB RAM and one CPU quota**, affined to two logical cores. It requires a logged-in Codex account, local Chrome, Playwright, espeak-ng, ffmpeg and `websockets`. It does not show token contents, provider response bodies or SDP in output. It is explicitly diagnostic and currently exits nonzero because standalone sideband is not authorized.
-
-## Completion gates
-
-Before wiring this backend into the normal wake path:
-
-1. Demonstrate a standalone sideband connection and actual delegated speech result **without a Codex executable**, using only existing ChatGPT-account credentials.
-2. Confirm Codex voice never executes tools on its own and always hands tool requests to Pi; handle duplicate and interrupted delegation IDs.
-3. Add the Android WebRTC audio/network transport, encrypted token refresh, and a user-controlled subscription voice setting. Keep the legacy path available and disabled only after new transport is ready.
-4. Route wake word, assistant gesture, `speak_to_user`, stop voice, and Pi voice events into the coordinator.
-5. Run Android-compilation and scoped tests in GitHub Actions, then defer real-device acoustics/battery tests to the user. Do not start a local emulator or broad build.
+Security note: account credentials remain in Android Keystore-encrypted storage; never emit access/refresh tokens in diagnostics or issue/PR descriptions.

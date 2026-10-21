@@ -3,6 +3,7 @@ package dev.pocket.agent;
 import java.util.ArrayDeque;
 import java.util.HashSet;
 import java.util.Set;
+import java.util.UUID;
 
 /**
  * UI/Android-independent coordinator for a subscription realtime voice session.
@@ -21,7 +22,8 @@ final class SubscriptionVoiceLifecycle {
     }
 
     private static final long IDLE_MS = 3000L;
-    private static final long CONNECT_MS = 15000L;
+    // Includes a bounded OAuth refresh followed by peer/sideband negotiation.
+    private static final long CONNECT_MS = 45000L;
     private static final int MAX_ANNOUNCEMENTS = 8;
     private static final int MAX_OUTPUT_CHARS = 8000;
     enum State { CLOSED, CONNECTING, LISTENING, WAITING_PI, SPEAKING }
@@ -29,7 +31,7 @@ final class SubscriptionVoiceLifecycle {
     private final ArrayDeque<Announcement> announcements = new ArrayDeque<>();
     private final Set<String> delivered = new HashSet<>();
     private State state = State.CLOSED;
-    private long epoch, deadline, counter;
+    private long epoch, deadline;
     private String turnId, delegationId;
     private StringBuilder output;
     private boolean listenAfterSpeech = true;
@@ -65,7 +67,6 @@ final class SubscriptionVoiceLifecycle {
         state = State.CONNECTING;
         epoch++;
         deadline = nowMs + CONNECT_MS;
-        counter = 0;
         delivered.clear();
         port.status("Connecting subscription voice");
         port.connect(epoch);
@@ -93,7 +94,8 @@ final class SubscriptionVoiceLifecycle {
         if (state == State.SPEAKING) port.interruptSpeech();
         if (turnId != null) port.cancelPi(turnId);
         delegationId = requestId;
-        turnId = "voice-" + epoch + "-" + (++counter);
+        // Pi accepts only UUID-shaped voice session IDs for scoped cancellation.
+        turnId = UUID.randomUUID().toString();
         output = new StringBuilder();
         state = State.WAITING_PI;
         deadline = Long.MAX_VALUE;

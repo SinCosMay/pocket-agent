@@ -7,6 +7,7 @@ temporary directory other than the deliberate subscription voice request.
 This verifies transport and mocked Pi delegation, not Android microphone support.
 """
 import argparse
+import uuid
 import json
 import os
 from pathlib import Path
@@ -22,10 +23,11 @@ from playwright.sync_api import sync_playwright
 
 CALL_URL = "https://chatgpt.com/backend-api/codex/realtime/calls?intent=quicksilver&architecture=avas"
 INSTRUCTIONS = (
-    "You are the voice interface for a separate client agent named Pocket Agent. "
-    "For every user request, delegate the task to the client instead of attempting "
-    "to use tools, answering facts or performing work yourself. Read the client's "
-    "returned result aloud. Do not claim to have used any tools yourself."
+    "You are a voice interface for the external Pocket Agent. "
+    "Every spoken user request must trigger a client delegation. Never "
+    "independently answer, invent tool results, or finish a turn without "
+    "waiting for the delegated agent result. When the client answers, "
+    "speak that result. Pi alone executes phone tools."
 )
 
 
@@ -41,10 +43,11 @@ def credentials(path):
 
 def create_call(offer, authfile):
     access, account = credentials(authfile)
+    thread_id = str(uuid.uuid4())
     session = {
         "instructions": INSTRUCTIONS,
         "model": "gpt-live-1-codex",
-        "audio": {"output": {"voice": "cedar"}},
+        "audio": {"output": {"voice": "cove"}},
         "delegation": {"type": "client"},
     }
     body = json.dumps({"sdp": offer, "session": session}).encode()
@@ -52,7 +55,12 @@ def create_call(offer, authfile):
         CALL_URL, body, method="POST", headers={
             "Authorization": "Bearer " + access,
             "chatgpt-account-id": account,
-            "originator": "codex_cli_rs",
+            "originator": "pocket-agent-voice-probe",
+            "User-Agent": "pocket-agent-voice-probe/0.163.0",
+            "version": "0.163.0",
+            "session-id": thread_id,
+            "thread-id": thread_id,
+            "x-session-id": thread_id,
             "openai-alpha": "quicksilver=v2",
             "Content-Type": "application/json",
             "Accept": "application/sdp",
@@ -81,7 +89,7 @@ def run(authfile):
         Path(page_path).write_text("<!doctype html><title>Voice smoke</title>", encoding="utf-8")
         subprocess.run(
             ["espeak-ng", "-s", "125", "-w", raw,
-             "Hey Jarvis, ask the assistant to confirm this voice test."],
+             "Hey Jarvis, delegate to Pocket Agent. Ask your client to check my phone and confirm the voice test. Please wait for the client result."],
             check=True, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL
         )
         subprocess.run(
@@ -119,15 +127,7 @@ def run(authfile):
                     try {
                       const m = JSON.parse(e.data);
                       window.events.push(m.type); if(m.type === "error") window.failures.push({code:m.error?.code || m.code || "unknown", message:String(m.error?.message || m.message || "").slice(0,110)});
-                      if (m.type === "delegation.created" && m.item?.id) {
-                        window.delegations++;
-                        window.dc.send(JSON.stringify({
-                          type: "delegation.context.append",
-                          delegation_item_id: m.item.id,
-                          channel: "speakable",
-                          content: [{type: "input_text", text: "Pocket Agent completed the voice test."}]
-                        }));
-                      }
+                      if (m.type === "delegation.created" && m.item?.id) window.delegations++;
                     } catch(err) { window.events.push("invalid-event"); }
                   };
                   const stream = await navigator.mediaDevices.getUserMedia({audio:true});
@@ -170,15 +170,16 @@ def run(authfile):
                                         }))
                                 if len(sideband_state["events"]) >= 1000: break
                     except Exception as error:
-                        sideband_state["error"] = type(error).__name__
+                        sideband_state["error"] = type(error).__name__ + (":HTTP" + str(error.response.status_code) if getattr(error, "response", None) is not None else "")
                 worker = threading.Thread(target=sideband,daemon=True)
-                worker.start()
-                print("Subscription call returned valid SDP", flush=True)
+                print("Subscription call returned valid SDP", {"audio_media": answer.count("m=audio"), "data_media": answer.count("m=application")}, flush=True)
                 page.evaluate("s => window.pc.setRemoteDescription({type:'answer',sdp:s})", answer)
                 try:
                     page.wait_for_function("window.pc.connectionState === 'connected'", timeout=10000)
                 except Exception:
                     print("WebRTC did not connect, peer state:", page.evaluate("()=>window.pc.connectionState"), flush=True)
+                # Existing-call attachments may return 404 until ICE is active.
+                worker.start()
                 page.wait_for_timeout(12000)
                 exit_sideband.set()
                 worker.join(timeout=2)
@@ -186,7 +187,7 @@ def run(authfile):
                       "events": sorted(set(sideband_state["events"]))[:25],
                       "failure_type": sideband_state["error"]}, flush=True)
                 stats = page.evaluate("""async () => {
-                  const out={incoming:0,outgoing:0,delegations:window.delegations};
+                  const out={incoming:0,outgoing:0,delegations:window.delegations,channel:window.dc?.readyState,peer:window.pc?.connectionState,sctp:window.pc?.sctp?.state};
                   for(const s of (await window.pc.getStats()).values()) {
                     if (s.kind !== 'audio') continue;
                     if (s.type === 'inbound-rtp') out.incoming += s.packetsReceived || 0;
@@ -195,7 +196,13 @@ def run(authfile):
                   return {...out, failures:window.failures, types:[...new Set(window.events)].slice(-22)};
                 }""")
                 print(json.dumps(stats), flush=True)
-                return int(stats["incoming"] > 0 and stats["outgoing"] > 0)
+                return int(
+                    stats["incoming"] > 0 and stats["outgoing"] > 0
+                    and stats["delegations"] > 0
+                    and sideband_state["connected"]
+                    and "delegation.context.appended" in sideband_state["events"]
+                    and not stats["failures"]
+                )
             finally:
                 try:
                     page.evaluate("() => { if(window.dc?.readyState==='open') window.dc.send(JSON.stringify({type:'session.close'})); window.pc?.close(); }")

@@ -60,6 +60,7 @@ dependencies {
     implementation(project(":android-platform"))
     implementation("com.caoccao.javet:javet-node-android-i18n:6.0.2")
     implementation("com.squareup.okhttp3:okhttp:4.12.0")
+    implementation("io.github.webrtc-sdk:android:150.7871.01")
     implementation("com.microsoft.onnxruntime:onnxruntime-android:1.21.0")
     implementation("dev.rikka.shizuku:api:13.1.5")
     implementation("dev.rikka.shizuku:provider:13.1.5")

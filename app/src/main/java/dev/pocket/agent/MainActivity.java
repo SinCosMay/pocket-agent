@@ -545,6 +545,18 @@ public final class MainActivity extends Activity implements AgentService.Observe
         panel.addView(button("Notification access settings", () -> startActivity(new Intent(Settings.ACTION_NOTIFICATION_LISTENER_SETTINGS))));
         panel.addView(button("Choose phone permissions", this::permissions));
         panel.addView(button("Remote MCP servers", this::mcpSettings));
+        panel.addView(text("Voice conversation backend"));
+        android.widget.CheckBox subscriptionVoice = new android.widget.CheckBox(this);
+        subscriptionVoice.setText("Experimental · ChatGPT subscription WebRTC voice");
+        subscriptionVoice.setChecked(SubscriptionVoiceSettings.enabled(this));
+        subscriptionVoice.setOnCheckedChangeListener((button, checked) -> {
+            SubscriptionVoiceSettings.setEnabled(this, checked);
+            stopService(new Intent(this, VoiceListeningService.class));
+            stopService(new Intent(this, SubscriptionVoiceService.class));
+            toast(checked ? "Subscription voice enabled for the next wake" : "Legacy voice enabled for the next wake");
+        });
+        panel.addView(subscriptionVoice);
+        panel.addView(text("Experimental: uses the saved ChatGPT account for voice, not an API key or Codex on the phone. Pi still runs tools. Legacy Android/Deepgram is unchanged when disabled. Voice service uses the microphone while active and disconnects after silence."));
         panel.addView(text("Speech-to-text mode"));
         Spinner sttMode = new Spinner(this);
         String[] sttModeNames = {
@@ -942,12 +954,14 @@ public final class MainActivity extends Activity implements AgentService.Observe
             requestPermissions(new String[]{Manifest.permission.RECORD_AUDIO}, 108);
             return;
         }
-        boolean configured;
-        try { configured = new VoiceCredentialStore(this).configured(); }
-        catch (RuntimeException unreadable) {
-            toast("Stored Deepgram key is unavailable; re-enter your voice key"); return;
+        if (!SubscriptionVoiceSettings.enabled(this)) {
+            boolean configured;
+            try { configured = new VoiceCredentialStore(this).configured(); }
+            catch (RuntimeException unreadable) {
+                toast("Stored Deepgram key is unavailable; re-enter your voice key"); return;
+            }
+            if (!configured) { toast("Configure Deepgram voice key first"); return; }
         }
-        if (!configured) { toast("Configure Deepgram voice key first"); return; }
         try {
             startForegroundService(new Intent(this, WakeWordService.class)
                 .setAction(WakeWordService.ACTION_ENABLE));

@@ -36,6 +36,7 @@ public final class SubscriptionVoiceLifecycleSimulator {
         s.tick(200000);
         check(s.state() == SubscriptionVoiceLifecycle.State.WAITING_PI, "idle stopped active Pi");
         String turn = p.lastPi().split(":")[1];
+        check(java.util.UUID.fromString(turn).toString().equals(turn), "Pi voice turn must be a UUID");
         s.delegated(1, "delegate-1", "duplicate");
         check(p.count("pi:") == 1, "duplicate request dispatched");
         s.piDelta("wrong-id", "not spoken");
@@ -70,8 +71,9 @@ public final class SubscriptionVoiceLifecycleSimulator {
         check(s.epoch() == 2, "epoch not renewed");
         s.playbackFinished(1, 600);
         check(s.state() == SubscriptionVoiceLifecycle.State.CONNECTING, "stale playback mutated reopened session");
-        s.tick(15600);
+        s.tick(45450);
         check(s.state() == SubscriptionVoiceLifecycle.State.CLOSED, "connect timeout did not cleanup");
+        check(p.count("close:") == 2, "connection timeout did not release reopened transport");
     }
 
     private static void interruptionAndDisconnect() {
