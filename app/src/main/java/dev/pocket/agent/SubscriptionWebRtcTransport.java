@@ -160,8 +160,7 @@ final class SubscriptionWebRtcTransport implements AutoCloseable {
         boolean pendingSpeechPlayback;
         int speechSerial;
         String playbackResponseId;
-        boolean v3OutputSeen;
-        long lastV3AudioTime;
+        final SubscriptionVoicePlaybackGate playbackGate = new SubscriptionVoicePlaybackGate();
         String cancelEventId;
         String clearEventId;
         boolean responseActive;
@@ -212,8 +211,7 @@ final class SubscriptionWebRtcTransport implements AutoCloseable {
         session.pendingSpeechPlayback = true;
         ++session.speechSerial;
         session.playbackResponseId = null;
-        session.v3OutputSeen = false;
-        session.lastV3AudioTime = 0;
+        session.playbackGate.reset();
         // Keep correlation IDs for any delayed cancellation acknowledgments.
         if (session.remoteAudio != null) session.remoteAudio.setEnabled(true);
     }
@@ -627,25 +625,34 @@ final class SubscriptionWebRtcTransport implements AutoCloseable {
 
     private void noteLiveAudio(Session session) {
         if (!session.pendingSpeechPlayback) return;
-        session.lastV3AudioTime = SystemClock.elapsedRealtime();
-        if (session.v3OutputSeen) return;
-        session.v3OutputSeen = true;
-        scheduleV3PlaybackCheck(session, session.speechSerial, V3_PLAYBACK_QUIET_MS);
+        boolean schedule = !session.playbackGate.hasAudio() &&
+                session.playbackGate.assistantFinished();
+        session.playbackGate.audio(SystemClock.elapsedRealtime());
+        if (schedule)
+            scheduleV3PlaybackCheck(session, session.speechSerial, V3_PLAYBACK_QUIET_MS);
+    }
+
+    private void completeLiveOutput(Session session) {
+        if (!session.pendingSpeechPlayback) return;
+        boolean wasFinished = session.playbackGate.assistantFinished();
+        session.playbackGate.finishAssistant();
+        if (!wasFinished && session.playbackGate.hasAudio())
+            scheduleV3PlaybackCheck(session, session.speechSerial, V3_PLAYBACK_QUIET_MS);
     }
 
     private void scheduleV3PlaybackCheck(Session session, int serial, long delayMs) {
         worker.postDelayed(() -> {
             if (!active(session) || !session.pendingSpeechPlayback ||
-                    !session.v3OutputSeen || session.speechSerial != serial) return;
-            long silenceMs = SystemClock.elapsedRealtime() - session.lastV3AudioTime;
-            if (silenceMs >= V3_PLAYBACK_QUIET_MS) {
-                // GPT-Live V3 has no explicit output-audio-done event. Wait for
-                // trailing output silence plus a playout margin as a fallback.
-                // Device validation must confirm this approximates audible completion.
+                    !session.playbackGate.assistantFinished() ||
+                    session.speechSerial != serial) return;
+            long now = SystemClock.elapsedRealtime();
+            if (session.playbackGate.ready(now, V3_PLAYBACK_QUIET_MS)) {
+                // An audio gap alone is not completion: require assistant-turn
+                // completion, then a playout margin. Device playback is unverified.
                 finishPlayback(session);
             } else {
                 scheduleV3PlaybackCheck(session, serial,
-                    Math.max(100, V3_PLAYBACK_QUIET_MS - silenceMs));
+                    Math.max(100, session.playbackGate.remaining(now, V3_PLAYBACK_QUIET_MS)));
             }
         }, delayMs);
     }
@@ -663,9 +670,13 @@ final class SubscriptionWebRtcTransport implements AutoCloseable {
                 session.eventIds.remove(session.eventIds.iterator().next());
         }
         String type = event.optString("type");
+        JSONObject turn = event.optJSONObject("turn");
+        boolean assistantTurnDone = "turn.done".equals(type) && turn != null
+                && "assistant".equals(turn.optString("role"));
         if ("turn.created".equals(type) || "response.created".equals(type)
-                || "session.output_audio.delta".equals(type)) session.responseActive = true;
-        if ("turn.done".equals(type) || "response.done".equals(type)) session.responseActive = false;
+                || "session.output_audio.delta".equals(type)
+                || "output_audio.delta".equals(type)) session.responseActive = true;
+        if (assistantTurnDone || "response.done".equals(type)) session.responseActive = false;
         if ("response.created".equals(type) && session.pendingSpeechPlayback) {
             JSONObject response = event.optJSONObject("response");
             String id = response == null ? "" : response.optString("id", "");
@@ -702,14 +713,31 @@ final class SubscriptionWebRtcTransport implements AutoCloseable {
                 break;
             }
             case "conversation.item.input_audio_transcription.completed":
-            case "conversation.item.input_audio_transcription.delta":
-            case "turn.done": {
+            case "conversation.item.input_audio_transcription.delta": {
                 String spoken = textOf(event);
-                if (!spoken.isBlank()) {
+                if (!spoken.isBlank())
                     onMain(session, () -> listener.onTranscript(session.epoch, spoken));
-                } else if (!"turn.done".equals(type)) {
+                else
                     onMain(session, () -> listener.onActivity(session.epoch));
+                break;
+            }
+            case "turn.done": {
+                if (assistantTurnDone) completeLiveOutput(session);
+                else if (turn != null && "user".equals(turn.optString("role"))) {
+                    String spoken = textOf(event);
+                    if (!spoken.isBlank())
+                        onMain(session, () -> listener.onTranscript(session.epoch, spoken));
                 }
+                // The assistant's own transcript must never trigger user barge-in.
+                break;
+            }
+            case "response.done": {
+                JSONObject response = event.optJSONObject("response");
+                String doneId = response == null ? event.optString("response_id", "")
+                        : response.optString("id", "");
+                if (doneId.isEmpty() || session.playbackResponseId == null
+                        || doneId.equals(session.playbackResponseId))
+                    completeLiveOutput(session);
                 break;
             }
             case "input_audio_buffer.speech_started":
@@ -726,7 +754,10 @@ final class SubscriptionWebRtcTransport implements AutoCloseable {
                 onMain(session, () -> listener.onSpeechStopped(session.epoch));
                 break;
             case "session.output_audio.delta":
-                if (!event.optString("delta", "").isEmpty()) noteLiveAudio(session);
+            case "output_audio.delta":
+                if (!event.optString("delta", "").isEmpty()
+                        || !event.optString("audio", "").isEmpty())
+                    noteLiveAudio(session);
                 break;
             case "output_audio_buffer.started": {
                 String responseId = event.optString("response_id", "");
@@ -746,7 +777,7 @@ final class SubscriptionWebRtcTransport implements AutoCloseable {
                 break;
             }
             case "session.output_audio.playback_done":
-                if (session.pendingSpeechPlayback && session.v3OutputSeen)
+                if (session.pendingSpeechPlayback && session.playbackGate.hasAudio())
                     finishPlayback(session);
                 break;
             case "error":
