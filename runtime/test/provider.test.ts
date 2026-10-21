@@ -156,20 +156,20 @@ test('direct Codex discards oversized remote error details without retrying or l
  for(const secret of ['private remote body',credentials.refreshToken,credentials.idToken,credentials.accessToken,credentials.accountId])assert.ok(!JSON.stringify(result).includes(secret));
 });
 
-test('Codex retries transient inference HTTP failures within a three-attempt bound',async()=>{
+test('Codex retries transient inference HTTP failures at most three times after the first attempt',async()=>{
  for(const status of [408,429,500,502,503,504]) {
    const credentials=accountCredential();let calls=0;
-   const fetcher:typeof fetch=async()=>++calls<3
+   const fetcher:typeof fetch=async()=>++calls<4
      ? new Response('private upstream diagnostic',{status,headers:{'retry-after':'0'}})
      : codexResponse([]);
    const result=await(await makeStream(accountConfig,credentials,'main')(modelFor(accountConfig,credentials),{messages:[]},{fetch:fetcher})).result();
-   assert.equal(calls,3);assert.equal(result.stopReason,'stop');
+   assert.equal(calls,4);assert.equal(result.stopReason,'stop');
  }
  const credentials=accountCredential();let calls=0;
  const result=await(await makeStream(accountConfig,credentials,'main')(modelFor(accountConfig,credentials),{messages:[]},{fetch:async()=>{
    calls++;return new Response('private '+credentials.refreshToken,{status:503,headers:{'retry-after-ms':'0'}});
  }})).result();
- assert.equal(calls,3);assert.equal(result.stopReason,'error');assert.ok(!JSON.stringify(result).includes(credentials.refreshToken));
+ assert.equal(calls,4);assert.equal(result.stopReason,'error');assert.ok(!JSON.stringify(result).includes(credentials.refreshToken));
 });
 
 test('Codex does not retry permanent HTTP errors, quota exhaustion, or excessive Retry-After',async()=>{
@@ -194,6 +194,49 @@ test('Codex retries classified network failures but not arbitrary exceptions or 
    assert.equal(calls,retries?2:1);assert.equal(result.stopReason,retries?'stop':'error');
    assert.ok(!JSON.stringify(result).includes('private socket failure'));
  }
+});
+
+test('Codex retries a transient SSE failure before output with the same shared dispatch budget',async()=>{
+ const credentials=accountCredential();let calls=0;const observed:any[]=[];const requests:any[]=[];
+ const stream=await makeStream(accountConfig,credentials,'main')(modelFor(accountConfig,credentials),{messages:[]},{fetch:async(_input,init)=>{
+   calls++;requests.push(requestBody(init));
+   if(calls===1)return new Response('data: '+JSON.stringify({type:'response.failed',response:{error:{code:'server_error',message:'private '+credentials.refreshToken}}})+'\n\n');
+   if(calls===2)return new Response('busy',{status:503,headers:{'retry-after':'0'}});
+   return codexResponse([]);
+ }});
+ for await(const event of stream) observed.push(event.type);
+ const result=await stream.result();
+ assert.equal(calls,3);assert.equal(result.stopReason,'stop');
+ assert.equal(observed.filter(type=>type==='start').length,1,'replayed starts must not leak');
+ assert.deepEqual(requests[0],requests[1]);assert.deepEqual(requests[1],requests[2]);
+ assert.ok(!JSON.stringify(result).includes(credentials.refreshToken));
+});
+
+test('Codex caps SSE failure restarts at exactly three retries', {timeout:12000},async()=>{
+ const credentials=accountCredential();let calls=0;
+ const result=await(await makeStream(accountConfig,credentials,'main')(modelFor(accountConfig,credentials),{messages:[]},{fetch:async()=>{
+   calls++;return new Response('data: '+JSON.stringify({type:'response.failed',response:{error:{code:'server_error',message:'private '+credentials.refreshToken}}})+'\n\n');
+ }})).result();
+ assert.equal(calls,4);assert.equal(result.stopReason,'error');
+ assert.ok(!JSON.stringify(result).includes(credentials.refreshToken));
+});
+
+test('Codex refuses to restart SSE on permanent failed responses',async()=>{
+ const credentials=accountCredential();let calls=0;
+ const result=await(await makeStream(accountConfig,credentials,'main')(modelFor(accountConfig,credentials),{messages:[]},{fetch:async()=>{
+   calls++;return new Response('data: '+JSON.stringify({type:'response.failed',response:{error:{code:'invalid_api_key',message:'private '+credentials.refreshToken}}})+'\n\n');
+ }})).result();
+ assert.equal(calls,1);assert.equal(result.stopReason,'error');
+ assert.ok(!JSON.stringify(result).includes(credentials.refreshToken));
+});
+
+test('Codex cancellation during SSE retry backoff prevents another request', {timeout:3000},async()=>{
+ const credentials=accountCredential(),abort=new AbortController();let calls=0;
+ const result=await(await makeStream(accountConfig,credentials,'main')(modelFor(accountConfig,credentials),{messages:[]},{signal:abort.signal,fetch:async()=>{
+   calls++;setTimeout(()=>abort.abort(),20);
+   return new Response('data: '+JSON.stringify({type:'response.failed',response:{error:{code:'server_error',message:'temporary'}}})+'\n\n');
+ }})).result();
+ assert.equal(calls,1);assert.equal(result.stopReason,'aborted');
 });
 
 test('Codex cancellation interrupts inference backoff without another dispatch', {timeout:3000},async()=>{
@@ -223,7 +266,7 @@ test('Codex inference deadline covers retry backoff and stalled response bodies'
  } finally {(AbortSignal as any).timeout=originalTimeout;}
 });
 
-test('Codex does not restart SSE after tool output or provider stream failure',async()=>{
+test('Codex does not restart SSE after partial tool output or permanent provider failure',async()=>{
  for(const partialTool of [false,true]) {
    const credentials=accountCredential();let calls=0,executions=0;
    const fetcher:typeof fetch=async()=>{
@@ -233,7 +276,7 @@ test('Codex does not restart SSE after tool output or provider stream failure',a
        {type:'response.function_call_arguments.delta',output_index:0,delta:'{"action":"agents"}'},
        {type:'response.output_item.done',output_index:0,item:{type:'function_call',id:'fc_partial',call_id:'call_partial',name:'subagent',arguments:'{"action":"agents"}',status:'completed'}},
      ]:[];
-     events.push({type:'response.failed',response:{error:{code:'server_error',message:'private '+credentials.refreshToken}}} as any);
+     events.push({type:'response.failed',response:{error:{code:partialTool?'server_error':'invalid_api_key',message:'private '+credentials.refreshToken}}} as any);
      return new Response(events.map(event=>'data: '+JSON.stringify(event)+'\n\n').join(''));
    };
    const stream=makeStream(accountConfig,credentials,'main');
