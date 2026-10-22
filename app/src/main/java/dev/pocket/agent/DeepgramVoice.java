@@ -72,6 +72,7 @@ final class DeepgramVoice implements AutoCloseable {
     private volatile boolean listening;
     private volatile boolean responseOpen;
     private volatile long playbackEpoch;
+    private volatile long captureEpoch;
     private WebSocket sttSocket, ttsSocket;
     private final PcmCaptureQueue captured = new PcmCaptureQueue(MAX_CAPTURE_BYTES);
     private boolean sttReady, streamReadyNotified;
@@ -265,8 +266,9 @@ final class DeepgramVoice implements AutoCloseable {
             return;
         }
         listening = true;
+        long session = ++captureEpoch;
         // Android microphone acquisition comes before DNS, TLS, or the WebSocket handshake.
-        if (!startMicrophone()) return;
+        if (!startMicrophone(session)) return;
         safeStatus("Capturing audio · connecting to speech recognition");
         connectSpeech();
     }
@@ -352,7 +354,7 @@ final class DeepgramVoice implements AutoCloseable {
         safeStatus("Speech recognition disconnected; start a new voice session");
     }
 
-    private boolean startMicrophone() {
+    private boolean startMicrophone(long session) {
         try {
             if (context.checkSelfPermission(Manifest.permission.RECORD_AUDIO) != PackageManager.PERMISSION_GRANTED)
                 throw new SecurityException("Microphone permission revoked");
@@ -381,25 +383,26 @@ final class DeepgramVoice implements AutoCloseable {
             record.startRecording();
             if (record.getRecordingState() != AudioRecord.RECORDSTATE_RECORDING)
                 throw new IllegalStateException("Microphone failed to start");
-            Thread publisher = new Thread(this::publishMicrophone, "PocketVoiceUpload");
+            Thread publisher = new Thread(() -> publishMicrophone(session), "PocketVoiceUpload");
             publisher.setDaemon(true);
             publisher.start();
             Thread capture = new Thread(() -> {
                 Process.setThreadPriority(Process.THREAD_PRIORITY_AUDIO);
                 byte[] samples = new byte[2560]; // 80ms of Flux PCM at 16 kHz.
-                while (listening && !closed) {
+                while (listening && !closed && captureEpoch == session) {
                     int size = record.read(samples, 0, samples.length);
                     if (size <= 0) {
-                        if (listening) safeStatus("Microphone capture interrupted");
+                        if (listening && captureEpoch == session) safeStatus("Microphone capture interrupted");
                         break;
                     }
+                    if (!listening || closed || captureEpoch != session) break;
                     PcmObserver observer = pcmObserver;
                     if (observer != null) {
                         try { observer.onPcm(samples, size); }
                         catch (RuntimeException ignored) { pcmObserver = null; }
                     }
                     synchronized (DeepgramVoice.this) {
-                        if (!listening || closed) break;
+                        if (!listening || closed || captureEpoch != session) break;
                         if (!captured.offer(samples, size)) {
                             safeStatus("Speech recognition backlog exceeded 80 seconds; start again");
                             break;
@@ -407,7 +410,7 @@ final class DeepgramVoice implements AutoCloseable {
                         if (sttReady) DeepgramVoice.this.notifyAll();
                     }
                 }
-                stopListening();
+                stopListeningIfCurrent(session);
             }, "PocketVoiceMicrophone");
             capture.setDaemon(true);
             capture.start();
@@ -419,14 +422,14 @@ final class DeepgramVoice implements AutoCloseable {
         }
     }
 
-    private void publishMicrophone() {
+    private void publishMicrophone(long session) {
         // Hold newly captured frames while the socket flushes the fixed backlog
         // present at onOpen. Live samples cannot keep the readiness barrier open.
         try {
             while (true) {
                 boolean caughtUp = false;
                 synchronized (this) {
-                    while (listening && !closed) {
+                    while (listening && !closed && captureEpoch == session) {
                         if (!sttReady) {
                             wait();
                             continue;
@@ -451,7 +454,7 @@ final class DeepgramVoice implements AutoCloseable {
                         byte[] frame = captured.peek();
                         if (frame == null) continue;
                         if (!sttSocket.send(ByteString.of(frame))) {
-                            stopListening();
+                            stopListeningIfCurrent(session);
                             safeStatus("Speech recognition upload interrupted");
                             return;
                         }
@@ -459,17 +462,24 @@ final class DeepgramVoice implements AutoCloseable {
                         if (!streamReadyNotified) initialCaptureBytesRemaining -= frame.length;
                         break;
                     }
-                    if (!listening || closed) return;
+                    if (!listening || closed || captureEpoch != session) return;
                 }
-                if (caughtUp) callback.onStreamReady();
+                if (caughtUp && captureEpoch == session) callback.onStreamReady();
             }
         } catch (InterruptedException interrupted) {
             Thread.currentThread().interrupt();
-            stopListening();
+            stopListeningIfCurrent(session);
         } catch (RuntimeException failed) {
-            stopListening();
-            if (!closed) safeStatus("Speech recognition upload interrupted");
+            if (stopListeningIfCurrent(session) && !closed)
+                safeStatus("Speech recognition upload interrupted");
         }
+    }
+
+    /** A retiring worker must not tear down the next microphone session. */
+    private synchronized boolean stopListeningIfCurrent(long session) {
+        if (captureEpoch != session) return false;
+        stopListening();
+        return true;
     }
 
     synchronized int bufferedInputBytes() { return captured.queuedBytes(); }
@@ -480,6 +490,7 @@ final class DeepgramVoice implements AutoCloseable {
 
     synchronized void stopListening() {
         if (!listening && microphone == null && sttSocket == null && captured.isEmpty()) return;
+        ++captureEpoch;
         listening = false;
         sttReady = false;
         streamReadyNotified = false;
