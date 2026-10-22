@@ -197,7 +197,11 @@ test('idle Android host keeps pumping while a display release retry is pending',
   assert.equal(app.state().active,false,'no live worker should otherwise keep the host busy');
   assert.equal(app.releaseScreen('last-worker').isError,true);
   assert.equal(app.state().active,true,'cleanup timer must count as host activity');
-  assert.ok(bridge.events.some(e=>e.type==='activity'&&e.active===true));
+  assert.equal(app.state().cleanupOnly,true,'idle host can sleep until retry deadline');
+  assert.ok(app.state().cleanupWakeMs>0&&app.state().cleanupWakeMs<=200);
+  assert.equal((app as any).releaseRetries.get('last-worker').timer.hasRef(),true,
+    'Javet must see a referenced retry timer while no other Node handles are active');
+  assert.ok(bridge.events.some(e=>e.type==='activity'&&e.active===true&&e.cleanupOnly&&e.cleanupWakeMs>0));
   bridge.retain=false;
   await until(()=>app.displayPool.active===0);
   assert.equal(app.state().active,false,'host should go idle once cleanup completes');

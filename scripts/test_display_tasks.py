@@ -100,34 +100,56 @@ RootTask id=301 bounds=[0,0][720,1280] displayId=5 userId=0
         equal(Set.of(),returned.removable(7,origins));
         // Provisional lease survives failed native cleanup; other owners are untouched.
         DisplayLeases leases=new DisplayLeases();
-        leases.provision("worker-a",7);
-        leases.provision("worker-b",8);
+        Object generationA=new Object(),generationB=new Object();
+        leases.provision("worker-a",7,generationA);
+        leases.provision("worker-b",8,generationA);
         equal(true,leases.provisional("worker-a"));
-        equal(false,leases.release("worker-a",id->false));
+        equal(false,leases.release("worker-a",generationA,id->false));
         equal(2,leases.size());
         equal(7,leases.get("worker-a"));
         equal(true,leases.provisional("worker-a"));
-        equal(true,leases.release("worker-a",id->id==7));
+        equal(true,leases.release("worker-a",generationA,id->id==7));
         equal(1,leases.size());
         equal(8,leases.get("worker-b"));
         leases.activate("worker-b",8);
         equal(false,leases.provisional("worker-b"));
         // Runtime shutdown must try every owner's cleanup after the first fails.
         DisplayLeases shutdown=new DisplayLeases();
-        shutdown.provision("stuck",10);
-        shutdown.provision("safe",11);
-        shutdown.provision("also-safe",12);
+        shutdown.provision("stuck",10,generationA);
+        shutdown.provision("safe",11,generationA);
+        shutdown.provision("also-safe",12,generationA);
         List<String> attempts=new ArrayList<>();
         DisplayLeases.releaseIndependently(shutdown.owners(),owner->{
             attempts.add(owner);
             if(owner.equals("stuck"))throw new IllegalStateException("Cannot restore borrowed task");
-            return shutdown.release(owner,id->true);
+            return shutdown.release(owner,generationA,id->true);
         });
         equal(List.of("stuck","safe","also-safe"),attempts);
         equal(Set.of("stuck"),shutdown.owners());
         equal(10,shutdown.get("stuck"));
-        DisplayLeases.releaseIndependently(shutdown.owners(),owner->shutdown.release(owner,id->true));
+        DisplayLeases.releaseIndependently(shutdown.owners(),owner->shutdown.release(owner,generationA,id->true));
         equal(0,shutdown.size());
+        // An earlier runtime cannot retire a replacement's lease for the same owner.
+        leases.provision("main",18,generationA);
+        equal(true,leases.release("main",generationA,id->true));
+        leases.provision("main",19,generationB);
+        equal(false,leases.ownedBy("main",generationA));
+        equal(true,leases.ownedBy("main",generationB));
+        DisplayLeases.releaseIndependently(Set.of("main"),owner->{
+            if(leases.ownedBy(owner,generationA))
+                return leases.release(owner,generationA,id->true);
+            return false;
+        });
+        equal(19,leases.get("main"));
+        try {
+            leases.release("main",generationA,id->true);
+            throw new AssertionError("A stale generation must not release another runtime");
+        } catch(IllegalStateException expected) {}
+        leases.clear(); // Binder invalidation also discards the stale generation.
+        leases.provision("main",20,generationB);
+        equal(false,leases.ownedBy("main",generationA));
+        equal(20,leases.get("main"));
+        equal(true,leases.release("main",generationB,id->true));
         // Unrecognized records fail closed rather than guessing a display from references.
         equal(Set.of(),DisplayTaskSnapshot.stacks("Task{aaa #101 displayId=4}\n").onDisplay(4));
     }

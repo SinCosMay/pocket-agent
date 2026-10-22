@@ -38,6 +38,7 @@ final class NativeTools implements AutoCloseable {
     private final AndroidSystemActions system;
     private final AgentDisplayCoordinator displays;
     private final Set<String> acquiredVirtualOwners=new LinkedHashSet<>();
+    private final Object displayGeneration=new Object();
     NativeTools(Context context) throws Exception {
         this.context=context.getApplicationContext();operations=new OperationStore(context);system=new AndroidSystemActions(context);displays=AgentDisplayCoordinator.shared(context);
         try(java.io.InputStream input=context.getAssets().open("tools.json")) {
@@ -48,11 +49,11 @@ final class NativeTools implements AutoCloseable {
     }
     JSONArray list() {return definitions;}
     synchronized void releaseOwner(String owner) {
-        displays.release(owner);
+        displays.release(owner,displayGeneration);
         acquiredVirtualOwners.remove(owner);
     }
     @Override public synchronized void close() {
-        displays.retireOwners(new LinkedHashSet<>(acquiredVirtualOwners));
+        displays.retireOwners(new LinkedHashSet<>(acquiredVirtualOwners),displayGeneration);
         acquiredVirtualOwners.clear();
     }
     private synchronized JSONObject screenLease(JSONObject args,String owner) {
@@ -61,7 +62,7 @@ final class NativeTools implements AutoCloseable {
         if(action.equals("acquire")) {
             // Track uncertain bootstrap failures too: they can retain native leases.
             acquiredVirtualOwners.add(owner);
-            try{return displays.acquire(owner);}
+            try{return displays.acquire(owner,displayGeneration);}
             catch(ControlException e){return Json.failure(e.code.name(),e.getMessage());}
             catch(RuntimeException e){return Json.failure("NOT_READY","Cannot establish safe virtual display ownership");}
         }
@@ -182,8 +183,8 @@ final class NativeTools implements AutoCloseable {
                 message.contains("virtual display backend disconnected")||message.contains("no virtual display")));
     }
     private JSONObject replaceObservationLease(String owner) {
-        displays.release(owner);
-        try {return displays.acquire(owner);}
+        displays.release(owner,displayGeneration);
+        try {return displays.acquire(owner,displayGeneration);}
         catch(ControlException error) {return Json.failure(error.code.name(),error.getMessage());}
         catch(RuntimeException error) {return Json.failure("NOT_READY","Virtual display recovery failed");}
     }
@@ -294,7 +295,7 @@ final class NativeTools implements AutoCloseable {
         if(value==null)return "";
         return value.length()>max?value.substring(0,max):value;
     }
-    private AccessibilityProxyBackend screen(String owner,JSONObject args) throws ControlException {return displays.screen(owner,physical(args));}
+    private AccessibilityProxyBackend screen(String owner,JSONObject args) throws ControlException {return displays.screen(owner,physical(args),displayGeneration);}
     private static Integer integer(JSONObject a,String name) throws Exception {return a.has(name)?a.getInt(name):null;}
     private static String string(JSONObject a,String name) throws Exception {return a.has(name)?a.getString(name):null;}
     private JSONObject outcome(AndroidSystemActions.Outcome value) {return Json.tool(Json.obj("status",value.status(),"reference",value.reference(),"message",value.message()));}
@@ -320,7 +321,7 @@ final class NativeTools implements AutoCloseable {
     private JSONObject observation(JSONObject a,String owner,int textBudget) throws Exception {
         ControlBackend.Observation o=screen(owner,a).observe(a.optBoolean("include_image",false),a.optInt("max_image_dimension",1280),a.optInt("max_nodes",DEFAULT_OBSERVATION_NODES));
         JSONObject bounded=boundedObservationNodes(o.nodes(),textBudget);JSONArray nodes=bounded.getJSONArray("nodes");
-        JSONObject data=Json.obj("snapshot_id",o.snapshotId(),"captured_at_ms",o.capturedAtMs(),"package_name",o.packageName(),"window_id",o.windowId(),"display_target",displayTarget(a),"display_id",displays.display(owner,physical(a)),"coordinate_width",o.coordinateWidth(),"coordinate_height",o.coordinateHeight(),"interactive",o.interactive(),"locked",o.locked(),"nodes",nodes,"nodes_truncated",o.nodesTruncated()||bounded.getBoolean("nodes_truncated"),"image_width",o.imageWidth(),"image_height",o.imageHeight());
+        JSONObject data=Json.obj("snapshot_id",o.snapshotId(),"captured_at_ms",o.capturedAtMs(),"package_name",o.packageName(),"window_id",o.windowId(),"display_target",displayTarget(a),"display_id",displays.display(owner,physical(a),displayGeneration),"coordinate_width",o.coordinateWidth(),"coordinate_height",o.coordinateHeight(),"interactive",o.interactive(),"locked",o.locked(),"nodes",nodes,"nodes_truncated",o.nodesTruncated()||bounded.getBoolean("nodes_truncated"),"image_width",o.imageWidth(),"image_height",o.imageHeight());
         JSONObject result=Json.tool(data);byte[] image=o.image();if(image!=null) result.put("images",Json.arr(Json.obj("data",Base64.encodeToString(image,Base64.NO_WRAP),"mimeType",o.imageMime())));
         return result;
     }
@@ -389,10 +390,10 @@ final class NativeTools implements AutoCloseable {
                     if(!physicalInteractive||physicalLocked)
                         throw new ControlException(UNSUPPORTED,"Virtual-display Home/Back/Recents are unavailable while the physical device is asleep or locked; use in-app semantic or gesture navigation");
                     int key=switch(action.key()==null?"":action.key()) {case "back"->4;case "home"->3;case "recents"->187;default->throw new ControlException(UNSUPPORTED,"Key must be home, back, recents or enter");};
-                    displays.key(owner,key);
+                    displays.key(owner,key,displayGeneration);
                     result=new ControlBackend.Result("dispatched","Display-targeted key accepted; task outcome not yet verified");
                 }else result=target.execute(action);
-                return Json.tool(Json.obj("status",result.status(),"message",result.message(),"display_target",displayTarget(a),"display_id",displays.display(owner,physical(a))));
+                return Json.tool(Json.obj("status",result.status(),"message",result.message(),"display_target",displayTarget(a),"display_id",displays.display(owner,physical(a),displayGeneration)));
             }
             case "phone_apps": {
                 JSONArray apps=new JSONArray();List<ResolveInfo> found=context.getPackageManager().queryIntentActivities(new Intent(Intent.ACTION_MAIN).addCategory(Intent.CATEGORY_LAUNCHER),0);
@@ -401,8 +402,8 @@ final class NativeTools implements AutoCloseable {
             case "phone_open_app": {
                 String pkg=a.getString("package_name");Intent launch=context.getPackageManager().getLaunchIntentForPackage(pkg);
                 if(launch==null||launch.getComponent()==null) throw new ControlException(UNSUPPORTED,"No launcher component visible for this package");
-                boolean physicalTarget=physical(a);displays.launch(owner,launch,physicalTarget);
-                return Json.tool(Json.obj("status","requested","package_name",pkg,"display_target",displayTarget(a),"display_id",displays.display(owner,physicalTarget),"message",physicalTarget?"Launch requested on the visible physical display; verify with phone_observe using display_target=physical.":"Launch requested on the private virtual display; verify with phone_observe."));
+                boolean physicalTarget=physical(a);displays.launch(owner,launch,physicalTarget,displayGeneration);
+                return Json.tool(Json.obj("status","requested","package_name",pkg,"display_target",displayTarget(a),"display_id",displays.display(owner,physicalTarget,displayGeneration),"message",physicalTarget?"Launch requested on the visible physical display; verify with phone_observe using display_target=physical.":"Launch requested on the private virtual display; verify with phone_observe."));
             }
             case "phone_open_url": {
                 String raw=a.getString("url");
@@ -411,14 +412,14 @@ final class NativeTools implements AutoCloseable {
                     uri.getHost()==null || uri.getHost().trim().isEmpty() || uri.getUserInfo()!=null ||
                     raw.length()>2048 || raw.contains("\n") || raw.contains("\r"))
                     throw new ControlException(INVALID_ARGUMENT,"Provide an HTTP(S) URL without embedded credentials or control characters");
-                boolean physicalTarget=physical(a);displays.openUrl(owner,uri.toString(),physicalTarget);
-                return Json.tool(Json.obj("status","requested","display_target",displayTarget(a),"display_id",displays.display(owner,physicalTarget),
+                boolean physicalTarget=physical(a);displays.openUrl(owner,uri.toString(),physicalTarget,displayGeneration);
+                return Json.tool(Json.obj("status","requested","display_target",displayTarget(a),"display_id",displays.display(owner,physicalTarget,displayGeneration),
                     "message",physicalTarget?"URL launch requested on the visible physical display; verify with phone_observe using display_target=physical.":"URL launch requested on the virtual display; verify in phone_observe."));
             }
             case "phone_clock_screen": {
                 String screen=a.getString("screen");boolean physicalTarget=physical(a);
-                displays.showClock(owner,screen,physicalTarget);
-                return Json.tool(Json.obj("status","requested","display_target",displayTarget(a),"display_id",displays.display(owner,physicalTarget),
+                displays.showClock(owner,screen,physicalTarget,displayGeneration);
+                return Json.tool(Json.obj("status","requested","display_target",displayTarget(a),"display_id",displays.display(owner,physicalTarget,displayGeneration),
                     "message",physicalTarget?"Clock screen requested on the visible physical display; verify with phone_observe using display_target=physical.":"Clock screen requested; read alarms/timers from the UI, not from an unsupported provider API."));
             }
             case "phone_contacts": {

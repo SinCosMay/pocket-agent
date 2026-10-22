@@ -28,7 +28,9 @@ public final class RuntimeHost implements AutoCloseable {
     private final Handler handler;
     private NativeTools tools;
     private NodeRuntime runtime;
-    private boolean active, pumpScheduled, shutdownAcknowledged, shutdownClean;
+    private boolean active, cleanupOnly, pumpScheduled, shutdownAcknowledged, shutdownClean;
+    private int cleanupWakeMs=200;
+    private long pumpDueAtMs;
     private volatile boolean closing, closed, terminalRuntimeFailure;
     private int runtimeRestartAttempts;
     private static final int MAX_RUNTIME_RESTARTS=2;
@@ -44,6 +46,7 @@ public final class RuntimeHost implements AutoCloseable {
     private final Runnable pump = this::pumpEvents;
     private void pumpEvents() {
         pumpScheduled = false;
+        pumpDueAtMs = 0;
         if (closed || closing || runtime == null) return;
         try { runtime.await(V8AwaitMode.RunNoWait); }
         catch (Throwable error) { poisonAndRestart("Node event processing failed", error); return; }
@@ -192,9 +195,18 @@ public final class RuntimeHost implements AutoCloseable {
         return result;
     }
     private void schedulePump() {
-        if (!closed && !closing && !pumpScheduled && (active || gate != null || !debugPending.isEmpty())) {
-            pumpScheduled = handler.postDelayed(pump, 16);
+        if (closed || closing || !(active || gate != null || !debugPending.isEmpty())) return;
+        // A display-cleanup-only runtime has referenced Node retry timers but no
+        // interactive work. Wake for their nearest deadline, not every 16 ms.
+        boolean cleanupWait=active&&cleanupOnly&&gate==null&&debugPending.isEmpty();
+        int delay=cleanupWait?Math.max(1,Math.min(cleanupWakeMs,5000)):16;
+        long dueAt=android.os.SystemClock.uptimeMillis()+delay;
+        if(pumpScheduled) {
+            if(dueAt>=pumpDueAtMs)return;
+            handler.removeCallbacks(pump);
         }
+        pumpDueAtMs=dueAt;
+        pumpScheduled=handler.postDelayed(pump,delay);
     }
     private void emit(JSONObject event) {
         String type = event.optString("type");
@@ -210,8 +222,14 @@ public final class RuntimeHost implements AutoCloseable {
             if (state != null) {
                 try {store.save(state);} catch(Throwable persistenceFailure) {android.util.Log.w("PocketRuntime","State snapshot persistence failed",persistenceFailure);}
                 active = state.optBoolean("active", state.optBoolean("busy"));
+                cleanupOnly = state.optBoolean("cleanupOnly",false);
+                cleanupWakeMs = state.optInt("cleanupWakeMs",200);
             }
-        } else if (type.equals("activity")) active = event.optBoolean("active");
+        } else if (type.equals("activity")) {
+            active = event.optBoolean("active");
+            cleanupOnly = event.optBoolean("cleanupOnly",false);
+            cleanupWakeMs = event.optInt("cleanupWakeMs",200);
+        }
         else if (type.equals("gate")) {
             try {store.record(event);} catch(Throwable persistenceFailure) {android.util.Log.w("PocketRuntime","Gate event persistence failed",persistenceFailure);}
             if (gate != null) { gate.complete(event); gate = null; }

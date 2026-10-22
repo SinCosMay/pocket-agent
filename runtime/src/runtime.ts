@@ -38,7 +38,7 @@ export class PocketRuntime {
   readonly displayPool=new DisplayPool(3);
   private readonly nativeDisplays=new Set<string>();
   private readonly pendingDisplays=new Map<string,Promise<any>>();
-  private readonly releaseRetries=new Map<string,{attempt:number,timer?:ReturnType<typeof setTimeout>}>();
+  private readonly releaseRetries=new Map<string,{attempt:number,timer?:ReturnType<typeof setTimeout>,dueAt?:number}>();
   readonly runtime:SubagentRuntime;
   readonly sessions=new Map<string,MobileSession>();
   main!:MobileSession;
@@ -273,11 +273,13 @@ export class PocketRuntime {
     if(retry.timer)return;
     const delay=Math.min(200*2**Math.min(retry.attempt++,5),5000);
     const scheduled=retry;
+    retry.dueAt=Date.now()+delay;
     retry.timer=setTimeout(()=>{
       scheduled.timer=undefined;
+      scheduled.dueAt=undefined;
       if(this.releaseRetries.get(owner)===scheduled)this.releaseScreen(owner);
     },delay);
-    retry.timer.unref?.();
+    // Keep the timer referenced: Javet's nonblocking Node pump must observe it.
   }
   releaseScreen(owner:string):any {
     clearNativeToolUiState(this,owner);
@@ -291,7 +293,8 @@ export class PocketRuntime {
       if(firstRetry)
         this.emit({type:'log',owner,message:'Virtual display retained; cleanup will retry in the background'});
       this.retryScreenRelease(owner);
-      if(firstRetry)this.publish();
+      // Publish each backoff deadline so Android can sleep until the next retry.
+      this.publish();
       return result;
     }
     const retry=this.releaseRetries.get(owner);
@@ -663,12 +666,15 @@ export class PocketRuntime {
   }
   state():any {
     const tasks=this.runtime.listConversations().map(c=>{const g=c.generations.at(-1)!;return {...c,generation:g.generation,status:g.status.kind==='done'?({error:'failed',aborted:'cancelled',skipped:'cancelled'} as any)[g.status.outcome]??g.status.outcome:g.status.kind,output:g.status.kind==='done'?g.status.output:undefined};});
-    return {messages:textMessages(this.main.messages,this.sanitize),tasks,busy:this.busy,lastError:this.lastError,active:this.releaseRetries.size>0||this.discoveringModels||hasPendingCodexRefresh(this.credentials)||this.observing||this.busy||tasks.some(t=>t.currentGeneration||t.isStopping)||(!this.mainPaused&&this.inbox.length>0)||Boolean(this.pendingSave),mainPaused:this.mainPaused,mainInterrupted:this.mainInterrupted,provider:{...this.config},mainTurns:this.mainTurns,mainSystemPrompt:this.mainSystemPrompt,defaultMainSystemPrompt:DEFAULT_MAIN_PROMPT,
+    const otherActive=this.discoveringModels||hasPendingCodexRefresh(this.credentials)||this.observing||this.busy||tasks.some(t=>t.currentGeneration||t.isStopping)||(!this.mainPaused&&this.inbox.length>0)||Boolean(this.pendingSave);
+    const cleanupOnly=this.releaseRetries.size>0&&!otherActive;
+    const cleanupWakeMs=cleanupOnly?Math.min(...[...this.releaseRetries.values()].map(retry=>Math.max(1,(retry.dueAt??Date.now()+200)-Date.now()))):0;
+    return {messages:textMessages(this.main.messages,this.sanitize),tasks,busy:this.busy,lastError:this.lastError,active:this.releaseRetries.size>0||otherActive,cleanupOnly,cleanupWakeMs,mainPaused:this.mainPaused,mainInterrupted:this.mainInterrupted,provider:{...this.config},mainTurns:this.mainTurns,mainSystemPrompt:this.mainSystemPrompt,defaultMainSystemPrompt:DEFAULT_MAIN_PROMPT,
       workerMessages:Object.fromEntries([...this.sessions].map(([id,s])=>[id,textMessages(s.messages,this.sanitize)]))};
   }
   publish():void {
     if(this.restoring)return;
-    try {const state=this.state();this.emit({type:'state',state});this.emit({type:'activity',active:state.active});}
+    try {const state=this.state();this.emit({type:'state',state});this.emit({type:'activity',active:state.active,cleanupOnly:state.cleanupOnly,cleanupWakeMs:state.cleanupWakeMs});}
     catch(e) {this.reportError(e);}
   }
 }

@@ -11,6 +11,7 @@ import java.util.function.Predicate;
 final class DisplayLeases {
     private final Map<String,Integer> displays=new LinkedHashMap<>();
     private final Set<String> provisional=new LinkedHashSet<>();
+    private final Map<String,Object> generations=new LinkedHashMap<>();
 
     Integer get(String owner) {return displays.get(owner);}
     boolean containsValue(int id) {return displays.containsValue(id);}
@@ -18,22 +19,27 @@ final class DisplayLeases {
     Set<String> owners() {return new LinkedHashSet<>(displays.keySet());}
     Iterable<Integer> ids() {return displays.values();}
     boolean provisional(String owner) {return provisional.contains(owner);}
+    boolean ownedBy(String owner,Object generation) {return displays.containsKey(owner)&&generations.get(owner)==generation;}
+    Object generation(String owner) {return generations.get(owner);}
 
-    void provision(String owner,int id) {
-        if(id<=0||displays.containsKey(owner)||displays.containsValue(id))
-            throw new IllegalStateException("Display lease already exists or has invalid ID");
+    void provision(String owner,int id,Object generation) {
+        if(generation==null||id<=0||displays.containsKey(owner)||displays.containsValue(id))
+            throw new IllegalStateException("Display lease already exists or has invalid ID or generation");
         displays.put(owner,id);
+        generations.put(owner,generation);
         provisional.add(owner);
     }
     void activate(String owner,int id) {
         if(!Integer.valueOf(id).equals(displays.get(owner))||!provisional.remove(owner))
             throw new IllegalStateException("Display lease lost during bootstrap");
     }
-    boolean release(String owner,IntPredicate remove) {
+    boolean release(String owner,Object generation,IntPredicate remove) {
         Integer id=displays.get(owner);
         if(id==null)return true;
+        if(!ownedBy(owner,generation))throw new IllegalStateException("Display lease belongs to another runtime");
         if(!remove.test(id))return false;
         displays.remove(owner);
+        generations.remove(owner);
         provisional.remove(owner);
         return true;
     }
@@ -45,5 +51,5 @@ final class DisplayLeases {
             }
         }
     }
-    void clear() {displays.clear();provisional.clear();}
+    void clear() {displays.clear();generations.clear();provisional.clear();}
 }
