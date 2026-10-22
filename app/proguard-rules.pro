@@ -65,5 +65,11 @@
 # WebRTC's JNI entry points reference org.webrtc classes by their original names.
 # Preserve JNI-visible classes/methods in the minified release APK.
 -keep class org.webrtc.** { *; }
-# WebRTC's bundled native library resolves JniZero helpers by exact JNI names.
--keep class org.jni_zero.** { *; }
+# Keep only JNI-called JniZero methods: the bundled AAR references an optional
+# generated JniZeroJni class that it does not ship, so retaining all methods fails R8.
+-keepclasseswithmembers class org.jni_zero.** {
+    @org.jni_zero.CalledByNative <methods>;
+}
+-keepclasseswithmembers class org.jni_zero.** {
+    @org.jni_zero.CalledByNativeUnchecked <methods>;
+}
