@@ -9,6 +9,8 @@ ROOT = pathlib.Path(__file__).resolve().parents[1]
 SOURCE = ROOT / "app/src/main/java/dev/pocket/agent/DisplayTaskSnapshot.java"
 LEASE_SOURCE = ROOT / "app/src/main/java/dev/pocket/agent/DisplayLeases.java"
 COORDINATOR_SOURCE = ROOT / "app/src/main/java/dev/pocket/agent/AgentDisplayCoordinator.java"
+SERVICE_SOURCE = ROOT / "app/src/main/java/dev/pocket/agent/ShellDisplayService.java"
+REMOVAL_SOURCE = ROOT / "app/src/main/java/dev/pocket/agent/DisplayRemovalSequence.java"
 
 
 class DisplayTaskPolicyTest(unittest.TestCase):
@@ -30,6 +32,127 @@ class DisplayTaskPolicyTest(unittest.TestCase):
         self.assertIn("synchronized(this) {", retry)
         self.assertIn("release(owner,generation);", retry)
         self.assertNotIn("synchronized(AgentDisplayCoordinator.this)", retry)
+
+    def test_privileged_slow_removal_allows_unrelated_creation(self):
+        service = SERVICE_SOURCE.read_text()
+        remove = service.split("@Override public void removeDisplay(int id)", 1)[1].split(
+            "    static void hideIme(", 1
+        )[0]
+        # This is an executable check of the actual concurrency primitive used
+        # by the service, paired with checks that the service invokes it without
+        # taking its old method-wide lock.
+        self.assertIn("DisplayRemovalSequence.run(this,", remove)
+        self.assertIn("active -> reconcileAndRemoveTasks(id,active)", remove)
+        self.assertIn("removingDisplays.add(id)", remove)
+        self.assertIn("if(removingDisplays.contains(id))", service)
+        self.assertIn("if(!removingDisplays.isEmpty())", service)
+        self.assertIn("synchronized(this) {", service.split(
+            "private boolean restoreBorrowedTasks(", 1
+        )[1].split("private void reconcileAndRemoveTasks(", 1)[0])
+
+        harness = r'''
+package dev.pocket.agent;
+import java.util.HashSet;
+import java.util.Set;
+import java.util.concurrent.CountDownLatch;
+import java.util.concurrent.TimeUnit;
+import java.util.concurrent.atomic.AtomicInteger;
+import java.util.concurrent.atomic.AtomicReference;
+
+public class DisplayRemovalSequenceTest {
+    static void check(boolean condition, String message) {
+        if (!condition) throw new AssertionError(message);
+    }
+    static void await(CountDownLatch latch) {
+        try {
+            if (!latch.await(4, TimeUnit.SECONDS)) throw new AssertionError("Latch timed out");
+        } catch (InterruptedException error) {
+            Thread.currentThread().interrupt();
+            throw new AssertionError(error);
+        }
+    }
+    public static void main(String[] args) throws Exception {
+        Object monitor = new Object();
+        Set<Integer> removing = new HashSet<>();
+        AtomicInteger created = new AtomicInteger();
+        AtomicInteger removed = new AtomicInteger();
+        AtomicReference<Throwable> failure = new AtomicReference<>();
+        CountDownLatch cleanupStarted = new CountDownLatch(1);
+        CountDownLatch unblockCleanup = new CountDownLatch(1);
+        CountDownLatch unrelatedCreated = new CountDownLatch(1);
+        Thread cleanup = new Thread(() -> {
+            try {
+                DisplayRemovalSequence.run(monitor,
+                    () -> {
+                        check(removing.add(7), "A may be reserved only once");
+                        return 7;
+                    },
+                    id -> {
+                        cleanupStarted.countDown();
+                        await(unblockCleanup);  // Simulates multi-second shell reconciliation.
+                    },
+                    id -> {
+                        check(removing.contains(id), "A must be reserved through finish");
+                        removed.incrementAndGet();
+                    },
+                    () -> removing.remove(7));
+            } catch (Throwable error) {
+                failure.set(error);
+            }
+        }, "slow-display-removal");
+        cleanup.setDaemon(true);
+        cleanup.start();
+        await(cleanupStarted);
+        Thread allocation = new Thread(() -> {
+            try {
+                synchronized(monitor) {
+                    check(removing.contains(7), "Slow cleanup reservation must still exist");
+                    check(!removing.contains(8), "Unrelated display must not be reserved");
+                    created.incrementAndGet();
+                }
+                unrelatedCreated.countDown();
+            } catch (Throwable error) {
+                failure.set(error);
+            }
+        }, "unrelated-display-creation");
+        allocation.setDaemon(true);
+        allocation.start();
+        try {
+            check(unrelatedCreated.await(2, TimeUnit.SECONDS),
+                "Unrelated creation blocked by slow task reconciliation");
+            check(cleanup.isAlive(), "Creation must complete before cleanup is unblocked");
+        } finally {
+            unblockCleanup.countDown();
+        }
+        cleanup.join(4000);
+        allocation.join(4000);
+        check(!cleanup.isAlive() && !allocation.isAlive(), "Threads must terminate");
+        if (failure.get() != null) throw new AssertionError(failure.get());
+        check(created.get() == 1 && removed.get() == 1, "Both operations must complete");
+        check(removing.isEmpty(), "Successful cleanup must release reservation");
+
+        // Cleanup failure must release its reservation but never finalize removal.
+        try {
+            DisplayRemovalSequence.run(monitor,
+                () -> { removing.add(9); return 9; },
+                id -> { throw new IllegalStateException("Cannot restore borrowed task"); },
+                id -> { throw new AssertionError("Must preserve display on failed cleanup"); },
+                () -> removing.remove(9));
+            throw new AssertionError("Failure must propagate");
+        } catch (IllegalStateException expected) {
+            check(removing.isEmpty(), "Failed cleanup must be retryable");
+        }
+    }
+}
+'''
+        with tempfile.TemporaryDirectory(prefix="display-removal-concurrency-") as temporary:
+            directory = pathlib.Path(temporary)
+            test = directory / "DisplayRemovalSequenceTest.java"
+            test.write_text(harness)
+            subprocess.run(["javac", "--release", "17", "-d", temporary,
+                            str(REMOVAL_SOURCE), str(test)], check=True)
+            subprocess.run(["java", "-cp", temporary,
+                            "dev.pocket.agent.DisplayRemovalSequenceTest"], check=True)
 
     def test_cleanup_membership_and_ownership(self):
         harness = r'''
