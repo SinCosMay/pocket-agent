@@ -34,7 +34,7 @@ public final class ShellDisplayService extends IDisplayShell.Stub {
     private static final int DISPLAY_IME_POLICY_HIDE=2;
     private final Context context;
     private final Map<Integer,OwnedDisplay> displays=new LinkedHashMap<>();
-    private final Set<Integer> removingDisplays=new LinkedHashSet<>();
+    private final DisplayRestorationReservations reservations=new DisplayRestorationReservations();
     private HandlerThread frameThread;
 
     private static final class OwnedDisplay {
@@ -113,7 +113,7 @@ public final class ShellDisplayService extends IDisplayShell.Stub {
     }
     private void owned(int id) {
         if(id<=Display.DEFAULT_DISPLAY || !displays.containsKey(id)) throw new SecurityException("Display is not owned by Pocket Agent");
-        if(removingDisplays.contains(id)) throw new IllegalStateException("Display cleanup is in progress");
+        if(reservations.isRemoving(id)) throw new IllegalStateException("Display cleanup is in progress");
     }
     @Override public void removeDisplay(int id) {
         // Only reservation/finalization hold the service monitor. Task inspection,
@@ -122,16 +122,16 @@ public final class ShellDisplayService extends IDisplayShell.Stub {
         DisplayRemovalSequence.run(this,
             () -> {
                 owned(id);
-                removingDisplays.add(id);
+                reservations.beginRemoval(id);
                 return displays.get(id);
             },
             active -> reconcileAndRemoveTasks(id,active),
+            active -> active.close(),
             active -> {
-                active.close();
                 displays.remove(id);
                 if(displays.isEmpty() && frameThread!=null) {frameThread.quitSafely();frameThread=null;}
             },
-            () -> removingDisplays.remove(id));
+            () -> reservations.finishRemoval(id));
     }
     static void hideIme(int displayId) throws Exception {
         Class<?> serviceManager=Class.forName("android.os.ServiceManager");
@@ -257,14 +257,19 @@ public final class ShellDisplayService extends IDisplayShell.Stub {
             if(origin==null)continue;
             borrowed=true;
             // Never destroy a reused user/other-worker task along with this display.
-            boolean originStillOwned;
+            // Pin the destination until the move is verified. A different worker's
+            // removal cannot pass its empty-display check and then destroy this task.
+            int destination;
             synchronized(this) {
-                originStillOwned=displays.containsKey(origin)&&!removingDisplays.contains(origin);
+                destination=reservations.pinOrigin(origin,displays.containsKey(origin));
             }
-            int destination=origin>0&&!originStillOwned?Display.DEFAULT_DISPLAY:origin;
-            if(!exec("/system/bin/am","display","move-stack",String.valueOf(task),String.valueOf(destination))
-                ||taskSnapshot().onDisplay(id).contains(task))
-                throw new IllegalStateException("Cannot restore a pre-existing task; retaining virtual display");
+            try {
+                if(!exec("/system/bin/am","display","move-stack",String.valueOf(task),String.valueOf(destination))
+                    ||taskSnapshot().onDisplay(id).contains(task))
+                    throw new IllegalStateException("Cannot restore a pre-existing task; retaining virtual display");
+            } finally {
+                reservations.unpinOrigin(destination);
+            }
         }
         return borrowed;
     }
@@ -354,7 +359,7 @@ public final class ShellDisplayService extends IDisplayShell.Stub {
     @Override public synchronized void destroy() {
         // A concurrent removal owns the task-reconciliation obligation. Do not
         // run a second cleanup over the same display or implicitly destroy tasks.
-        if(!removingDisplays.isEmpty())throw new IllegalStateException("Display cleanup in progress; retry destroy");
+        if(reservations.hasReservations())throw new IllegalStateException("Display cleanup or restoration in progress; retry destroy");
         for(Map.Entry<Integer,OwnedDisplay> entry:displays.entrySet()) {
             // Failure to prove ownership must also prevent implicit DESTROY_CONTENT.
             reconcileAndRemoveTasks(entry.getKey(),entry.getValue());

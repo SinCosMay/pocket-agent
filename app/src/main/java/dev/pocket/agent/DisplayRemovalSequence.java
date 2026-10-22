@@ -14,6 +14,7 @@ final class DisplayRemovalSequence {
         Object lock,
         Supplier<T> reserve,
         Consumer<T> reconcile,
+        Consumer<T> close,
         Consumer<T> finish,
         Runnable releaseReservation
     ) {
@@ -23,6 +24,8 @@ final class DisplayRemovalSequence {
         }
         try {
             reconcile.accept(selected);
+            // Native VirtualDisplay.release / ImageReader.close may also block.
+            close.accept(selected);
             synchronized(lock) {
                 finish.accept(selected);
             }

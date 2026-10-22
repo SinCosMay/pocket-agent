@@ -11,6 +11,7 @@ LEASE_SOURCE = ROOT / "app/src/main/java/dev/pocket/agent/DisplayLeases.java"
 COORDINATOR_SOURCE = ROOT / "app/src/main/java/dev/pocket/agent/AgentDisplayCoordinator.java"
 SERVICE_SOURCE = ROOT / "app/src/main/java/dev/pocket/agent/ShellDisplayService.java"
 REMOVAL_SOURCE = ROOT / "app/src/main/java/dev/pocket/agent/DisplayRemovalSequence.java"
+RESERVATIONS_SOURCE = ROOT / "app/src/main/java/dev/pocket/agent/DisplayRestorationReservations.java"
 
 
 class DisplayTaskPolicyTest(unittest.TestCase):
@@ -43,12 +44,15 @@ class DisplayTaskPolicyTest(unittest.TestCase):
         # taking its old method-wide lock.
         self.assertIn("DisplayRemovalSequence.run(this,", remove)
         self.assertIn("active -> reconcileAndRemoveTasks(id,active)", remove)
-        self.assertIn("removingDisplays.add(id)", remove)
-        self.assertIn("if(removingDisplays.contains(id))", service)
-        self.assertIn("if(!removingDisplays.isEmpty())", service)
-        self.assertIn("synchronized(this) {", service.split(
-            "private boolean restoreBorrowedTasks(", 1
-        )[1].split("private void reconcileAndRemoveTasks(", 1)[0])
+        self.assertIn("reservations.beginRemoval(id)", remove)
+        self.assertIn("active -> active.close()", remove)
+        self.assertIn("if(reservations.isRemoving(id))", service)
+        self.assertIn("if(reservations.hasReservations())", service)
+        restore = service.split("private boolean restoreBorrowedTasks(", 1)[1].split(
+            "private void reconcileAndRemoveTasks(", 1
+        )[0]
+        self.assertIn("destination=reservations.pinOrigin(origin,displays.containsKey(origin));", restore)
+        self.assertIn("reservations.unpinOrigin(destination)", restore)
 
         harness = r'''
 package dev.pocket.agent;
@@ -80,6 +84,9 @@ public class DisplayRemovalSequenceTest {
         CountDownLatch cleanupStarted = new CountDownLatch(1);
         CountDownLatch unblockCleanup = new CountDownLatch(1);
         CountDownLatch unrelatedCreated = new CountDownLatch(1);
+        CountDownLatch closeStarted = new CountDownLatch(1);
+        CountDownLatch unblockClose = new CountDownLatch(1);
+        CountDownLatch duringCloseCreated = new CountDownLatch(1);
         Thread cleanup = new Thread(() -> {
             try {
                 DisplayRemovalSequence.run(monitor,
@@ -90,6 +97,10 @@ public class DisplayRemovalSequenceTest {
                     id -> {
                         cleanupStarted.countDown();
                         await(unblockCleanup);  // Simulates multi-second shell reconciliation.
+                    },
+                    id -> {
+                        closeStarted.countDown();
+                        await(unblockClose);  // Simulates slow VirtualDisplay.release().
                     },
                     id -> {
                         check(removing.contains(id), "A must be reserved through finish");
@@ -124,11 +135,32 @@ public class DisplayRemovalSequenceTest {
         } finally {
             unblockCleanup.countDown();
         }
+        await(closeStarted);
+        Thread whileClosing = new Thread(() -> {
+            try {
+                synchronized(monitor) {
+                    check(removing.contains(7), "Closing must retain the display reservation");
+                    created.incrementAndGet();
+                }
+                duringCloseCreated.countDown();
+            } catch (Throwable error) {
+                failure.set(error);
+            }
+        }, "creation-during-display-close");
+        whileClosing.setDaemon(true);
+        whileClosing.start();
+        try {
+            check(duringCloseCreated.await(2, TimeUnit.SECONDS),
+                "Unrelated creation blocked by slow VirtualDisplay.release");
+        } finally {
+            unblockClose.countDown();
+        }
         cleanup.join(4000);
+        whileClosing.join(4000);
         allocation.join(4000);
-        check(!cleanup.isAlive() && !allocation.isAlive(), "Threads must terminate");
+        check(!cleanup.isAlive() && !allocation.isAlive() && !whileClosing.isAlive(), "Threads must terminate");
         if (failure.get() != null) throw new AssertionError(failure.get());
-        check(created.get() == 1 && removed.get() == 1, "Both operations must complete");
+        check(created.get() == 2 && removed.get() == 1, "Both creations and cleanup must complete");
         check(removing.isEmpty(), "Successful cleanup must release reservation");
 
         // Cleanup failure must release its reservation but never finalize removal.
@@ -136,6 +168,7 @@ public class DisplayRemovalSequenceTest {
             DisplayRemovalSequence.run(monitor,
                 () -> { removing.add(9); return 9; },
                 id -> { throw new IllegalStateException("Cannot restore borrowed task"); },
+                id -> { throw new AssertionError("Must not close display on failed cleanup"); },
                 id -> { throw new AssertionError("Must preserve display on failed cleanup"); },
                 () -> removing.remove(9));
             throw new AssertionError("Failure must propagate");
@@ -153,6 +186,105 @@ public class DisplayRemovalSequenceTest {
                             str(REMOVAL_SOURCE), str(test)], check=True)
             subprocess.run(["java", "-cp", temporary,
                             "dev.pocket.agent.DisplayRemovalSequenceTest"], check=True)
+
+    def test_concurrent_borrowed_task_restore_cannot_race_destination_removal(self):
+        service = SERVICE_SOURCE.read_text()
+        restore = service.split("private boolean restoreBorrowedTasks(", 1)[1].split(
+            "private void reconcileAndRemoveTasks(", 1
+        )[0]
+        self.assertIn("reservations.pinOrigin(origin,displays.containsKey(origin))", restore)
+        self.assertIn("reservations.unpinOrigin(destination)", restore)
+        self.assertIn("reservations.beginRemoval(id)", service)
+
+        harness = r'''
+package dev.pocket.agent;
+import java.util.concurrent.CountDownLatch;
+import java.util.concurrent.TimeUnit;
+import java.util.concurrent.atomic.AtomicReference;
+
+public class DisplayRestorationReservationsTest {
+    static void check(boolean value,String description) {
+        if(!value)throw new AssertionError(description);
+    }
+    static void await(CountDownLatch latch) {
+        try {
+            if(!latch.await(4,TimeUnit.SECONDS))throw new AssertionError("Timed out");
+        } catch(InterruptedException error) {
+            Thread.currentThread().interrupt();
+            throw new AssertionError(error);
+        }
+    }
+    public static void main(String[] args) throws Exception {
+        DisplayRestorationReservations reservations=new DisplayRestorationReservations();
+        CountDownLatch pinAcquired=new CountDownLatch(1),finishMove=new CountDownLatch(1);
+        AtomicReference<Throwable> failure=new AtomicReference<>();
+        Thread move=new Thread(()->{
+            int destination=reservations.pinOrigin(8,true);
+            try {
+                check(destination==8,"A must reserve B as destination");
+                pinAcquired.countDown();
+                await(finishMove);  // Represents move-stack and verification.
+            } catch(Throwable error) {
+                failure.set(error);
+            } finally {
+                reservations.unpinOrigin(destination);
+            }
+        },"borrowed-task-migration");
+        move.setDaemon(true);
+        move.start();
+        await(pinAcquired);
+        Thread retire=new Thread(()->{
+            try {
+                try {
+                    reservations.beginRemoval(8);
+                    throw new AssertionError("B removed while A was restoring to it");
+                } catch(IllegalStateException expected) {
+                    check(!reservations.isRemoving(8),"B must not be marked removing");
+                }
+            } catch(Throwable error) {
+                failure.set(error);
+            }
+        },"destination-retirement");
+        retire.start();
+        retire.join(4000);
+        check(!retire.isAlive(),"B removal attempt must return without waiting for shell move");
+        finishMove.countDown();
+        move.join(4000);
+        check(!move.isAlive(),"Restoration must finish");
+        if(failure.get()!=null)throw new AssertionError(failure.get());
+
+        reservations.beginRemoval(8);
+        check(reservations.isRemoving(8),"B should now be removable");
+        check(reservations.pinOrigin(8,true)==0,
+            "A restoring after B retirement must target the physical display");
+        reservations.finishRemoval(8);
+        check(reservations.pinOrigin(8,true)==8,"B can be pinned again after retirement");
+        reservations.unpinOrigin(8);
+
+        // Two simultaneous migrations must both finish before B can retire.
+        check(reservations.pinOrigin(10,true)==10,"First pin");
+        check(reservations.pinOrigin(10,true)==10,"Second pin");
+        reservations.unpinOrigin(10);
+        try {
+            reservations.beginRemoval(10);
+            throw new AssertionError("Second pin must still exclude removal");
+        } catch(IllegalStateException expected) {}
+        reservations.unpinOrigin(10);
+        reservations.beginRemoval(10);
+        check(reservations.hasReservations(),"Removal is reserved");
+        reservations.finishRemoval(10);
+        check(!reservations.hasReservations(),"No leaked reservations");
+    }
+}
+'''
+        with tempfile.TemporaryDirectory(prefix="display-restoration-pins-") as temporary:
+            directory = pathlib.Path(temporary)
+            test = directory / "DisplayRestorationReservationsTest.java"
+            test.write_text(harness)
+            subprocess.run(["javac", "--release", "17", "-d", temporary,
+                            str(RESERVATIONS_SOURCE), str(test)], check=True)
+            subprocess.run(["java", "-cp", temporary,
+                            "dev.pocket.agent.DisplayRestorationReservationsTest"], check=True)
 
     def test_cleanup_membership_and_ownership(self):
         harness = r'''
