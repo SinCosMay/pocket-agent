@@ -9,7 +9,8 @@ import { messageText } from './scripted.js';
 import { modelFor,makeStream,normalizeReasoningEffort,REASONING_EFFORTS,type ReasoningEffort } from './provider.js';
 import { discoverProviderModels, type CatalogModel } from './model-catalog.js';
 import { registerCodexCredentialUpdater,redactProviderSecrets,hasPendingCodexRefresh } from './codex-auth.js';
-import { McpToolRegistry,type McpConnector } from './mcp.js';
+import { McpToolRegistry,isHindsightBank,validateMcpServer,type McpConnector } from './mcp.js';
+import { HindsightMemory } from './hindsight.js';
 
 export const DEFAULT_MAIN_PROMPT=`You are the user's persistent phone assistant. Delegate substantial multi-step phone navigation, screenshots and computer use promptly to phone-operator using subagent spawn. Your model is the user's chosen main chat model; never change it through delegation. For a worker needing a different model or reasoning effort, call subagent action=models to see the current provider catalog and supported reasoning levels, then set spawns[].model and optionally spawns[].reasoning. Omit reasoning to inherit your current reasoning effort. Select smaller models for straightforward tasks and more capable models for difficult tasks, but do not invent prices or capabilities. If a model cannot call required tools, retry with a suitable listed model. Give a concise assignment, relevant facts, outcome and verification criteria. End your turn after async dispatch, remain available and let the host deliver completion. Do not poll workers or block main with join on unfinished work. Use speak_to_user only when an unsolicited spoken announcement is warranted or requested; worker completion alone must not cause speech. The tool queues audio, not confirmed delivery. You may do a genuinely short lookup directly. Never claim requested/dispatched actions prove outcomes. Read phone_capabilities before mutation. Use its operation_prefix plus an underscore and a unique 8..48 character nonce (ASCII letters, digits, underscore or hyphen) for each mutation. Include owner/generation/action/attempt or a timestamp for uniqueness; a valid suffix example is _type_0001, never reuse the example across actions; inspect phone_operation after uncertain outcomes and reuse the same ID/arguments. Prefer direct APIs, then app actions, accessibility, screenshot fallback. UI tools default to private virtual displays, which are acquired automatically. Only when the user explicitly asks to inspect, control, open, or present something on their visible screen, set display_target=physical on every related UI call; physical-only UI calls must not acquire a virtual display. Do not acquire a display for SMS, calls or direct APIs. Release the virtual display when the UI phase is finished. Main Stop does not stop workers.`;
 const WORKER_PROMPT=`You are a bounded phone operator worker. Complete the assignment using the granted direct native tools, verify actual outcome, report evidence and uncertainties. Read phone_capabilities first. Never invent unavailable permissions or task success. Prefer APIs, then app actions, accessibility and image/gesture fallback. UI tools default to private virtual screens, allocated automatically with a FIFO queue if all three are occupied. Use display_target=physical on every related UI call only when the assignment explicitly requires inspecting, controlling, opening, or presenting content on the user's visible screen; physical-only UI work must not request a virtual display. Never request a display for native-only actions (SMS, calls, contacts, calendars). Release a virtual display after its UI phase is complete; waiting for a virtual display is not a task failure. Use fresh observations and keep each action on the same display_target as its snapshot. Mutations require operation_prefix plus underscore and a unique 8..48 character nonce containing only ASCII letters, digits, underscore or hyphen. Include owner/generation/action/attempt or a timestamp for uniqueness; a valid suffix example is _type_0001, never reuse the example across actions; preserve operation IDs across uncertain retries and inspect receipts before repeating. A phone_act STALE_OBSERVATION with dispatch_status=not_dispatched permits reobserving and replanning with a new operation ID; do not reuse the recorded ID with changed arguments. RESULT_UNKNOWN never permits blind replay. Use speak_to_user only for useful or requested audio, never automatically on completion; queued is not delivered. Recursive delegation is available with a shared concurrency cap. You may choose any discovered provider model and supported reasoning level for each nested spawn by first using subagent action=models (paginate with offset/limit or filter with query); leave model absent to inherit the main model and leave reasoning absent to inherit your current reasoning effort. Join child dependencies, and return concise verified results. If interrupted after process death inspect app state/receipts before any side-effect replay.`;
@@ -73,6 +74,7 @@ export class PocketRuntime {
   private redactJson=(value:any)=>JSON.stringify(value,(_key,child)=>typeof child==='string'?this.redact(child):child);
   private sanitize=(text:string)=>this.redact(text).slice(0,2000);
   private readonly mcp:McpToolRegistry;
+  private readonly hindsight:HindsightMemory;
   readonly reportError=(e:any)=>{
     let message='Pocket runtime error';
     try {message=this.sanitize(String(e?.message??e));} catch {}
@@ -81,6 +83,12 @@ export class PocketRuntime {
   };
   constructor(readonly native:NativeBridge,limits={maxExecuting:4,maxConversations:12},mcpConnector?:McpConnector) {
     this.mcp=new McpToolRegistry(this.redact,mcpConnector);
+    this.hindsight=new HindsightMemory(this.mcp,()=>{
+      const candidate=(Array.isArray(this.credentials.mcpServers)?this.credentials.mcpServers:[])
+        .find((server:any)=>server?.enabled!==false&&isHindsightBank(server));
+      if(!candidate)return undefined;
+      try {validateMcpServer(candidate);return candidate.url;} catch {return undefined;}
+    },()=>this.save(),this.redact);
     const phoneTools=[...nativeTools(this,'placeholder').map(x=>x.name),...MEMORY_TOOL_NAMES,'speak_to_user'];
     this.registry.agents.set('phone-operator',{name:'phone-operator',description:'Performs bounded Android workflows and verifies native outcomes.',source:'project',systemPrompt:WORKER_PROMPT,tools:[...phoneTools,'subagent']});
     this.registry.agents.set('researcher',{name:'researcher',description:'Reads phone capabilities and app data with no screen mutations.',source:'project',systemPrompt:'Read-only bounded worker. Report evidence and uncertainty.',tools:['phone_capabilities','phone_apps','phone_contacts','phone_calendars','phone_calendar_events','phone_notifications','phone_notification_read','phone_operation','memory_search','memory_profile','speak_to_user','subagent']});
@@ -106,6 +114,7 @@ export class PocketRuntime {
     this.mainPaused=freshMainRequested?false:Boolean(saved.mainPaused);
     this.totalStarts=saved.totalStarts??0;
     this.observationPending=freshMainRequested?[]:(Array.isArray(saved.observationPending)?saved.observationPending.filter((x:any)=>typeof x==='string').slice(0,6):[]);
+    this.hindsight.restore(saved.hindsightPending);
     this.lastError=freshMainRequested?null:(saved.lastError?this.sanitize(String(saved.lastError)):null);
     this.main=this.createSession('main',undefined,freshMainRequested?[]:(saved.mainMessages??[]));
     const savedProviderMatches=typeof saved.providerRevision==='string' && saved.providerRevision===this.credentials.providerRevision;
@@ -189,6 +198,7 @@ export class PocketRuntime {
         const conversation=this.runtime?.conversation(id);
         if(conversation)this.configureSessionTools(session,conversation);
       }
+      void this.hindsight.flush();
       this.publish();
       return this.mcp.status();
     } catch(error) {this.reportError(`MCP setup failed: ${String((error as any)?.message??error)}`);return [];}
@@ -226,7 +236,7 @@ export class PocketRuntime {
       conversation.bindSession(generation,session);
       conversation.setEffectiveConfig({cwd:'.',model:session.agent.state.model.id,skills:[],tools:session.agent.state.tools.map((x:any)=>x.name)});
       const abort=()=>void session?.abort();signal?.addEventListener('abort',abort,{once:true});
-      try {this.injectMemory(session,conversation.conversationId,generation.prompt);await session.prompt(generation.prompt);} finally {signal?.removeEventListener('abort',abort);}
+      try {await this.injectMemory(session,conversation.conversationId,generation.prompt);await session.prompt(generation.prompt);} finally {signal?.removeEventListener('abort',abort);}
       const last=session.messages.at(-1);
       if(last?.stopReason==='aborted')return interruptedGeneration(conversation,generation,'Worker request aborted');
       if(last?.stopReason==='error')return errorGeneration(conversation,generation,this.sanitize(last.errorMessage??'Provider error'));
@@ -234,11 +244,12 @@ export class PocketRuntime {
     } catch(e){return errorGeneration(conversation,generation,this.sanitize(String(e)));}
     finally {this.dropPriorImages(conversation.conversationId);this.releaseScreen(conversation.conversationId);this.save();this.publish();}
   };
-  private injectMemory(session:MobileSession,owner:string,query:string):void {
+  private async injectMemory(session:MobileSession,owner:string,query:string):Promise<void> {
+    const remote=await this.hindsight.recall(query);
     const initial=owner==='main'?this.mainSystemPrompt:(this.registry.agents.get('researcher') && session.agent.state.systemPrompt.startsWith('Read-only bounded worker')?'Read-only bounded worker. Report evidence and uncertainty.':WORKER_PROMPT);
     const messages=session.agent.state.messages;
     if(messages[0]?.role!=='system')throw Error('Memory injection requires a system transcript');
-    session.agent.state.messages=[{...messages[0],content:initial+'\n'+MEMORY_GUIDANCE+recallBlock(this,owner,query)},...messages.slice(1)];
+    session.agent.state.messages=[{...messages[0],content:initial+'\n'+MEMORY_GUIDANCE+recallBlock(this,owner,query)+remote},...messages.slice(1)];
   }
   dropPriorImages(owner:string):void {(owner==='main'?this.main:this.sessions.get(owner))?.dropPriorImages();}
   async ensureDisplay(owner:string,signal?:AbortSignal):Promise<any> {
@@ -307,7 +318,7 @@ export class PocketRuntime {
         this.busy=true;this.mainInterrupted=false;this.lastError=null;this.mainTurns++;
         this.speakingTurn=typeof item.voiceSessionId==='string'&&/^[a-f0-9-]{36}$/.test(item.voiceSessionId)?item.voiceSessionId:null;
         this.main.agent.state.messages=[...this.main.messages,{role:'user',content:[{type:'text',text:prompt}],timestamp:Date.now()}];
-        this.injectMemory(this.main,'main',prompt);
+        await this.injectMemory(this.main,'main',prompt);
         // Never begin inference until queue removal, transcript delivery and the exact
         // completion receipt are durably committed together.
         if(!this.save()) {
@@ -326,7 +337,13 @@ export class PocketRuntime {
           await pending;
           const last=this.main.messages.at(-1);
           if(last?.role==='assistant'&&last.stopReason==='error')this.reportError(last.errorMessage??'Provider request failed');
-          else if(item.type==='user'&&typeof item.text==='string')this.queueObservation(item.text);
+          else if(last?.role==='assistant'&&last.stopReason!=='aborted') {
+            const source=item.type==='completion'?'Worker completion (runtime-reported terminal state)':'User request';
+            this.hindsight.capture(source+': '+String(prompt).slice(0,4_200)
+              +'\nAssistant response (claims require evidence): '+messageText(last).slice(0,3_500),
+              item.type==='completion'?'worker_outcome':'conversation');
+            if(item.type==='user'&&typeof item.text==='string')this.queueObservation(item.text);
+          }
         }catch(e){this.reportError(e);}
         finally {
           if(this.speakingTurn)this.emit({type:'voice_end',sessionId:this.speakingTurn});
@@ -600,7 +617,7 @@ export class PocketRuntime {
     try {
       const workerMessages:any={};
       for(const [id,s] of this.sessions)workerMessages[id]=stripImages(s.messages);
-      let state:any={version:1,config:this.config,providerRevision:this.credentials.providerRevision,busy:this.busy,lastError:this.lastError,mainPaused:this.mainPaused,totalStarts:this.totalStarts,mainSystemPrompt:this.mainSystemPrompt,mainMessages:stripImages(this.main.messages),workers:this.runtime.listConversations(),workerMessages,workerReasoningProofs:Object.fromEntries(this.workerReasoningProofs),inbox:this.inbox,delivered:[...this.delivered],mainTurns:this.mainTurns,observationPending:this.observationPending};
+      let state:any={version:1,config:this.config,providerRevision:this.credentials.providerRevision,busy:this.busy,lastError:this.lastError,mainPaused:this.mainPaused,totalStarts:this.totalStarts,mainSystemPrompt:this.mainSystemPrompt,mainMessages:stripImages(this.main.messages),workers:this.runtime.listConversations(),workerMessages,workerReasoningProofs:Object.fromEntries(this.workerReasoningProofs),inbox:this.inbox,delivered:[...this.delivered],mainTurns:this.mainTurns,observationPending:this.observationPending,hindsightPending:this.hindsight.snapshot()};
       let serialized=this.redactJson(state);
       if(utf8Bytes(serialized)>MAX_DURABLE_CHECKPOINT_BYTES) {
         const compactWorkers:any={};
