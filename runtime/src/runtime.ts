@@ -60,6 +60,7 @@ export class PocketRuntime {
   private totalStarts=0;
   private deliveryTransaction=false;
   private speakingTurn:string|null=null;
+  private mainStopSequence=0;
   private observationPending:string[]=[];
   private observing=false;
   private observerSession?:MobileSession;
@@ -236,7 +237,11 @@ export class PocketRuntime {
       conversation.bindSession(generation,session);
       conversation.setEffectiveConfig({cwd:'.',model:session.agent.state.model.id,skills:[],tools:session.agent.state.tools.map((x:any)=>x.name)});
       const abort=()=>void session?.abort();signal?.addEventListener('abort',abort,{once:true});
-      try {await this.injectMemory(session,conversation.conversationId,generation.prompt);await session.prompt(generation.prompt);} finally {signal?.removeEventListener('abort',abort);}
+      try {
+        await this.injectMemory(session,conversation.conversationId,generation.prompt);
+        if(signal?.aborted)return interruptedGeneration(conversation,generation,'Worker request aborted');
+        await session.prompt(generation.prompt);
+      } finally {signal?.removeEventListener('abort',abort);}
       const last=session.messages.at(-1);
       if(last?.stopReason==='aborted')return interruptedGeneration(conversation,generation,'Worker request aborted');
       if(last?.stopReason==='error')return errorGeneration(conversation,generation,this.sanitize(last.errorMessage??'Provider error'));
@@ -316,6 +321,7 @@ export class PocketRuntime {
           deliveredAdded=!this.delivered.has(item.key);this.delivered.add(item.key);c.markCollected(g,'model');
         }
         this.busy=true;this.mainInterrupted=false;this.lastError=null;this.mainTurns++;
+        const stopSequence=this.mainStopSequence;
         this.speakingTurn=typeof item.voiceSessionId==='string'&&/^[a-f0-9-]{36}$/.test(item.voiceSessionId)?item.voiceSessionId:null;
         this.main.agent.state.messages=[...this.main.messages,{role:'user',content:[{type:'text',text:prompt}],timestamp:Date.now()}];
         await this.injectMemory(this.main,'main',prompt);
@@ -332,6 +338,12 @@ export class PocketRuntime {
           break;
         }
         this.deliveryTransaction=false;
+        if(this.mainStopSequence!==stopSequence||this.stoppingAll) {
+          this.mainInterrupted=true;
+          this.busy=false;this.speakingTurn=null;
+          this.dropPriorImages('main');this.releaseScreen('main');this.save();this.publish();
+          continue;
+        }
         this.publish();const pending=this.main.continue();
         try {
           await pending;
@@ -402,14 +414,17 @@ export class PocketRuntime {
           queueMicrotask(()=>void this.pump());
         }
       } else if(cmd.action==='stop_main') {
-        if(cmd.voiceSessionId===undefined) this.main.agent.abort();
+        if(cmd.voiceSessionId===undefined) {
+          if(this.busy)this.mainStopSequence++;
+          this.main.agent.abort();
+        }
         else {
           const sessionId=cmd.voiceSessionId;
           if(typeof sessionId!=='string'||!/^[a-f0-9-]{36}$/.test(sessionId))
             throw new Error('Invalid voice session identifier for scoped stop');
           // A late interruption must never abort a newer spoken response.
           // Also drop the old request if it was still waiting behind other work.
-          if(this.speakingTurn===sessionId)this.main.agent.abort();
+          if(this.speakingTurn===sessionId){this.mainStopSequence++;this.main.agent.abort();}
           this.inbox=this.inbox.filter(item=>item.voiceSessionId!==sessionId);
         }
       }
@@ -540,7 +555,7 @@ export class PocketRuntime {
     this.stoppingAll=true;
     let saved=false;
     try {
-      this.mainPaused=true;this.inbox=[];this.main.agent.abort();this.observerSession?.abort();this.releaseScreen('main');
+      this.mainPaused=true;this.inbox=[];this.mainStopSequence++;this.main.agent.abort();this.observerSession?.abort();this.releaseScreen('main');
       // Child ownership cancellation is explicit through each owning caller.
       await Promise.allSettled(this.runtime.listConversations().filter(c=>c.currentGeneration).map(c=>{
         const parent=c.parentConversationId?this.runtime.generationCaller({conversationId:c.parentConversationId,generation:this.runtime.conversation(c.parentConversationId).generations.at(-1)!.generation}):undefined;

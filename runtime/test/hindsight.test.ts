@@ -115,3 +115,48 @@ test('Pocket runtime recalls and retains through existing MCP without changing l
   assert.ok(Array.isArray(checkpoint.hindsightPending));
   runtime.dispatch(JSON.stringify({action:'prepare_shutdown'}));
 });
+
+test('Stop during remote recall prevents inference and redacts secrets sent to Hindsight',async()=>{
+  const secret='synthetic-hindsight-bearer-secret';
+  const configured={...server,authMode:'bearer',bearerToken:secret};
+  let checkpoint:any={},releaseRecall:((result:any)=>void)|undefined,querySeen='';
+  const bridge={
+    call(method:string,json:string):string {
+      const args=JSON.parse(json);
+      let result:any={};
+      if(method==='credentials.get')result={authMode:'scripted',mcpServers:[configured]};
+      if(method==='store.load')result=checkpoint;
+      if(method==='store.save')checkpoint=structuredClone(args.state);
+      if(method==='memory')result={memories:[]};
+      if(method==='tool')result={available:true};
+      return JSON.stringify({ok:true,result});
+    },
+    emit(_json:string):void{},
+  };
+  const runtime=new PocketRuntime(bridge,undefined,async()=>({
+    client:{close:async()=>{},callTool:async(name:string,args:any)=>{
+      if(name==='recall') {
+        querySeen=args.query;
+        return new Promise(resolve=>{releaseRecall=resolve;});
+      }
+      return {content:[{type:'text',text:'accepted'}]};
+    }},
+    tools:advertised,
+  }) as any);
+  await until(()=>runtime.debugToolList().some(tool=>tool.name.endsWith('_recall')));
+  let inferenceCalls=0;
+  runtime.main.continue=async()=>{inferenceCalls++;};
+  runtime.dispatch(JSON.stringify({action:'send',text:'Stop this request: '+secret}));
+  await until(()=>!!releaseRecall);
+  assert.equal(runtime.state().busy,true);
+  assert.equal(JSON.parse(runtime.dispatch(JSON.stringify({action:'stop_main'}))).ok,true);
+  releaseRecall!({content:[{type:'text',text:'Old context'}]});
+  await until(()=>!runtime.state().busy);
+  assert.equal(inferenceCalls,0,'an abort before inference must not become a new provider request');
+  assert.equal(runtime.state().mainInterrupted,true);
+  assert.equal(runtime.state().messages.filter(message=>message.role==='assistant').length,0);
+  assert.ok(checkpoint.mainMessages.some((message:any)=>message.role==='user'));
+  assert.ok(querySeen.includes('[redacted]'));
+  assert.ok(!querySeen.includes(secret));
+  runtime.dispatch(JSON.stringify({action:'prepare_shutdown'}));
+});
