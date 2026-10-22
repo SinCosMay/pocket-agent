@@ -164,7 +164,7 @@ final class AgentDisplayCoordinator implements AutoCloseable {
     String backendStatus() {ShizukuDisplayClient present=client;return present==null?ShizukuDisplayClient.prerequisites():present.status();}
 
     @Override public synchronized void close() {
-        for(String owner:java.util.List.copyOf(displays.keySet()))release(owner);
+        for(String owner:leases.owners())release(owner);
         if(client!=null) {ShizukuDisplayClient closing=client;client=null;closing.close();}
     }
 }
