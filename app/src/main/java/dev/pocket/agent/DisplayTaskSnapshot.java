@@ -11,7 +11,7 @@ import java.util.regex.Pattern;
 final class DisplayTaskSnapshot {
     private static final Pattern STACK=Pattern.compile("^(?:RootTask|Stack)\\s+id=(\\d+)\\b.*?\\bdisplayId=(\\d+)\\b");
     private static final Pattern HEADER=Pattern.compile("^Display #(\\d+) \\(activities from top to bottom\\):\\s*$");
-    private static final Pattern ROOT=Pattern.compile("^  \\* Task\\{[^#\\r\\n]*#(\\d+)\\b");
+    private static final Pattern ROOT=Pattern.compile("^  (?:\\* Task\\{[^#\\r\\n]*#|RootTask #)(\\d+)\\b");
     private static final Pattern TASK=Pattern.compile("^\\s+\\* Task\\{[^#\\r\\n]*#(\\d+)\\b");
     private static final Pattern COMPONENT=Pattern.compile("^\\s+taskId=(\\d+): ([A-Za-z0-9_.]+)/");
     final Map<Integer,Integer> displays=new LinkedHashMap<>();
@@ -47,7 +47,10 @@ final class DisplayTaskSnapshot {
             // are separate dump sections, even if they mention Task{...} again.
             if(!line.isEmpty()&&!Character.isWhitespace(line.charAt(0)))display=-1;
             Matcher task=ROOT.matcher(line);
-            if(display>=0&&task.find())result.displays.put(Integer.parseInt(task.group(1)),display);
+            if(display>=0&&task.find()) {
+                int id=Integer.parseInt(task.group(1));
+                result.displays.put(id,display);result.taskDisplays.put(id,display);
+            }
             Matcher anyTask=TASK.matcher(line);
             if(display>=0&&anyTask.find())result.taskDisplays.put(Integer.parseInt(anyTask.group(1)),display);
         }

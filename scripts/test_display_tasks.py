@@ -45,6 +45,8 @@ ActivityTaskSupervisor state:
         equal(Set.of(201),DisplayTaskSnapshot.activities(dump).onDisplay(4));
         equal(Set.of(101),DisplayTaskSnapshot.activities(dump).onDisplay(0));
         equal(0,DisplayTaskSnapshot.activities(dump).taskDisplays.get(102));
+        equal(Set.of(42),DisplayTaskSnapshot.activities(
+            "Display #7 (activities from top to bottom):\n  RootTask #42: type=standard\n").onDisplay(7));
         String empty=dump.replace("  * Task{ccc #201 type=standard A=12346:example.worker}\n", "");
         equal(Set.of(),DisplayTaskSnapshot.activities(empty).onDisplay(4));
         // Changing display order, nested tasks and task references cannot change ownership.
