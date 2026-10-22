@@ -231,9 +231,10 @@ public final class ShellDisplayService extends IDisplayShell.Stub {
         throw new IllegalStateException("Cannot establish task display membership; refusing display cleanup or launch");
     }
     private void protectOutsideTasks(int id,OwnedDisplay owned,DisplayTaskSnapshot snapshot) {
-        snapshot.taskDisplays.forEach((task,display)->{if(display!=id)owned.protectedTasks.putIfAbsent(task,display);});
+        snapshot.protectOutside(id,owned.protectedTasks);
     }
     private boolean restoreBorrowedTasks(int id,OwnedDisplay owned,DisplayTaskSnapshot snapshot) {
+        protectOutsideTasks(id,owned,snapshot);
         boolean borrowed=false;
         for(int task:snapshot.onDisplay(id)) {
             Integer origin=owned.protectedTasks.get(task);
@@ -254,7 +255,9 @@ public final class ShellDisplayService extends IDisplayShell.Stub {
             for(int rootTask:current.removable(id,owned.protectedTasks)) {
                 // Cached launch IDs are not authority to delete a task. A user can
                 // have moved it to display zero since it was first observed.
-                if(taskSnapshot().removable(id,owned.protectedTasks).contains(rootTask))
+                DisplayTaskSnapshot verified=taskSnapshot();
+                protectOutsideTasks(id,owned,verified);
+                if(verified.removable(id,owned.protectedTasks).contains(rootTask))
                     exec("/system/bin/am","stack","remove",String.valueOf(rootTask));
             }
             if(taskSnapshot().onDisplay(id).isEmpty())return;

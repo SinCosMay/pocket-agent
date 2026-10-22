@@ -38,6 +38,7 @@ export class PocketRuntime {
   readonly displayPool=new DisplayPool(3);
   private readonly nativeDisplays=new Set<string>();
   private readonly pendingDisplays=new Map<string,Promise<any>>();
+  private readonly releaseRetries=new Map<string,{attempt:number,timer?:ReturnType<typeof setTimeout>}>();
   readonly runtime:SubagentRuntime;
   readonly sessions=new Map<string,MobileSession>();
   main!:MobileSession;
@@ -250,27 +251,50 @@ export class PocketRuntime {
         this.emit({type:'log',owner,message:'Waiting for a virtual display; work resumes automatically when one is released'});
       await this.displayPool.reserve(owner,signal);
       if(signal?.aborted){this.releaseScreen(owner);throw new Error('Display request cancelled');}
+      // A retained failed-cleanup lease must never be handed back as ready.
+      if(this.releaseRetries.has(owner))
+        return {isError:true,code:'NOT_READY',message:'Previous virtual display cleanup is pending'};
       if(this.nativeDisplays.has(owner))return {status:'acquired'};
       try {
         const result=this.call('tool',{name:'phone_screen',args:{action:'acquire'},owner});
-        if(result?.isError){this.displayPool.release(owner);return result;}
+        if(result?.isError){this.releaseScreen(owner);return result;}
         this.nativeDisplays.add(owner);
         if(signal?.aborted){this.releaseScreen(owner);throw new Error('Display request cancelled');}
         return result;
-      }catch(e){this.displayPool.release(owner);throw e;}
+      }catch(e){this.releaseScreen(owner);throw e;}
     })();
     this.pendingDisplays.set(owner,request);
     try{return await request;}finally{this.pendingDisplays.delete(owner);}
   }
+  private retryScreenRelease(owner:string):void {
+    // One queued timer per retained lease, bounded by the pool's three owners.
+    let retry=this.releaseRetries.get(owner);
+    if(!retry){retry={attempt:0};this.releaseRetries.set(owner,retry);}
+    if(retry.timer)return;
+    const delay=Math.min(200*2**Math.min(retry.attempt++,5),5000);
+    const scheduled=retry;
+    retry.timer=setTimeout(()=>{
+      scheduled.timer=undefined;
+      if(this.releaseRetries.get(owner)===scheduled)this.releaseScreen(owner);
+    },delay);
+    retry.timer.unref?.();
+  }
   releaseScreen(owner:string):any {
     clearNativeToolUiState(this,owner);
+    if(!this.displayPool.has(owner)&&!this.nativeDisplays.has(owner))
+      return {status:'released'};
     let result:any;
     try{result=this.call('tool',{name:'phone_screen',args:{action:'release'},owner});}
     catch{result={isError:true,code:'NOT_READY',message:'Display cleanup outcome unknown; lease retained'};}
     if(result?.isError){
-      this.emit({type:'log',owner,message:'Virtual display retained because cleanup did not complete'});
+      if(!this.releaseRetries.has(owner))
+        this.emit({type:'log',owner,message:'Virtual display retained; cleanup will retry in the background'});
+      this.retryScreenRelease(owner);
       return result;
     }
+    const retry=this.releaseRetries.get(owner);
+    if(retry?.timer)clearTimeout(retry.timer);
+    this.releaseRetries.delete(owner);
     this.nativeDisplays.delete(owner);this.displayPool.release(owner);
     return result;
   }
@@ -523,7 +547,7 @@ export class PocketRuntime {
   }
   cleanupRemoved():void {
     const retained=new Set(this.runtime.listConversations().map(c=>c.conversationId));
-    for(const [id,session] of this.sessions)if(!retained.has(id as any)){session.dispose();this.sessions.delete(id);this.workerReasoningProofs.delete(id);}
+    for(const [id,session] of this.sessions)if(!retained.has(id as any)){this.releaseScreen(id);session.dispose();this.sessions.delete(id);this.workerReasoningProofs.delete(id);}
     this.delivered=new Set([...this.delivered].filter(key=>retained.has(JSON.parse(key)[0])));
   }
   private async stopAll():Promise<boolean> {

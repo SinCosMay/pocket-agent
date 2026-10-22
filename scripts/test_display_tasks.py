@@ -7,12 +7,14 @@ import unittest
 
 ROOT = pathlib.Path(__file__).resolve().parents[1]
 SOURCE = ROOT / "app/src/main/java/dev/pocket/agent/DisplayTaskSnapshot.java"
+LEASE_SOURCE = ROOT / "app/src/main/java/dev/pocket/agent/DisplayLeases.java"
 
 
 class DisplayTaskPolicyTest(unittest.TestCase):
     def test_cleanup_membership_and_ownership(self):
         harness = r'''
 package dev.pocket.agent;
+import java.util.LinkedHashMap;
 import java.util.Map;
 import java.util.Set;
 public class DisplayTaskPolicyTest {
@@ -79,6 +81,35 @@ RootTask id=301 bounds=[0,0][720,1280] displayId=5 userId=0
         // A formerly worker-owned task moved to the physical display is no longer deletable.
         DisplayTaskSnapshot moved=DisplayTaskSnapshot.stacks(stacks.replace("displayId=4", "displayId=0"));
         equal(Set.of(),moved.removable(4,Map.of(101,0,301,5)));
+        // An outside task may move through physical display 0 before arriving on B.
+        Map<Integer,Integer> origins=new LinkedHashMap<>();
+        String root="RootTask id=401 bounds=[0,0][720,1280] displayId=";
+        DisplayTaskSnapshot.stacks(root+"4 userId=0\n").protectOutside(7,origins);
+        equal(4,origins.get(401));
+        DisplayTaskSnapshot.stacks(root+"7 userId=0\n").protectOutside(7,origins);
+        equal(4,origins.get(401));
+        DisplayTaskSnapshot.stacks(root+"0 userId=0\n").protectOutside(7,origins);
+        equal(0,origins.get(401));
+        DisplayTaskSnapshot.stacks(root+"5 userId=0\n").protectOutside(7,origins);
+        equal(5,origins.get(401));
+        DisplayTaskSnapshot returned=DisplayTaskSnapshot.stacks(root+"7 userId=0\n");
+        returned.protectOutside(7,origins);
+        equal(5,origins.get(401));
+        equal(Set.of(),returned.removable(7,origins));
+        // Provisional lease survives failed native cleanup; other owners are untouched.
+        DisplayLeases leases=new DisplayLeases();
+        leases.provision("worker-a",7);
+        leases.provision("worker-b",8);
+        equal(true,leases.provisional("worker-a"));
+        equal(false,leases.release("worker-a",id->false));
+        equal(2,leases.size());
+        equal(7,leases.get("worker-a"));
+        equal(true,leases.provisional("worker-a"));
+        equal(true,leases.release("worker-a",id->id==7));
+        equal(1,leases.size());
+        equal(8,leases.get("worker-b"));
+        leases.activate("worker-b",8);
+        equal(false,leases.provisional("worker-b"));
         // Unrecognized records fail closed rather than guessing a display from references.
         equal(Set.of(),DisplayTaskSnapshot.stacks("Task{aaa #101 displayId=4}\n").onDisplay(4));
     }
@@ -88,7 +119,7 @@ RootTask id=301 bounds=[0,0][720,1280] displayId=5 userId=0
             directory = pathlib.Path(temporary)
             test = directory / "DisplayTaskPolicyTest.java"
             test.write_text(harness)
-            subprocess.run(["javac", "--release", "17", "-d", temporary, str(SOURCE), str(test)], check=True)
+            subprocess.run(["javac", "--release", "17", "-d", temporary, str(SOURCE), str(LEASE_SOURCE), str(test)], check=True)
             subprocess.run(["java", "-cp", temporary, "dev.pocket.agent.DisplayTaskPolicyTest"], check=True)
 
 

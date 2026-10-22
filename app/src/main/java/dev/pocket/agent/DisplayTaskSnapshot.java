@@ -70,6 +70,14 @@ final class DisplayTaskSnapshot {
 
     boolean hasPackageRecords() {return !packages.isEmpty();}
 
+    void protectOutside(int ownedDisplay,Map<Integer,Integer> protectedTasks) {
+        // A task can migrate A -> display 0 -> B -> our display. Its most
+        // recently observed outside location, not its first one, is authoritative.
+        taskDisplays.forEach((task,display)->{
+            if(display!=ownedDisplay)protectedTasks.put(task,display);
+        });
+    }
+
     Set<Integer> removable(int display,Map<Integer,Integer> protectedTasks) {
         Set<Integer> result=onDisplay(display);
         result.removeAll(protectedTasks.keySet());

@@ -9,8 +9,6 @@ import android.provider.AlarmClock;
 import android.provider.Settings;
 import android.view.Display;
 import dev.pocket.control.ControlException;
-import java.util.LinkedHashMap;
-import java.util.Map;
 import org.json.JSONObject;
 import static dev.pocket.control.ControlException.Code.*;
 
@@ -18,7 +16,7 @@ import static dev.pocket.control.ControlException.Code.*;
 final class AgentDisplayCoordinator implements AutoCloseable {
     static final int MAX_DISPLAYS=3;
     private final Context context;
-    private final Map<String,Integer> displays=new LinkedHashMap<>();
+    private final DisplayLeases leases=new DisplayLeases();
     private ShizukuDisplayClient client;
 
     AgentDisplayCoordinator(Context context) {this.context=context.getApplicationContext();}
@@ -29,32 +27,39 @@ final class AgentDisplayCoordinator implements AutoCloseable {
     }
 
     synchronized JSONObject acquire(String owner) throws ControlException {
-        Integer existing=displays.get(owner);
-        if(existing!=null) return Json.obj("status","acquired","display_id",existing,"owner",owner);
-        if(displays.size()>=MAX_DISPLAYS)
+        Integer existing=leases.get(owner);
+        if(existing!=null) {
+            if(leases.provisional(owner))
+                throw new ControlException(NOT_READY,"Virtual display bootstrap failed; cleanup remains pending");
+            return Json.obj("status","acquired","display_id",existing,"owner",owner);
+        }
+        if(leases.size()>=MAX_DISPLAYS)
             throw new ControlException(NOT_READY,"All three displays are allocated");
         ShizukuDisplayClient active=client();
         int id=active.createDisplay();
-        if(id<=0||displays.containsValue(id)) {
-            if(id>0&&!displays.containsValue(id))active.removeDisplay(id);
+        if(id<=0||leases.containsValue(id))
             throw new ControlException(NOT_READY,"Virtual display backend supplied invalid or duplicate display ID");
-        }
+        // A failed bootstrap must still have a named owner for later cleanup.
+        leases.provision(owner,id);
         try {
             active.launch(id,new ComponentName(context,MainActivity.class).flattenToString());
+            leases.activate(owner,id);
         } catch(ControlException error) {
-            active.removeDisplay(id);
+            if(!leases.release(owner,active::removeDisplay))
+                throw new ControlException(RESULT_UNKNOWN,"Display bootstrap failed; native cleanup unconfirmed and lease retained");
             throw error;
         } catch(RuntimeException error) {
-            active.removeDisplay(id);
+            if(!leases.release(owner,active::removeDisplay))
+                throw new ControlException(RESULT_UNKNOWN,"Display bootstrap failed; native cleanup unconfirmed and lease retained");
             throw new ControlException(NOT_READY,"Virtual display backend failed while launching Pocket Agent");
         }
-        displays.put(owner,id);
         return Json.obj("status","acquired","display_id",id,"owner",owner);
     }
 
     synchronized int display(String owner) throws ControlException {
-        Integer id=displays.get(owner);
-        if(id==null||id<=0) throw new ControlException(NOT_READY,"No virtual display for conversation");
+        Integer id=leases.get(owner);
+        if(id==null||id<=0||leases.provisional(owner))
+            throw new ControlException(NOT_READY,"No ready virtual display for conversation");
         if(client==null||!"ready".equals(client.status()))
             throw new ControlException(NOT_READY,"Shizuku backend disconnected; observe after recovery");
         return id;
@@ -140,21 +145,21 @@ final class AgentDisplayCoordinator implements AutoCloseable {
     synchronized void key(String owner,int code) throws ControlException {int id=display(owner);client().key(id,code);}
 
     synchronized void release(String owner) {
-        Integer id=displays.get(owner);
+        Integer id=leases.get(owner);
         if(id!=null) {
-            if(client==null||!client.removeDisplay(id))
+            if(!leases.release(owner,displayId->client!=null&&client.removeDisplay(displayId)))
                 throw new IllegalStateException("Virtual display cleanup did not complete; lease retained to protect existing tasks");
-            displays.remove(owner);
             new AccessibilityProxyBackend(context,id).release();
         }
     }
 
     private synchronized void invalidate() {
-        for(int id:displays.values())new AccessibilityProxyBackend(context,id).release();
-        displays.clear();
+        // Binder death confirms that the old UserService no longer owns displays.
+        for(int id:leases.ids())new AccessibilityProxyBackend(context,id).release();
+        leases.clear();
     }
 
-    synchronized int activeCount() {return displays.size();}
+    synchronized int activeCount() {return leases.size();}
     boolean accessibilityConnected() {return AccessibilityProxyBackend.connected(context);}
     String backendStatus() {ShizukuDisplayClient present=client;return present==null?ShizukuDisplayClient.prerequisites():present.status();}
 

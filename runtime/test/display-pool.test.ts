@@ -5,6 +5,11 @@ import {PocketRuntime,NativeBridge} from '../src/runtime.js';
 import {nativeTools,subagentTool} from '../src/tools.js';
 
 const pause=(ms=15)=>new Promise(resolve=>setTimeout(resolve,ms));
+const until=async(done:()=>boolean)=>{
+  const deadline=Date.now()+1500;
+  while(!done()&&Date.now()<deadline)await pause(25);
+  assert.equal(done(),true,'background cleanup retry exceeded deadline');
+};
 const unwrap=(result:any)=>result.details;
 
 class Bridge implements NativeBridge {
@@ -119,6 +124,86 @@ test('failed or unknown cleanup reports failure and retains capacity until nativ
   }
 });
 
+test('completed worker cleanup retries in background and wakes a FIFO waiter',async()=>{
+  class RetainedBridge extends Bridge {
+    failCleanup=true;
+    releases=0;
+    override call(method:string,json:string):string {
+      const args=JSON.parse(json);
+      if(method==='tool'&&args.name==='phone_screen'&&args.args.action==='release'){
+        this.releases++;
+        if(this.failCleanup)return JSON.stringify({ok:true,result:{isError:true,code:'RESULT_UNKNOWN',message:'Cleanup unconfirmed'}});
+      }
+      return super.call(method,json);
+    }
+  }
+  const bridge=new RetainedBridge(),app=new PocketRuntime(bridge);
+  await Promise.all(['a','b','c'].map(owner=>app.ensureDisplay(owner)));
+  let resumed=false;
+  const waiting=app.ensureDisplay('d').then(()=>{resumed=true;});
+  await pause();
+  assert.equal(app.releaseScreen('b').isError,true);
+  assert.equal(app.displayPool.active,3);
+  assert.equal(resumed,false);
+  bridge.failCleanup=false;
+  await until(()=>resumed);
+  await waiting;
+  assert.equal(resumed,true);
+  assert.ok(bridge.releases>=2);
+  assert.equal(app.displayPool.active,3);
+});
+
+test('removed conversation retains cleanup retries through confirmed service death',async()=>{
+  class DeathBridge extends Bridge {
+    dead=false;
+    releases=0;
+    override call(method:string,json:string):string {
+      const args=JSON.parse(json);
+      if(method==='tool'&&args.name==='phone_screen'&&args.args.action==='release'){
+        this.releases++;
+        if(!this.dead)throw Error('Bridge unavailable');
+      }
+      return super.call(method,json);
+    }
+  }
+  const bridge=new DeathBridge(),app=new PocketRuntime(bridge);
+  await app.ensureDisplay('removed-owner');
+  let disposed=false;
+  app.sessions.set('removed-owner',{dispose:()=>{disposed=true;}} as any);
+  app.cleanupRemoved();
+  assert.equal(disposed,true);
+  assert.equal(app.sessions.has('removed-owner'),false);
+  assert.equal(app.displayPool.active,1);
+  bridge.dead=true; // Native release now confirms the old lease is gone.
+  await until(()=>app.displayPool.active===0);
+  assert.equal(app.displayPool.active,0);
+  assert.ok(bridge.releases>=2);
+});
+
+test('uncertain bootstrap rollback retains provisional capacity until native cleanup is confirmed',async()=>{
+  class BootstrapBridge extends Bridge {
+    failCleanup=true;
+    acquisitions=0;
+    override call(method:string,json:string):string {
+      const args=JSON.parse(json);
+      if(method==='tool'&&args.name==='phone_screen'&&args.args.action==='acquire'){
+        this.acquisitions++;
+        return JSON.stringify({ok:true,result:{isError:true,code:'RESULT_UNKNOWN',message:'Bootstrap failed; lease retained'}});
+      }
+      if(method==='tool'&&args.name==='phone_screen'&&args.args.action==='release'&&this.failCleanup)
+        return JSON.stringify({ok:true,result:{isError:true,code:'RESULT_UNKNOWN',message:'Display retained'}});
+      return super.call(method,json);
+    }
+  }
+  const bridge=new BootstrapBridge(),app=new PocketRuntime(bridge);
+  assert.equal((await app.ensureDisplay('provisional')).isError,true);
+  assert.equal(app.displayPool.active,1);
+  assert.equal((await app.ensureDisplay('provisional')).isError,true);
+  assert.equal(bridge.acquisitions,1,'must not bootstrap a second native display');
+  bridge.failCleanup=false;
+  await until(()=>app.displayPool.active===0);
+  assert.equal(app.displayPool.active,0);
+});
 test('a Shizuku service death transparently reacquires one fresh lease for the same worker',async()=>{
   class DisconnectingBridge extends Bridge {
     failNext=false;
