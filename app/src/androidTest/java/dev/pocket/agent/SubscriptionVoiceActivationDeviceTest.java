@@ -6,6 +6,7 @@ import android.app.NotificationManager;
 import android.content.Context;
 import android.content.Intent;
 import android.content.SharedPreferences;
+import android.content.pm.PackageManager;
 import android.os.Build;
 import android.os.SystemClock;
 import android.util.Base64;
@@ -116,6 +117,12 @@ public final class SubscriptionVoiceActivationDeviceTest {
             SubscriptionVoiceFailureStore.ready(ctx);
             ctx.getSystemService(NotificationManager.class).cancel(35);
         }
+    }
+
+    @Test public void webRtcNetworkMonitorPermissionIsGranted() {
+        assertEquals("WebRTC network monitoring requires ACCESS_NETWORK_STATE",
+                PackageManager.PERMISSION_GRANTED,
+                context().checkSelfPermission(Manifest.permission.ACCESS_NETWORK_STATE));
     }
 
     @Test public void nativeWebRtcJniLoadsInMinifiedRelease() {
