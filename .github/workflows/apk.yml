@@ -26,14 +26,14 @@ jobs:
       - name: Build and test trimmed runtime
         working-directory: runtime
         run: npm ci && npm test && npm run build
-      - name: Test provider protocols and private emulator provisioning
-        run: |
-          python3 -m pip install aiohttp==3.13.5
-          python3 -m unittest discover -s scripts -p 'test_*.py' -v
       - uses: actions/setup-java@v5
         with:
           distribution: temurin
           java-version: '17'
+      - name: Test provider protocols, display ownership and private emulator provisioning
+        run: |
+          python3 -m pip install aiohttp==3.13.5
+          python3 -m unittest discover -s scripts -p 'test_*.py' -v
       - uses: android-actions/setup-android@v4
       - run: sdkmanager 'platforms;android-36' 'build-tools;36.0.0' 'ndk;27.2.12479018'
       - name: Restore private signing material

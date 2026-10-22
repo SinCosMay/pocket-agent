@@ -85,6 +85,40 @@ test('Shizuku acquisition failure frees reservation and wakes waiting owner',asy
   assert.equal(app.displayPool.active,3);
 });
 
+test('failed or unknown cleanup reports failure and retains capacity until native release succeeds',async()=>{
+  for(const mode of ['rejected','unknown']) {
+    class CleanupBridge extends Bridge {
+      failRelease=true;
+      override call(method:string,json:string):string {
+        const args=JSON.parse(json);
+        if(method==='tool'&&args.name==='phone_screen'&&args.args.action==='release'&&this.failRelease) {
+          if(mode==='unknown')throw new Error('bridge unavailable');
+          return JSON.stringify({ok:true,result:{isError:true,code:'NOT_READY',message:'Display retained'}});
+        }
+        return super.call(method,json);
+      }
+    }
+    const bridge=new CleanupBridge(),app=new PocketRuntime(bridge);
+    const execute=(owner:string,name:string,args:any={})=>nativeTools(app,owner).find(t=>t.name===name)!.execute('t',args);
+    await Promise.all(['one','two','three'].map(owner=>execute(owner,'phone_observe')));
+    let resumed=false;
+    const fourth=execute('four','phone_observe').then(result=>{resumed=true;return result;});
+    const release=await execute('two','phone_screen',{action:'release'});
+    assert.equal(release.isError,true,mode);
+    assert.equal(app.displayPool.active,3);
+    await pause();
+    assert.equal(resumed,false,'retained native display must not free a pool slot');
+    const acquisitions=bridge.calls.filter(c=>c.name==='phone_screen'&&c.args.action==='acquire').length;
+    await execute('two','phone_observe');
+    assert.equal(bridge.calls.filter(c=>c.name==='phone_screen'&&c.args.action==='acquire').length,acquisitions);
+    bridge.failRelease=false;
+    assert.equal((await execute('two','phone_screen',{action:'release'})).isError,false);
+    await fourth;
+    assert.equal(resumed,true);
+    assert.equal(app.displayPool.active,3);
+  }
+});
+
 test('a Shizuku service death transparently reacquires one fresh lease for the same worker',async()=>{
   class DisconnectingBridge extends Bridge {
     failNext=false;

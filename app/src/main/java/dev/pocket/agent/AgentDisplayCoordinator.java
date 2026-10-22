@@ -140,9 +140,11 @@ final class AgentDisplayCoordinator implements AutoCloseable {
     synchronized void key(String owner,int code) throws ControlException {int id=display(owner);client().key(id,code);}
 
     synchronized void release(String owner) {
-        Integer id=displays.remove(owner);
+        Integer id=displays.get(owner);
         if(id!=null) {
-            if(client!=null) client.removeDisplay(id);
+            if(client==null||!client.removeDisplay(id))
+                throw new IllegalStateException("Virtual display cleanup did not complete; lease retained to protect existing tasks");
+            displays.remove(owner);
             new AccessibilityProxyBackend(context,id).release();
         }
     }

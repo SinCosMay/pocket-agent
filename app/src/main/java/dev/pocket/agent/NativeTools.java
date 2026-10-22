@@ -49,8 +49,11 @@ final class NativeTools implements AutoCloseable {
     private JSONObject screenLease(JSONObject args,String owner) {
         if(args.length()!=1) return Json.failure("INVALID_ARGUMENT","Only action is accepted");
         String action=args.optString("action");
-        if(action.equals("acquire"))try{return displays.acquire(owner);}catch(ControlException e){return Json.failure(e.code.name(),e.getMessage());}
-        if(action.equals("release")) {releaseOwner(owner);return Json.obj("status","released");}
+        if(action.equals("acquire"))try{return displays.acquire(owner);}
+        catch(ControlException e){return Json.failure(e.code.name(),e.getMessage());}
+        catch(RuntimeException e){return Json.failure("NOT_READY","Cannot establish safe virtual display ownership");}
+        if(action.equals("release"))try {releaseOwner(owner);return Json.obj("status","released");}
+        catch(IllegalStateException e){return Json.failure("NOT_READY","Display retained because safe task cleanup could not be completed");}
         return Json.failure("INVALID_ARGUMENT","action must be acquire or release");
     }
     private static boolean uiTool(String name) {

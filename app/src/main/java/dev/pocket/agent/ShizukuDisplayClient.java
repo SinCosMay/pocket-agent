@@ -45,7 +45,7 @@ final class ShizukuDisplayClient implements AutoCloseable {
         this.disconnected=disconnected;
         this.removeServiceOnClose=removeServiceOnClose;
         args=new Shizuku.UserServiceArgs(new ComponentName(context,ShellDisplayService.class))
-            .daemon(false).tag("pocket-agent-displays").processNameSuffix("display").version(1);
+            .daemon(false).tag("pocket-agent-displays").processNameSuffix("display").version(2);
         Shizuku.addBinderReceivedListenerSticky(received);
         Shizuku.addBinderDeadListener(died);
     }
@@ -129,13 +129,15 @@ final class ShizukuDisplayClient implements AutoCloseable {
         catch(RemoteException e) {loseService();throw new ControlException(ControlException.Code.NOT_READY,"Shizuku display service disconnected");}
         catch(RuntimeException e) {throw new ControlException(ControlException.Code.NOT_READY,"Android rejected trusted display creation: "+e.getClass().getSimpleName());}
     }
-    void removeDisplay(int displayId) {
+    boolean removeDisplay(int displayId) {
         IDisplayShell service=remote;
-        if(service!=null) try {service.removeDisplay(displayId);}catch(Exception ignored){}
+        if(service!=null) try {service.removeDisplay(displayId);return true;}
+        catch(Exception failure) {Log.w(TAG,"Display retained after cleanup failed",failure);}
+        return false;
     }
     void launch(int displayId,String componentName) throws ControlException {
         try {if(!require().launchActivity(displayId,componentName))
-            throw new ControlException(ControlException.Code.ACTION_REJECTED,"Android rejected the launch on the virtual display");}
+            throw new ControlException(ControlException.Code.ACTION_REJECTED,"No independent virtual task was opened. Android may require reusing an existing user or worker task; that task was preserved.");}
         catch(RemoteException e) {loseService();throw new ControlException(ControlException.Code.NOT_READY,"Virtual display backend disconnected");}
     }
     void openUrl(int displayId,String url) throws ControlException {

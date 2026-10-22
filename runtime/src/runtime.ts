@@ -262,10 +262,17 @@ export class PocketRuntime {
     this.pendingDisplays.set(owner,request);
     try{return await request;}finally{this.pendingDisplays.delete(owner);}
   }
-  releaseScreen(owner:string):void {
-    clearNativeToolUiState(this,owner);this.nativeDisplays.delete(owner);
-    try{this.call('tool',{name:'phone_screen',args:{action:'release'},owner});}catch{/* Service shutdown also releases leases. */}
-    finally{this.displayPool.release(owner);}
+  releaseScreen(owner:string):any {
+    clearNativeToolUiState(this,owner);
+    let result:any;
+    try{result=this.call('tool',{name:'phone_screen',args:{action:'release'},owner});}
+    catch{result={isError:true,code:'NOT_READY',message:'Display cleanup outcome unknown; lease retained'};}
+    if(result?.isError){
+      this.emit({type:'log',owner,message:'Virtual display retained because cleanup did not complete'});
+      return result;
+    }
+    this.nativeDisplays.delete(owner);this.displayPool.release(owner);
+    return result;
   }
   private suppressCompletedMainDeliveries():void {
     for(const c of this.runtime.listConversations()) {
