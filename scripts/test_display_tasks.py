@@ -15,6 +15,8 @@ class DisplayTaskPolicyTest(unittest.TestCase):
         harness = r'''
 package dev.pocket.agent;
 import java.util.LinkedHashMap;
+import java.util.ArrayList;
+import java.util.List;
 import java.util.Map;
 import java.util.Set;
 public class DisplayTaskPolicyTest {
@@ -110,6 +112,22 @@ RootTask id=301 bounds=[0,0][720,1280] displayId=5 userId=0
         equal(8,leases.get("worker-b"));
         leases.activate("worker-b",8);
         equal(false,leases.provisional("worker-b"));
+        // Runtime shutdown must try every owner's cleanup after the first fails.
+        DisplayLeases shutdown=new DisplayLeases();
+        shutdown.provision("stuck",10);
+        shutdown.provision("safe",11);
+        shutdown.provision("also-safe",12);
+        List<String> attempts=new ArrayList<>();
+        DisplayLeases.releaseIndependently(shutdown.owners(),owner->{
+            attempts.add(owner);
+            if(owner.equals("stuck"))throw new IllegalStateException("Cannot restore borrowed task");
+            return shutdown.release(owner,id->true);
+        });
+        equal(List.of("stuck","safe","also-safe"),attempts);
+        equal(Set.of("stuck"),shutdown.owners());
+        equal(10,shutdown.get("stuck"));
+        DisplayLeases.releaseIndependently(shutdown.owners(),owner->shutdown.release(owner,id->true));
+        equal(0,shutdown.size());
         // Unrecognized records fail closed rather than guessing a display from references.
         equal(Set.of(),DisplayTaskSnapshot.stacks("Task{aaa #101 displayId=4}\n").onDisplay(4));
     }

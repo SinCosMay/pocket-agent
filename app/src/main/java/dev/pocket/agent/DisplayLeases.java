@@ -5,6 +5,7 @@ import java.util.LinkedHashSet;
 import java.util.Map;
 import java.util.Set;
 import java.util.function.IntPredicate;
+import java.util.function.Predicate;
 
 /** Tracks allocated displays even while bootstrap or cleanup is incomplete. */
 final class DisplayLeases {
@@ -35,6 +36,14 @@ final class DisplayLeases {
         displays.remove(owner);
         provisional.remove(owner);
         return true;
+    }
+    /** A failed native release must not prevent attempting every other owner. */
+    static void releaseIndependently(Iterable<String> owners,Predicate<String> release) {
+        for(String owner:owners) {
+            try {release.test(owner);} catch(RuntimeException ignored) {
+                // Caller retains the failed lease for later retry.
+            }
+        }
     }
     void clear() {displays.clear();provisional.clear();}
 }

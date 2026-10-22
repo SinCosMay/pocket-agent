@@ -8,6 +8,11 @@ import android.net.Uri;
 import android.provider.AlarmClock;
 import android.provider.Settings;
 import android.view.Display;
+import java.util.LinkedHashSet;
+import java.util.Set;
+import java.util.concurrent.Executors;
+import java.util.concurrent.ScheduledExecutorService;
+import java.util.concurrent.TimeUnit;
 import dev.pocket.control.ControlException;
 import org.json.JSONObject;
 import static dev.pocket.control.ControlException.Code.*;
@@ -15,8 +20,21 @@ import static dev.pocket.control.ControlException.Code.*;
 /** Maps each conversation to one independent shell-owned display, with explicit opt-in access to display zero. */
 final class AgentDisplayCoordinator implements AutoCloseable {
     static final int MAX_DISPLAYS=3;
+    // The privileged UserService can outlive a Node isolate or even its RuntimeHost.
+    // All NativeTools instances in this process must share its lease ownership.
+    private static AgentDisplayCoordinator shared;
+    static synchronized AgentDisplayCoordinator shared(Context context) {
+        if(shared==null)shared=new AgentDisplayCoordinator(context);
+        return shared;
+    }
     private final Context context;
     private final DisplayLeases leases=new DisplayLeases();
+    private final Set<String> retiring=new LinkedHashSet<>();
+    private final ScheduledExecutorService cleanup=Executors.newSingleThreadScheduledExecutor(task->{
+        Thread worker=new Thread(task,"PocketDisplayCleanup");worker.setDaemon(true);return worker;
+    });
+    private boolean retryScheduled,closeWhenIdle;
+    private int retryAttempt;
     private ShizukuDisplayClient client;
 
     AgentDisplayCoordinator(Context context) {this.context=context.getApplicationContext();}
@@ -27,6 +45,10 @@ final class AgentDisplayCoordinator implements AutoCloseable {
     }
 
     synchronized JSONObject acquire(String owner) throws ControlException {
+        // Previous runtimes may have left leases awaiting safe native removal.
+        retryRetiring();
+        if(retiring.contains(owner))throw new ControlException(NOT_READY,"Previous display cleanup remains pending");
+        closeWhenIdle=false;
         Integer existing=leases.get(owner);
         if(existing!=null) {
             if(leases.provisional(owner))
@@ -151,12 +173,55 @@ final class AgentDisplayCoordinator implements AutoCloseable {
                 throw new IllegalStateException("Virtual display cleanup did not complete; lease retained to protect existing tasks");
             new AccessibilityProxyBackend(context,id).release();
         }
+        retiring.remove(owner);
+        if(retiring.isEmpty())retryAttempt=0;
+        closeIfUnused();
+    }
+
+    // A Node-runtime replacement must not lose the privileged service's lease map.
+    // Retire only the old NativeTools instance's owners; another runtime may
+    // already have acquired a different owner on this process-wide coordinator.
+    synchronized void retireOwners(Set<String> owners) {
+        for(String owner:owners)if(leases.get(owner)!=null)retiring.add(owner);
+        closeWhenIdle=true;
+        retryRetiring();
+    }
+
+    private void retryRetiring() {
+        DisplayLeases.releaseIndependently(new LinkedHashSet<>(retiring),owner->{
+            release(owner);
+            return true;
+        });
+        if(retiring.isEmpty()) {
+            retryAttempt=0;
+            closeIfUnused();
+        } else scheduleRetry();
+    }
+
+    private void scheduleRetry() {
+        if(retryScheduled||retiring.isEmpty())return;
+        retryScheduled=true;
+        long delay=Math.min(200L*(1L<<Math.min(retryAttempt++,5)),5000L);
+        cleanup.schedule(()->{
+            synchronized(AgentDisplayCoordinator.this) {
+                retryScheduled=false;
+                retryRetiring();
+            }
+        },delay,TimeUnit.MILLISECONDS);
+    }
+
+    private void closeIfUnused() {
+        if(!closeWhenIdle||!retiring.isEmpty()||leases.size()!=0)return;
+        closeWhenIdle=false;
+        if(client!=null) {ShizukuDisplayClient closing=client;client=null;closing.close();}
     }
 
     private synchronized void invalidate() {
         // Binder death confirms that the old UserService no longer owns displays.
         for(int id:leases.ids())new AccessibilityProxyBackend(context,id).release();
         leases.clear();
+        retiring.clear();
+        closeIfUnused();
     }
 
     synchronized int activeCount() {return leases.size();}
@@ -164,7 +229,6 @@ final class AgentDisplayCoordinator implements AutoCloseable {
     String backendStatus() {ShizukuDisplayClient present=client;return present==null?ShizukuDisplayClient.prerequisites():present.status();}
 
     @Override public synchronized void close() {
-        for(String owner:leases.owners())release(owner);
-        if(client!=null) {ShizukuDisplayClient closing=client;client=null;closing.close();}
+        retireOwners(leases.owners());
     }
 }

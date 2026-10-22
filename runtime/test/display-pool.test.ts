@@ -180,6 +180,31 @@ test('removed conversation retains cleanup retries through confirmed service dea
   assert.ok(bridge.releases>=2);
 });
 
+test('idle Android host keeps pumping while a display release retry is pending',async()=>{
+  class IdleBridge extends Bridge {
+    retain=true;
+    events:any[]=[];
+    override emit(event:string):void {this.events.push(JSON.parse(event));}
+    override call(method:string,json:string):string {
+      const args=JSON.parse(json);
+      if(method==='tool'&&args.name==='phone_screen'&&args.args.action==='release'&&this.retain)
+        return JSON.stringify({ok:true,result:{isError:true,code:'RESULT_UNKNOWN',message:'Still owned'}});
+      return super.call(method,json);
+    }
+  }
+  const bridge=new IdleBridge(),app=new PocketRuntime(bridge);
+  await app.ensureDisplay('last-worker');
+  assert.equal(app.state().active,false,'no live worker should otherwise keep the host busy');
+  assert.equal(app.releaseScreen('last-worker').isError,true);
+  assert.equal(app.state().active,true,'cleanup timer must count as host activity');
+  assert.ok(bridge.events.some(e=>e.type==='activity'&&e.active===true));
+  bridge.retain=false;
+  await until(()=>app.displayPool.active===0);
+  assert.equal(app.state().active,false,'host should go idle once cleanup completes');
+  assert.equal(bridge.events.at(-1)?.type,'activity');
+  assert.equal(bridge.events.at(-1)?.active,false);
+});
+
 test('uncertain bootstrap rollback retains provisional capacity until native cleanup is confirmed',async()=>{
   class BootstrapBridge extends Bridge {
     failCleanup=true;

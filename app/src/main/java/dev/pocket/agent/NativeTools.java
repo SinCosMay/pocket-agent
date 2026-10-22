@@ -17,7 +17,9 @@ import dev.pocket.android.*;
 import dev.pocket.control.*;
 import java.util.ArrayList;
 import java.util.Iterator;
+import java.util.LinkedHashSet;
 import java.util.List;
+import java.util.Set;
 import org.json.JSONArray;
 import org.json.JSONObject;
 import static dev.pocket.control.ControlException.Code.*;
@@ -35,8 +37,9 @@ final class NativeTools implements AutoCloseable {
     private final JSONArray definitions;
     private final AndroidSystemActions system;
     private final AgentDisplayCoordinator displays;
+    private final Set<String> acquiredVirtualOwners=new LinkedHashSet<>();
     NativeTools(Context context) throws Exception {
-        this.context=context.getApplicationContext();operations=new OperationStore(context);system=new AndroidSystemActions(context);displays=new AgentDisplayCoordinator(context);
+        this.context=context.getApplicationContext();operations=new OperationStore(context);system=new AndroidSystemActions(context);displays=AgentDisplayCoordinator.shared(context);
         try(java.io.InputStream input=context.getAssets().open("tools.json")) {
             java.io.ByteArrayOutputStream bytes=new java.io.ByteArrayOutputStream();byte[] chunk=new byte[4096];int n;
             while((n=input.read(chunk))!=-1) bytes.write(chunk,0,n);
@@ -44,14 +47,24 @@ final class NativeTools implements AutoCloseable {
         }
     }
     JSONArray list() {return definitions;}
-    synchronized void releaseOwner(String owner) {displays.release(owner);}
-    @Override public synchronized void close(){displays.close();}
-    private JSONObject screenLease(JSONObject args,String owner) {
+    synchronized void releaseOwner(String owner) {
+        displays.release(owner);
+        acquiredVirtualOwners.remove(owner);
+    }
+    @Override public synchronized void close() {
+        displays.retireOwners(new LinkedHashSet<>(acquiredVirtualOwners));
+        acquiredVirtualOwners.clear();
+    }
+    private synchronized JSONObject screenLease(JSONObject args,String owner) {
         if(args.length()!=1) return Json.failure("INVALID_ARGUMENT","Only action is accepted");
         String action=args.optString("action");
-        if(action.equals("acquire"))try{return displays.acquire(owner);}
-        catch(ControlException e){return Json.failure(e.code.name(),e.getMessage());}
-        catch(RuntimeException e){return Json.failure("NOT_READY","Cannot establish safe virtual display ownership");}
+        if(action.equals("acquire")) {
+            // Track uncertain bootstrap failures too: they can retain native leases.
+            acquiredVirtualOwners.add(owner);
+            try{return displays.acquire(owner);}
+            catch(ControlException e){return Json.failure(e.code.name(),e.getMessage());}
+            catch(RuntimeException e){return Json.failure("NOT_READY","Cannot establish safe virtual display ownership");}
+        }
         if(action.equals("release"))try {releaseOwner(owner);return Json.obj("status","released");}
         catch(IllegalStateException e){return Json.failure("NOT_READY","Display retained because safe task cleanup could not be completed");}
         return Json.failure("INVALID_ARGUMENT","action must be acquire or release");

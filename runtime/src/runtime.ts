@@ -287,15 +287,18 @@ export class PocketRuntime {
     try{result=this.call('tool',{name:'phone_screen',args:{action:'release'},owner});}
     catch{result={isError:true,code:'NOT_READY',message:'Display cleanup outcome unknown; lease retained'};}
     if(result?.isError){
-      if(!this.releaseRetries.has(owner))
+      const firstRetry=!this.releaseRetries.has(owner);
+      if(firstRetry)
         this.emit({type:'log',owner,message:'Virtual display retained; cleanup will retry in the background'});
       this.retryScreenRelease(owner);
+      if(firstRetry)this.publish();
       return result;
     }
     const retry=this.releaseRetries.get(owner);
     if(retry?.timer)clearTimeout(retry.timer);
     this.releaseRetries.delete(owner);
     this.nativeDisplays.delete(owner);this.displayPool.release(owner);
+    if(retry)this.publish();
     return result;
   }
   private suppressCompletedMainDeliveries():void {
@@ -660,7 +663,7 @@ export class PocketRuntime {
   }
   state():any {
     const tasks=this.runtime.listConversations().map(c=>{const g=c.generations.at(-1)!;return {...c,generation:g.generation,status:g.status.kind==='done'?({error:'failed',aborted:'cancelled',skipped:'cancelled'} as any)[g.status.outcome]??g.status.outcome:g.status.kind,output:g.status.kind==='done'?g.status.output:undefined};});
-    return {messages:textMessages(this.main.messages,this.sanitize),tasks,busy:this.busy,lastError:this.lastError,active:this.discoveringModels||hasPendingCodexRefresh(this.credentials)||this.observing||this.busy||tasks.some(t=>t.currentGeneration||t.isStopping)||(!this.mainPaused&&this.inbox.length>0)||Boolean(this.pendingSave),mainPaused:this.mainPaused,mainInterrupted:this.mainInterrupted,provider:{...this.config},mainTurns:this.mainTurns,mainSystemPrompt:this.mainSystemPrompt,defaultMainSystemPrompt:DEFAULT_MAIN_PROMPT,
+    return {messages:textMessages(this.main.messages,this.sanitize),tasks,busy:this.busy,lastError:this.lastError,active:this.releaseRetries.size>0||this.discoveringModels||hasPendingCodexRefresh(this.credentials)||this.observing||this.busy||tasks.some(t=>t.currentGeneration||t.isStopping)||(!this.mainPaused&&this.inbox.length>0)||Boolean(this.pendingSave),mainPaused:this.mainPaused,mainInterrupted:this.mainInterrupted,provider:{...this.config},mainTurns:this.mainTurns,mainSystemPrompt:this.mainSystemPrompt,defaultMainSystemPrompt:DEFAULT_MAIN_PROMPT,
       workerMessages:Object.fromEntries([...this.sessions].map(([id,s])=>[id,textMessages(s.messages,this.sanitize)]))};
   }
   publish():void {
