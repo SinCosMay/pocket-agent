@@ -462,7 +462,7 @@ public final class MainActivity extends Activity implements AgentService.Observe
         final AlertDialog[] settingsDialog = new AlertDialog[1];
         accountPanel.addView(button("Sign in", () -> {
             if (activeWork()) { toast("Stop active work before changing accounts"); return; }
-            settingsDialog[0].dismiss(); signInAccount();
+            settingsDialog[0].dismiss(); signInAccount(false);
         }));
         accountPanel.addView(button("Import Codex auth.json", () -> {
             if (activeWork()) { toast("Stop active work before changing accounts"); return; }
@@ -556,7 +556,31 @@ public final class MainActivity extends Activity implements AgentService.Observe
             toast(checked ? "Subscription voice enabled for the next wake" : "Legacy voice enabled for the next wake");
         });
         panel.addView(subscriptionVoice);
-        panel.addView(text("Experimental: uses the saved ChatGPT account for voice, not an API key or Codex on the phone. Pi still runs tools. Legacy Android/Deepgram is unchanged when disabled. Voice service uses the microphone while active and disconnects after silence."));
+        try {
+            JSONObject voiceAccount = credentials.getVoiceCodex();
+            panel.addView(text(voiceAccount.optString("accountId").isEmpty()
+                ? "ChatGPT voice account: not connected"
+                : "ChatGPT voice account: connected independently of chat model"));
+        } catch (Exception unreadable) {
+            panel.addView(text("ChatGPT voice account: protected account unavailable"));
+        }
+        panel.addView(button("Sign in to ChatGPT for voice only", () -> {
+            if (activeWork()) { toast("Stop active work before changing voice login"); return; }
+            settingsDialog[0].dismiss(); signInAccount(true);
+        }));
+        panel.addView(button("Disconnect ChatGPT voice account", () -> {
+            if (activeWork()) { toast("Stop active work before changing voice login"); return; }
+            try {
+                credentials.signOutVoiceCodex();
+                invalidateAccountOperations();
+                if (AgentService.isRunning()) command(json("action", "configure"));
+                settingsDialog[0].dismiss();
+                toast("Voice login removed (also signs out ChatGPT chat when selected)");
+            } catch (Exception error) { toast("Unable to remove the protected voice login"); }
+        }));
+        String lastVoiceFailure = SubscriptionVoiceFailureStore.lastStatus(this);
+        if (!lastVoiceFailure.isEmpty()) panel.addView(text(lastVoiceFailure));
+        panel.addView(text("Experimental: uses a separate protected ChatGPT voice login, independent of your chat model. Pi still runs tools. Legacy Android/Deepgram is unchanged when disabled. Voice disconnects after silence."));
         panel.addView(text("Speech-to-text mode"));
         Spinner sttMode = new Spinner(this);
         String[] sttModeNames = {
@@ -871,6 +895,10 @@ public final class MainActivity extends Activity implements AgentService.Observe
         new CredentialStore(this).save(config);
         if (AgentService.isRunning()) command(json("action", "configure"));
     }
+    private void saveVoiceAccount(JSONObject account) throws Exception {
+        if (activeWork()) throw new IllegalStateException("Stop active work before changing accounts");
+        new CredentialStore(this).saveVoiceCodex(account);
+    }
     /** A newer account choice/sign-out always wins over an older file read or login callback. */
     private long invalidateAccountOperations() {
         long generation = ++accountGeneration;
@@ -906,7 +934,7 @@ public final class MainActivity extends Activity implements AgentService.Observe
             });
         });
     }
-    private void signInAccount() {
+    private void signInAccount(boolean voiceOnly) {
         final long generation = invalidateAccountOperations();
         CodexAccountAuth flow = new CodexAccountAuth(); accountFlow = flow;
         LinearLayout panel = column(); panel.setPadding(dp(20), dp(8), dp(20), dp(8));
@@ -929,7 +957,13 @@ public final class MainActivity extends Activity implements AgentService.Observe
             }
             @Override public void onSuccess(JSONObject account) {
                 if (isDestroyed() || generation != accountGeneration || !dialog.isShowing()) return;
-                try { saveAccount(account); dialog.dismiss(); toast("Codex account connected"); settings(); }
+                try {
+                    if (voiceOnly) saveVoiceAccount(account);
+                    else saveAccount(account);
+                    dialog.dismiss();
+                    toast(voiceOnly ? "ChatGPT voice account connected" : "Codex account connected");
+                    settings();
+                }
                 catch (Exception error) { instructions.setText(activeWork() ? "Stop active work, then start sign-in again. The previous connection was preserved." : "Unable to save the protected account. The previous connection was preserved."); code.setText(""); browser.setEnabled(false); flow.close(); }
             }
             @Override public void onFailure(String safeMessage) {

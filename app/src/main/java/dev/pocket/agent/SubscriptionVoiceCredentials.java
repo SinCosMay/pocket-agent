@@ -31,7 +31,7 @@ final class SubscriptionVoiceCredentials {
 
     static Token load(Context context) throws Exception {
         CredentialStore store = new CredentialStore(context);
-        JSONObject values = store.get();
+        JSONObject values = store.getVoiceCodex();
         if (!CredentialStore.CODEX_ACCOUNT.equals(values.optString("authMode")))
             throw new IllegalStateException("Sign in to a ChatGPT account for subscription voice");
         String account = values.optString("accountId");
@@ -53,13 +53,13 @@ final class SubscriptionVoiceCredentials {
         }
         // Atomic compare-and-save prevents an older refresh from overwriting newer Pi credentials.
         try {
-            store.updateCodex(rotated.put("oldRefreshToken", oldRefresh));
+            store.updateVoiceCodex(rotated.put("oldRefreshToken", oldRefresh));
         } catch (IllegalStateException stale) {
             Token concurrent = concurrentRefresh(store, account, oldRefresh);
             if (concurrent != null) return concurrent;
             throw new IllegalStateException("ChatGPT credentials changed; sign in again");
         }
-        JSONObject saved = store.get();
+        JSONObject saved = store.getVoiceCodex();
         if (!account.equals(saved.optString("accountId")) ||
             saved.optLong("expiresAt") <= System.currentTimeMillis() + EXPIRY_MARGIN_MS)
             throw new IllegalStateException("ChatGPT refresh could not be saved");
@@ -68,7 +68,7 @@ final class SubscriptionVoiceCredentials {
 
     private static Token concurrentRefresh(CredentialStore store, String account,
                                            String previousRefresh) throws Exception {
-        JSONObject latest = store.get();
+        JSONObject latest = store.getVoiceCodex();
         if (!CredentialStore.CODEX_ACCOUNT.equals(latest.optString("authMode")) ||
             !account.equals(latest.optString("accountId")) ||
             previousRefresh.equals(latest.optString("refreshToken")) ||

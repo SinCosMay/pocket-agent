@@ -19,6 +19,7 @@ final class SubscriptionVoiceLifecycle {
         void sendSpeech(String delegationId, String text);
         void interruptSpeech();
         void status(String text);
+        default void failure(String safeMessage) { }
         void announcementFailed(String id, String reason);
     }
 
@@ -218,10 +219,23 @@ final class SubscriptionVoiceLifecycle {
     }
 
     void tick(long nowMs) {
-        if (state != State.CLOSED && nowMs >= deadline) close();
+        if (state != State.CLOSED && nowMs >= deadline) {
+            if (state == State.CONNECTING) failed(epoch, "Voice connection timed out");
+            else close();
+        }
     }
 
-    void disconnected(long id) { if (id == epoch) close(); }
+    void disconnected(long id) {
+        if (id == epoch && state != State.CLOSED)
+            failed(id, "Voice connection ended unexpectedly");
+    }
+
+    void failed(long id, String safeMessage) {
+        if (id != epoch || state == State.CLOSED) return;
+        close();
+        // Make the actionable failure the final state, after generic disconnect cleanup.
+        port.failure(safeMessage);
+    }
 
     void close() {
         if (state == State.CLOSED) return;
