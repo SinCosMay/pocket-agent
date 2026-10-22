@@ -30,6 +30,7 @@ final class AgentDisplayCoordinator implements AutoCloseable {
     private final Context context;
     private final DisplayLeases leases=new DisplayLeases();
     private final Set<String> retiring=new LinkedHashSet<>();
+    private final Set<String> removing=new LinkedHashSet<>();
     private final ScheduledExecutorService cleanup=Executors.newSingleThreadScheduledExecutor(task->{
         Thread worker=new Thread(task,"PocketDisplayCleanup");worker.setDaemon(true);return worker;
     });
@@ -45,9 +46,10 @@ final class AgentDisplayCoordinator implements AutoCloseable {
     }
 
     synchronized JSONObject acquire(String owner,Object generation) throws ControlException {
-        // Previous runtimes may have left leases awaiting safe native removal.
-        retryRetiring();
-        if(retiring.contains(owner))throw new ControlException(NOT_READY,"Previous display cleanup remains pending");
+        // Retirement runs off-thread. A stalled shell cleanup of some other
+        // owner's task must not delay an acquisition with available capacity.
+        if(retiring.contains(owner)||removing.contains(owner))
+            throw new ControlException(NOT_READY,"Previous display cleanup remains pending");
         closeWhenIdle=false;
         Integer existing=leases.get(owner);
         if(existing!=null) {
@@ -168,16 +170,47 @@ final class AgentDisplayCoordinator implements AutoCloseable {
 
     synchronized void key(String owner,int code,Object generation) throws ControlException {int id=display(owner,generation);client().key(id,code);}
 
-    synchronized void release(String owner,Object generation) {
-        Integer id=leases.get(owner);
-        if(id!=null) {
-            if(!leases.release(owner,generation,displayId->client!=null&&client.removeDisplay(displayId)))
-                throw new IllegalStateException("Virtual display cleanup did not complete; lease retained to protect existing tasks");
-            new AccessibilityProxyBackend(context,id).release();
+    void release(String owner,Object generation) {
+        final Integer id;
+        final ShizukuDisplayClient active;
+        synchronized(this) {
+            id=leases.get(owner);
+            if(id==null) {
+                retiring.remove(owner);
+                if(retiring.isEmpty())retryAttempt=0;
+                closeIfUnused();
+                return;
+            }
+            if(!leases.ownedBy(owner,generation))
+                throw new IllegalStateException("Display lease belongs to another runtime");
+            if(!removing.add(owner))
+                throw new IllegalStateException("Display cleanup is already in progress");
+            active=client;
         }
-        retiring.remove(owner);
-        if(retiring.isEmpty())retryAttempt=0;
-        closeIfUnused();
+        // Do not hold the coordinator monitor across privileged task cleanup:
+        // removing a borrowed task can stall or time out in the shell service.
+        boolean removed=false,stillOurs=false;
+        try {
+            removed=active!=null&&active.removeDisplay(id);
+            if(removed) {
+                boolean valid;
+                synchronized(this) {valid=id.equals(leases.get(owner))&&leases.ownedBy(owner,generation);}
+                if(valid)new AccessibilityProxyBackend(context,id).release();
+            }
+        } finally {
+            synchronized(this) {
+                removing.remove(owner);
+                stillOurs=id.equals(leases.get(owner))&&leases.ownedBy(owner,generation);
+                if(removed&&stillOurs) {
+                    leases.release(owner,generation,ignored->true);
+                    retiring.remove(owner);
+                }
+                if(retiring.isEmpty())retryAttempt=0;
+                closeIfUnused();
+            }
+        }
+        if(!removed&&stillOurs)
+            throw new IllegalStateException("Virtual display cleanup did not complete; lease retained to protect existing tasks");
     }
 
     // A Node-runtime replacement must not lose the privileged service's lease map.
@@ -186,30 +219,37 @@ final class AgentDisplayCoordinator implements AutoCloseable {
     synchronized void retireOwners(Set<String> owners,Object generation) {
         for(String owner:owners)if(leases.ownedBy(owner,generation))retiring.add(owner);
         closeWhenIdle=true;
-        retryRetiring();
+        scheduleRetry(true);
+        closeIfUnused();
     }
 
     private void retryRetiring() {
-        DisplayLeases.releaseIndependently(new LinkedHashSet<>(retiring),owner->{
-            release(owner,leases.generation(owner));
-            return true;
-        });
-        if(retiring.isEmpty()) {
-            retryAttempt=0;
-            closeIfUnused();
-        } else scheduleRetry();
+        Set<String> pending;
+        synchronized(this) {pending=new LinkedHashSet<>(retiring);}
+        try {
+            DisplayLeases.releaseIndependently(pending,owner->{
+                Object generation;
+                synchronized(this) {
+                    if(!retiring.contains(owner))return true;
+                    generation=leases.generation(owner);
+                }
+                release(owner,generation);
+                return true;
+            });
+        } finally {
+            synchronized(this) {
+                retryScheduled=false;
+                if(retiring.isEmpty()) {retryAttempt=0;closeIfUnused();}
+                else scheduleRetry(false);
+            }
+        }
     }
 
-    private void scheduleRetry() {
+    private synchronized void scheduleRetry(boolean immediately) {
         if(retryScheduled||retiring.isEmpty())return;
         retryScheduled=true;
-        long delay=Math.min(200L*(1L<<Math.min(retryAttempt++,5)),5000L);
-        cleanup.schedule(()->{
-            synchronized(AgentDisplayCoordinator.this) {
-                retryScheduled=false;
-                retryRetiring();
-            }
-        },delay,TimeUnit.MILLISECONDS);
+        long delay=immediately?0:Math.min(200L*(1L<<Math.min(retryAttempt++,5)),5000L);
+        cleanup.schedule(this::retryRetiring,delay,TimeUnit.MILLISECONDS);
     }
 
     private void closeIfUnused() {
@@ -233,6 +273,7 @@ final class AgentDisplayCoordinator implements AutoCloseable {
     @Override public synchronized void close() {
         retiring.addAll(leases.owners());
         closeWhenIdle=true;
-        retryRetiring();
+        scheduleRetry(true);
+        closeIfUnused();
     }
 }

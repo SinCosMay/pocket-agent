@@ -8,9 +8,29 @@ import unittest
 ROOT = pathlib.Path(__file__).resolve().parents[1]
 SOURCE = ROOT / "app/src/main/java/dev/pocket/agent/DisplayTaskSnapshot.java"
 LEASE_SOURCE = ROOT / "app/src/main/java/dev/pocket/agent/DisplayLeases.java"
+COORDINATOR_SOURCE = ROOT / "app/src/main/java/dev/pocket/agent/AgentDisplayCoordinator.java"
 
 
 class DisplayTaskPolicyTest(unittest.TestCase):
+    def test_retiring_cleanup_does_not_block_unrelated_acquisitions(self):
+        source = COORDINATOR_SOURCE.read_text()
+        acquire = source.split("synchronized JSONObject acquire(", 1)[1].split("synchronized int display(", 1)[0]
+        release = source.split("    void release(String owner,Object generation)", 1)[1].split(
+            "    synchronized void retireOwners(", 1
+        )[0]
+        retry = source.split("    private void retryRetiring()", 1)[1].split(
+            "    private synchronized void scheduleRetry(", 1
+        )[0]
+        # Slow shell task cleanup must not execute from acquire or while
+        # holding the coordinator monitor. Other owners retain free slots.
+        self.assertNotIn("retryRetiring(", acquire)
+        self.assertIn("scheduleRetry(true)", source)
+        self.assertIn("removed=active!=null&&active.removeDisplay(id);", release)
+        self.assertLess(release.index("synchronized(this) {"), release.index("removed=active"))
+        self.assertIn("synchronized(this) {", retry)
+        self.assertIn("release(owner,generation);", retry)
+        self.assertNotIn("synchronized(AgentDisplayCoordinator.this)", retry)
+
     def test_cleanup_membership_and_ownership(self):
         harness = r'''
 package dev.pocket.agent;
