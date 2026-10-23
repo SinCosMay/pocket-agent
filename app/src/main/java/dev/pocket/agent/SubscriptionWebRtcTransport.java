@@ -101,11 +101,6 @@ final class SubscriptionWebRtcTransport implements AutoCloseable {
     private static final String WS_ROOT = "wss://api.openai.com/v1/live/";
     private static final String CLIENT_NAME = "pocket-agent-voice";
     private static final String CLIENT_VERSION = "0.163.0";
-    private static final String INSTRUCTIONS =
-            "You are the voice interface for Pocket Agent, a separate client-side agent. "
-            + "Delegate every user request to the client. You must not execute tools, "
-            + "perform tasks, or answer requests yourself. Speak only the results supplied "
-            + "by the client via speakable delegation context. Do not claim to have used tools.";
     private static final int MAX_SDP_BYTES = 131072;
     private static final int MAX_EVENT_CHARS = 65536;
     private static final int MAX_SPEECH_CHARS = 8000;
@@ -484,7 +479,7 @@ final class SubscriptionWebRtcTransport implements AutoCloseable {
         try {
             JSONObject body = new JSONObject().put("sdp", local.description)
                     .put("session", new JSONObject()
-                            .put("instructions", INSTRUCTIONS)
+                            .put("instructions", startupInstructions())
                             .put("model", "gpt-live-1-codex")
                             .put("audio", new JSONObject().put("output",
                                     new JSONObject().put("voice", "cove")))
@@ -564,6 +559,17 @@ final class SubscriptionWebRtcTransport implements AutoCloseable {
         String path = location.split("\\?", 2)[0];
         String id = path.substring(path.lastIndexOf('/') + 1);
         return id.matches("rtc_[A-Za-z0-9_-]{3,128}") ? id : null;
+    }
+
+    /** Runs on the transport worker, once per new call, immediately before setup. */
+    private String startupInstructions() {
+        try (StateStore store = new StateStore(context)) {
+            return SubscriptionVoiceContext.instructions(store.load());
+        } catch (Exception unavailable) {
+            // Context failure must not prevent a call. Never log saved conversation text.
+            android.util.Log.w("PocketSubscriptionVoice", "Recent voice context unavailable");
+            return SubscriptionVoiceContext.BASE_INSTRUCTIONS;
+        }
     }
 
     private void attachSideband(Session session) {
