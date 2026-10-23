@@ -205,6 +205,45 @@ test('a failed checkpoint after Stop does not replay the canceled request',async
   runtime.dispatch(JSON.stringify({action:'prepare_shutdown'}));
 });
 
+test('worker completion during main recall is delivered after the transaction closes',async()=>{
+  let checkpoint:any={},releaseMainRecall:((value:any)=>void)|undefined;
+  const bridge={
+    call(method:string,json:string):string{
+      const args=JSON.parse(json);
+      let result:any={};
+      if(method==='credentials.get')result={authMode:'scripted',mcpServers:[server]};
+      if(method==='store.load')result=checkpoint;
+      if(method==='store.save')checkpoint=structuredClone(args.state);
+      if(method==='memory')result={memories:[]};
+      if(method==='tool')result={available:true};
+      return JSON.stringify({ok:true,result});
+    },
+    emit(_json:string):void{},
+  };
+  const runtime=new PocketRuntime(bridge,undefined,async()=>({
+    client:{close:async()=>{},callTool:async(name:string,args:any)=>{
+      if(name==='recall'&&args.query==='hold the main turn'&&!releaseMainRecall)
+        return new Promise(resolve=>{releaseMainRecall=resolve;});
+      return {content:[{type:'text',text:'ok'}]};
+    }},
+    tools:advertised,
+  }) as any);
+  await until(()=>runtime.debugToolList().some(tool=>tool.name.endsWith('_recall')));
+  const subagent=runtime.main.agent.state.tools.find((tool:any)=>tool.name==='subagent');
+  runtime.main.continue=async()=>{};
+  runtime.dispatch(JSON.stringify({action:'send',text:'hold the main turn'}));
+  await until(()=>!!releaseMainRecall);
+  await subagent.execute('test-completion-recall',{action:'spawn',
+    spawns:[{agent:'researcher',label:'Fast worker',prompt:'Summarize task status'}]});
+  await until(()=>runtime.state().tasks[0]?.status==='completed');
+  assert.equal(runtime.state().mainTurns,1,'the main transaction is still waiting on recall');
+  releaseMainRecall!({content:[{type:'text',text:'ok'}]});
+  await until(()=>runtime.state().mainTurns===2&&!runtime.state().busy);
+  assert.ok(checkpoint.delivered?.length>0,
+    'the completion receipt must be durably collected after the recall transaction');
+  runtime.dispatch(JSON.stringify({action:'prepare_shutdown'}));
+});
+
 test('canceling a worker during Hindsight recall never starts that worker inference',async()=>{
   let checkpoint:any={},releaseRecall:((value:any)=>void)|undefined;
   const bridge={

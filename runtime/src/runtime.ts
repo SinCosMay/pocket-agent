@@ -145,10 +145,7 @@ export class PocketRuntime {
     if(freshMainRequested)this.suppressCompletedMainDeliveries();
     this.restoring=false;
     // Repair completion inbox if death happened between terminal checkpoint and enqueue.
-    for(const c of this.runtime.listConversations()) {
-      const g=c.generations.at(-1)!;
-      if(!c.parentConversationId && g.status.kind==='done' && this.runtime.isModelSubscribed({conversationId:c.conversationId,generation:g.generation})&&!g.receipts.model)this.enqueueCompletion(c.conversationId,g.generation);
-    }
+    this.recoverUndeliveredCompletions();
     this.save();this.publish();this.emit({type:'ready',protocol:1});
     queueMicrotask(()=>void this.pump());
   }
@@ -302,6 +299,14 @@ export class PocketRuntime {
     if(this.save())queueMicrotask(()=>void this.pump());
     else this.coalesce();
   }
+  private recoverUndeliveredCompletions():void {
+    for(const c of this.runtime.listConversations()) {
+      const g=c.generations.at(-1)!;
+      if(!c.parentConversationId&&g.status.kind==='done'
+        &&this.runtime.isModelSubscribed({conversationId:c.conversationId,generation:g.generation})
+        &&!g.receipts.model)this.enqueueCompletion(c.conversationId,g.generation);
+    }
+  }
   private async pump():Promise<void> {
     if(this.pumping||this.stoppingAll||this.mainPaused)return;
     this.pumping=true;
@@ -332,6 +337,7 @@ export class PocketRuntime {
           if(this.speakingTurn)this.emit({type:'voice_end',sessionId:this.speakingTurn});
           this.speakingTurn=null;this.busy=false;
           this.deliveryTransaction=false;
+          this.recoverUndeliveredCompletions();
           this.dropPriorImages('main');this.releaseScreen('main');
           if(!this.save())this.coalesce();
           this.publish();
@@ -347,10 +353,12 @@ export class PocketRuntime {
           if(deliveredAdded)this.delivered.delete(item.key);
           if(completion)(completion.g.receipts as any).model=receiptBefore;
           this.deliveryTransaction=false;
+          this.recoverUndeliveredCompletions();
           this.coalesce();
           break;
         }
         this.deliveryTransaction=false;
+        this.recoverUndeliveredCompletions();
         if(this.mainStopSequence!==stopSequence||this.stoppingAll) {
           this.main.agent.state.messages=previousMessages;
           this.mainInterrupted=true;
@@ -379,7 +387,11 @@ export class PocketRuntime {
         }
       }
     } catch(e){this.reportError(e);}
-    finally {this.deliveryTransaction=false;this.pumping=false;this.publish();}
+    finally {
+      this.deliveryTransaction=false;this.pumping=false;
+      try {this.recoverUndeliveredCompletions();}catch(e){this.reportError(e);}
+      this.publish();
+    }
   }
   private devTools?:any[];
   debugToolList():any[] {
