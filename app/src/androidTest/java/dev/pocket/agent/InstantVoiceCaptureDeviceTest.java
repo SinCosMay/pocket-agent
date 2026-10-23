@@ -101,14 +101,21 @@ public final class InstantVoiceCaptureDeviceTest {
             voice.listen();
             assertTrue(voice.isCapturing());
             assertEquals(1, network.connections.get());
-            voice.stopListening();
-            assertFalse(voice.isCapturing());
-            assertEquals(0, voice.bufferedInputBytes());
+            for (int handoff = 1; handoff <= 3; handoff++) {
+                voice.stopListening();
+                assertFalse(voice.isCapturing());
+                assertEquals(0, voice.bufferedInputBytes());
 
-            voice.listen();
-            assertTrue("Barge-in capture must reacquire the microphone after Android handoff",
-                voice.isCapturing());
-            assertEquals(2, network.connections.get());
+                voice.listen();
+                assertTrue("Barge-in capture must reacquire the microphone after Android handoff",
+                    voice.isCapturing());
+                assertEquals(handoff + 1, network.connections.get());
+                // A worker belonging to the previous recording may exit just after the new
+                // microphone opens; it must not shut down that replacement session.
+                Thread.sleep(120);
+                assertTrue("Retired capture workers must not stop the next microphone session",
+                    voice.isCapturing());
+            }
         } finally {
             voice.close();
         }

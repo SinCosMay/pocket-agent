@@ -21,8 +21,6 @@ import java.io.ByteArrayOutputStream;
 import java.io.InputStream;
 import java.nio.charset.StandardCharsets;
 import java.util.concurrent.TimeUnit;
-import java.util.regex.Matcher;
-import java.util.regex.Pattern;
 
 /**
  * Shizuku UserService, executed under Android shell UID.
@@ -34,18 +32,18 @@ public final class ShellDisplayService extends IDisplayShell.Stub {
     private static final int TRUSTED=1<<10, OWN_GROUP=1<<11, ALWAYS_UNLOCKED=1<<12;
     private static final int OWN_FOCUS=1<<14, DEVICE_GROUP=1<<15;
     private static final int DISPLAY_IME_POLICY_HIDE=2;
-    private static final Pattern ROOT_TASK=Pattern.compile("(?i)(?:RootTask\\s+(?:id=|#)|Stack\\s+id=|Task\\{[^#\\r\\n]*#)(\\d+)");
-    private static final Pattern INLINE_DISPLAY=Pattern.compile("(?i)(?:m?displayId)\\s*[=:]\\s*(\\d+)");
-    private static final Pattern DISPLAY_HEADER=Pattern.compile("(?i)^\\s*Display\\s+#(\\d+)\\b");
     private final Context context;
     private final Map<Integer,OwnedDisplay> displays=new LinkedHashMap<>();
+    private final DisplayRestorationReservations reservations=new DisplayRestorationReservations();
     private HandlerThread frameThread;
 
     private static final class OwnedDisplay {
         final VirtualDisplay display;
         final ImageReader reader;
-        final Set<Integer> rootTasks=new LinkedHashSet<>();
-        OwnedDisplay(VirtualDisplay display,ImageReader reader) {this.display=display;this.reader=reader;}
+        final Map<Integer,Integer> protectedTasks=new LinkedHashMap<>();
+        OwnedDisplay(VirtualDisplay display,ImageReader reader,DisplayTaskSnapshot before) {
+            this.display=display;this.reader=reader;protectedTasks.putAll(before.taskDisplays);
+        }
         void close() {try {display.release();}finally {reader.close();}}
     }
 
@@ -72,6 +70,7 @@ public final class ShellDisplayService extends IDisplayShell.Stub {
         if(Process.myUid()!=2000 && Process.myUid()!=0) throw new SecurityException("Requires Shizuku shell/root user service");
         if(width<320 || width>1920 || height<320 || height>2560 || dpi<120 || dpi>640) throw new IllegalArgumentException("Invalid display dimensions");
         if(displays.size()>=3) throw new IllegalStateException("Three virtual displays already allocated");
+        DisplayTaskSnapshot before=taskSnapshot();
         ImageReader reader=ImageReader.newInstance(width,height,PixelFormat.RGBA_8888,2);
         reader.setOnImageAvailableListener(r->{
             try(Image frame=r.acquireLatestImage()) {
@@ -93,13 +92,17 @@ public final class ShellDisplayService extends IDisplayShell.Stub {
                         throw new IllegalStateException("Android returned no independent display");
                     }
                     int id=display.getDisplay().getDisplayId();
+                    if(displays.containsKey(id)) {
+                        display.release();
+                        throw new IllegalStateException("Android reused an allocated display ID");
+                    }
                     try {hideIme(id);}
                     catch(Exception imeFailure) {
                         display.release();
                         last=imeFailure;
                         continue;
                     }
-                    displays.put(id,new OwnedDisplay(display,reader));
+                    displays.put(id,new OwnedDisplay(display,reader,before));
                     return id;
                 } catch(Exception e) {last=e;}
             }
@@ -110,13 +113,25 @@ public final class ShellDisplayService extends IDisplayShell.Stub {
     }
     private void owned(int id) {
         if(id<=Display.DEFAULT_DISPLAY || !displays.containsKey(id)) throw new SecurityException("Display is not owned by Pocket Agent");
+        if(reservations.isRemoving(id)) throw new IllegalStateException("Display cleanup is in progress");
     }
-    @Override public synchronized void removeDisplay(int id) {
-        owned(id);
-        OwnedDisplay owned=displays.remove(id);
-        reconcileAndRemoveTasks(id,owned);
-        owned.close();
-        if(displays.isEmpty() && frameThread!=null) {frameThread.quitSafely();frameThread=null;}
+    @Override public void removeDisplay(int id) {
+        // Only reservation/finalization hold the service monitor. Task inspection,
+        // migration, and shell retries can each take seconds, but must not block
+        // createDisplay or launch on an unrelated worker display.
+        DisplayRemovalSequence.run(this,
+            () -> {
+                owned(id);
+                reservations.beginRemoval(id);
+                return displays.get(id);
+            },
+            active -> reconcileAndRemoveTasks(id,active),
+            active -> active.close(),
+            active -> {
+                displays.remove(id);
+                if(displays.isEmpty() && frameThread!=null) {frameThread.quitSafely();frameThread=null;}
+            },
+            () -> reservations.finishRemoval(id));
     }
     static void hideIme(int displayId) throws Exception {
         Class<?> serviceManager=Class.forName("android.os.ServiceManager");
@@ -128,18 +143,8 @@ public final class ShellDisplayService extends IDisplayShell.Stub {
         iWindowManager.getMethod("setDisplayImePolicy",int.class,int.class).invoke(windowManager,displayId,DISPLAY_IME_POLICY_HIDE);
     }
     static Set<Integer> parseRootTasks(String output,int displayId) {
-        Set<Integer> result=new LinkedHashSet<>();
-        int sectionDisplay=-1;
-        for(String line:output.split("\\R")) {
-            Matcher header=DISPLAY_HEADER.matcher(line);
-            if(header.find())sectionDisplay=Integer.parseInt(header.group(1));
-            Matcher task=ROOT_TASK.matcher(line);
-            if(!task.find())continue;
-            Matcher inline=INLINE_DISPLAY.matcher(line);
-            int taskDisplay=inline.find()?Integer.parseInt(inline.group(1)):sectionDisplay;
-            if(taskDisplay==displayId)result.add(Integer.parseInt(task.group(1)));
-        }
-        return result;
+        DisplayTaskSnapshot stacks=DisplayTaskSnapshot.stacks(output);
+        return (stacks.displays.isEmpty()?DisplayTaskSnapshot.activities(output):stacks).onDisplay(displayId);
     }
     private static final class CommandResult {
         final boolean ok; final String output;
@@ -148,6 +153,7 @@ public final class ShellDisplayService extends IDisplayShell.Stub {
     private static CommandResult run(String... command) {
         ProcessBuilder builder=new ProcessBuilder(command).redirectErrorStream(true);
         java.lang.Process child=null;Thread reader=null;ByteArrayOutputStream bytes=new ByteArrayOutputStream();
+        java.util.concurrent.atomic.AtomicBoolean incomplete=new java.util.concurrent.atomic.AtomicBoolean();
         try {
             child=builder.start();
             InputStream stream=child.getInputStream();
@@ -156,9 +162,10 @@ public final class ShellDisplayService extends IDisplayShell.Stub {
                 try {
                     while((read=stream.read(buffer))!=-1) {
                         int keep=Math.min(read,262_144-total);
+                        if(keep<read)incomplete.set(true);
                         if(keep>0){bytes.write(buffer,0,keep);total+=keep;}
                     }
-                } catch(Exception ignored) {}
+                } catch(Exception ignored) {incomplete.set(true);}
             },"PocketShellCommandOutput");
             reader.setDaemon(true);reader.start();
             if(!child.waitFor(8,TimeUnit.SECONDS)) {
@@ -167,7 +174,7 @@ public final class ShellDisplayService extends IDisplayShell.Stub {
                 return new CommandResult(false,"");
             }
             if(reader!=null)reader.join(250);
-            return new CommandResult(child.exitValue()==0,new String(bytes.toByteArray(),StandardCharsets.UTF_8));
+            return new CommandResult(child.exitValue()==0&&!reader.isAlive()&&!incomplete.get(),new String(bytes.toByteArray(),StandardCharsets.UTF_8));
         } catch(Exception e) {
             if(child!=null)child.destroyForcibly();
             return new CommandResult(false,"");
@@ -229,53 +236,95 @@ public final class ShellDisplayService extends IDisplayShell.Stub {
         after.add(component.flattenToShortString());
         return putAccessibilityServices(after);
     }
-    private Set<Integer> rootTasksOnDisplay(int id) {
-        Set<Integer> result=parseRootTasks(execOutput("/system/bin/am","stack","list"),id);
-        if(result.isEmpty())result.addAll(parseRootTasks(execOutput("/system/bin/dumpsys","activity","activities"),id));
-        return result;
+    private DisplayTaskSnapshot taskSnapshot() {
+        CommandResult stacks=run("/system/bin/am","stack","list");
+        DisplayTaskSnapshot result=DisplayTaskSnapshot.stacks(stacks.output);
+        // An empty target display is a valid answer, not a reason to change data sources.
+        if(stacks.ok&&!result.displays.isEmpty())return result;
+        CommandResult activities=run("/system/bin/dumpsys","activity","activities");
+        result=DisplayTaskSnapshot.activities(activities.output);
+        if(activities.ok&&!result.displays.isEmpty())return result;
+        throw new IllegalStateException("Cannot establish task display membership; refusing display cleanup or launch");
+    }
+    private void protectOutsideTasks(int id,OwnedDisplay owned,DisplayTaskSnapshot snapshot) {
+        snapshot.protectOutside(id,owned.protectedTasks);
+    }
+    private boolean restoreBorrowedTasks(int id,OwnedDisplay owned,DisplayTaskSnapshot snapshot) {
+        protectOutsideTasks(id,owned,snapshot);
+        boolean borrowed=false;
+        for(int task:snapshot.onDisplay(id)) {
+            Integer origin=owned.protectedTasks.get(task);
+            if(origin==null)continue;
+            borrowed=true;
+            // Never destroy a reused user/other-worker task along with this display.
+            // Pin the destination until the move is verified. A different worker's
+            // removal cannot pass its empty-display check and then destroy this task.
+            int destination;
+            synchronized(this) {
+                destination=reservations.pinOrigin(origin,displays.containsKey(origin));
+            }
+            try {
+                if(!exec("/system/bin/am","display","move-stack",String.valueOf(task),String.valueOf(destination))
+                    ||taskSnapshot().onDisplay(id).contains(task))
+                    throw new IllegalStateException("Cannot restore a pre-existing task; retaining virtual display");
+            } finally {
+                reservations.unpinOrigin(destination);
+            }
+        }
+        return borrowed;
     }
     private void reconcileAndRemoveTasks(int id,OwnedDisplay owned) {
-        // Every root task on this shell-owned virtual display belongs to this lease.
-        // Reconcile immediately before release so tasks created after launch tracking
-        // cannot migrate into display 0 / Recents when Android destroys the display.
         for(int pass=0;pass<3;pass++) {
-            owned.rootTasks.addAll(rootTasksOnDisplay(id));
-            if(owned.rootTasks.isEmpty()) {
-                if(pass<2)try {Thread.sleep(80);} catch(InterruptedException e){Thread.currentThread().interrupt();break;}
-                continue;
+            DisplayTaskSnapshot current=taskSnapshot();
+            restoreBorrowedTasks(id,owned,current);
+            for(int rootTask:current.removable(id,owned.protectedTasks)) {
+                // Cached launch IDs are not authority to delete a task. A user can
+                // have moved it to display zero since it was first observed.
+                DisplayTaskSnapshot verified=taskSnapshot();
+                protectOutsideTasks(id,owned,verified);
+                if(verified.removable(id,owned.protectedTasks).contains(rootTask))
+                    exec("/system/bin/am","stack","remove",String.valueOf(rootTask));
             }
-            for(int rootTask:java.util.List.copyOf(owned.rootTasks)) {
-                boolean removed=exec("/system/bin/am","stack","remove",String.valueOf(rootTask));
-                // AOSP emulator/newer ActivityManager builds can accept the legacy stack
-                // command without actually removing the task. Keep the MIUI-proven stack
-                // path first, then fall back to task remove on reconciliation passes.
-                if(pass>0)removed=exec("/system/bin/am","task","remove",String.valueOf(rootTask))||removed;
-                if(removed)owned.rootTasks.remove(rootTask);
-            }
-            if(rootTasksOnDisplay(id).isEmpty())break;
+            if(taskSnapshot().onDisplay(id).isEmpty())return;
+            try {Thread.sleep(80);} catch(InterruptedException e){Thread.currentThread().interrupt();break;}
         }
+        // DESTROY_CONTENT handles remaining worker activities on display removal.
+        // Recheck protected tasks before that implicit destruction too.
+        restoreBorrowedTasks(id,owned,taskSnapshot());
     }
     private boolean launchTracked(int id,String... command) {
-        Set<Integer> before=rootTasksOnDisplay(id);
+        DisplayTaskSnapshot before=taskSnapshot();
+        OwnedDisplay owned=displays.get(id);
+        protectOutsideTasks(id,owned,before);
         if(!exec(command))return false;
         long deadline=android.os.SystemClock.elapsedRealtime()+3000;
         do {
-            Set<Integer> now=rootTasksOnDisplay(id);
-            OwnedDisplay owned=displays.get(id);
-            if(owned!=null)owned.rootTasks.addAll(now);
-            Set<Integer> created=new LinkedHashSet<>(now);created.removeAll(before);
+            DisplayTaskSnapshot snapshot=taskSnapshot();
+            if(restoreBorrowedTasks(id,owned,snapshot))return false;
+            Set<Integer> created=snapshot.onDisplay(id);created.removeAll(before.taskDisplays.keySet());
             if(!created.isEmpty())return true;
             try {Thread.sleep(75);} catch(InterruptedException e) {Thread.currentThread().interrupt();return false;}
         } while(android.os.SystemClock.elapsedRealtime()<deadline);
-        OwnedDisplay owned=displays.get(id);
-        if(owned!=null)owned.rootTasks.addAll(rootTasksOnDisplay(id));
         return false;
     }
     private static final String WORKER_ACTIVITY_FLAGS="0x18800000";
+    private boolean canLaunchSeparately(int id,android.content.Intent intent) {
+        // MULTIPLE_TASK does not override singleTask/singleInstance. Refuse to
+        // deliver a new intent to an existing personal task (which can clear its
+        // back stack) before the post-launch migration check gets a chance to run.
+        android.content.pm.ResolveInfo resolved=asShell().getPackageManager().resolveActivity(intent,0);
+        if(resolved==null||resolved.activityInfo==null)return false;
+        android.content.pm.ActivityInfo activity=resolved.activityInfo;
+        if(activity.launchMode!=android.content.pm.ActivityInfo.LAUNCH_SINGLE_TASK
+            &&activity.launchMode!=android.content.pm.ActivityInfo.LAUNCH_SINGLE_INSTANCE)return true;
+        DisplayTaskSnapshot snapshot=taskSnapshot();
+        return snapshot.hasPackageRecords()&&!snapshot.packageOutside(activity.packageName,id);
+    }
     @Override public synchronized boolean launchActivity(int id,String componentName) {
         owned(id);
         android.content.ComponentName component=android.content.ComponentName.unflattenFromString(componentName);
         if(component==null || component.getPackageName().trim().isEmpty()) throw new IllegalArgumentException("Expected component name");
+        if(!canLaunchSeparately(id,new android.content.Intent().setComponent(component)))return false;
         return launchTracked(id,"/system/bin/am","start","--display",String.valueOf(id),"-f",WORKER_ACTIVITY_FLAGS,"-n",component.flattenToString());
     }
     @Override public synchronized boolean openUrl(int id,String url) {
@@ -285,6 +334,7 @@ public final class ShellDisplayService extends IDisplayShell.Stub {
         if(uri.getHost()==null || uri.getHost().trim().isEmpty() || uri.getUserInfo()!=null ||
             (!"https".equalsIgnoreCase(scheme) && !"http".equalsIgnoreCase(scheme)))
             throw new IllegalArgumentException("Only ordinary HTTP(S) URLs without embedded credentials are supported");
+        if(!canLaunchSeparately(id,new android.content.Intent(android.content.Intent.ACTION_VIEW,uri)))return false;
         return launchTracked(id,"/system/bin/am","start","--display",String.valueOf(id),"-f",WORKER_ACTIVITY_FLAGS,
             "-a",android.content.Intent.ACTION_VIEW,"-d",uri.toString());
     }
@@ -295,6 +345,7 @@ public final class ShellDisplayService extends IDisplayShell.Stub {
             case "timers" -> android.provider.AlarmClock.ACTION_SHOW_TIMERS;
             default -> throw new IllegalArgumentException("Expected alarms or timers");
         };
+        if(!canLaunchSeparately(id,new android.content.Intent(action)))return false;
         return launchTracked(id,"/system/bin/am","start","--display",String.valueOf(id),"-f",WORKER_ACTIVITY_FLAGS,"-a",action);
     }
     @Override public synchronized boolean injectKey(int id,int keyCode) {
@@ -306,7 +357,11 @@ public final class ShellDisplayService extends IDisplayShell.Stub {
         return "uid="+Process.myUid()+";display_count="+displays.size()+";android="+Build.VERSION.SDK_INT;
     }
     @Override public synchronized void destroy() {
+        // A concurrent removal owns the task-reconciliation obligation. Do not
+        // run a second cleanup over the same display or implicitly destroy tasks.
+        if(reservations.hasReservations())throw new IllegalStateException("Display cleanup or restoration in progress; retry destroy");
         for(Map.Entry<Integer,OwnedDisplay> entry:displays.entrySet()) {
+            // Failure to prove ownership must also prevent implicit DESTROY_CONTENT.
             reconcileAndRemoveTasks(entry.getKey(),entry.getValue());
             try {entry.getValue().close();}catch(Exception ignored){}
         }

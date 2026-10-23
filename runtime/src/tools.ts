@@ -176,7 +176,8 @@ export function nativeTools(host:any,owner:string,grant?:readonly string[]):any[
       if(s.name==='phone_batch' && args.calls?.some((x:any)=>!schemas.some(t=>t.name===x.name) || (grant && !grant.includes(x.name)))) throw new Error('Batch tool exceeds tool grant');
       if(s.name==='phone_screen'){
         if(args.action==='release'){
-          host.releaseScreen?.(owner);clearNativeToolUiState(host,owner);
+          const result=host.releaseScreen?.(owner);clearNativeToolUiState(host,owner);
+          if(result?.isError)return toolResult(result);
           return toolResult({status:'released'});
         }
         if(args.action==='acquire'&&host.ensureDisplay)return toolResult(await host.ensureDisplay(owner,signal));

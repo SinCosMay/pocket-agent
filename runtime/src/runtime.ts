@@ -38,6 +38,7 @@ export class PocketRuntime {
   readonly displayPool=new DisplayPool(3);
   private readonly nativeDisplays=new Set<string>();
   private readonly pendingDisplays=new Map<string,Promise<any>>();
+  private readonly releaseRetries=new Map<string,{attempt:number,timer?:ReturnType<typeof setTimeout>,dueAt?:number}>();
   readonly runtime:SubagentRuntime;
   readonly sessions=new Map<string,MobileSession>();
   main!:MobileSession;
@@ -250,22 +251,58 @@ export class PocketRuntime {
         this.emit({type:'log',owner,message:'Waiting for a virtual display; work resumes automatically when one is released'});
       await this.displayPool.reserve(owner,signal);
       if(signal?.aborted){this.releaseScreen(owner);throw new Error('Display request cancelled');}
+      // A retained failed-cleanup lease must never be handed back as ready.
+      if(this.releaseRetries.has(owner))
+        return {isError:true,code:'NOT_READY',message:'Previous virtual display cleanup is pending'};
       if(this.nativeDisplays.has(owner))return {status:'acquired'};
       try {
         const result=this.call('tool',{name:'phone_screen',args:{action:'acquire'},owner});
-        if(result?.isError){this.displayPool.release(owner);return result;}
+        if(result?.isError){this.releaseScreen(owner);return result;}
         this.nativeDisplays.add(owner);
         if(signal?.aborted){this.releaseScreen(owner);throw new Error('Display request cancelled');}
         return result;
-      }catch(e){this.displayPool.release(owner);throw e;}
+      }catch(e){this.releaseScreen(owner);throw e;}
     })();
     this.pendingDisplays.set(owner,request);
     try{return await request;}finally{this.pendingDisplays.delete(owner);}
   }
-  releaseScreen(owner:string):void {
-    clearNativeToolUiState(this,owner);this.nativeDisplays.delete(owner);
-    try{this.call('tool',{name:'phone_screen',args:{action:'release'},owner});}catch{/* Service shutdown also releases leases. */}
-    finally{this.displayPool.release(owner);}
+  private retryScreenRelease(owner:string):void {
+    // One queued timer per retained lease, bounded by the pool's three owners.
+    let retry=this.releaseRetries.get(owner);
+    if(!retry){retry={attempt:0};this.releaseRetries.set(owner,retry);}
+    if(retry.timer)return;
+    const delay=Math.min(200*2**Math.min(retry.attempt++,5),5000);
+    const scheduled=retry;
+    retry.dueAt=Date.now()+delay;
+    retry.timer=setTimeout(()=>{
+      scheduled.timer=undefined;
+      scheduled.dueAt=undefined;
+      if(this.releaseRetries.get(owner)===scheduled)this.releaseScreen(owner);
+    },delay);
+    // Keep the timer referenced: Javet's nonblocking Node pump must observe it.
+  }
+  releaseScreen(owner:string):any {
+    clearNativeToolUiState(this,owner);
+    if(!this.displayPool.has(owner)&&!this.nativeDisplays.has(owner))
+      return {status:'released'};
+    let result:any;
+    try{result=this.call('tool',{name:'phone_screen',args:{action:'release'},owner});}
+    catch{result={isError:true,code:'NOT_READY',message:'Display cleanup outcome unknown; lease retained'};}
+    if(result?.isError){
+      const firstRetry=!this.releaseRetries.has(owner);
+      if(firstRetry)
+        this.emit({type:'log',owner,message:'Virtual display retained; cleanup will retry in the background'});
+      this.retryScreenRelease(owner);
+      // Publish each backoff deadline so Android can sleep until the next retry.
+      this.publish();
+      return result;
+    }
+    const retry=this.releaseRetries.get(owner);
+    if(retry?.timer)clearTimeout(retry.timer);
+    this.releaseRetries.delete(owner);
+    this.nativeDisplays.delete(owner);this.displayPool.release(owner);
+    if(retry)this.publish();
+    return result;
   }
   private suppressCompletedMainDeliveries():void {
     for(const c of this.runtime.listConversations()) {
@@ -516,7 +553,7 @@ export class PocketRuntime {
   }
   cleanupRemoved():void {
     const retained=new Set(this.runtime.listConversations().map(c=>c.conversationId));
-    for(const [id,session] of this.sessions)if(!retained.has(id as any)){session.dispose();this.sessions.delete(id);this.workerReasoningProofs.delete(id);}
+    for(const [id,session] of this.sessions)if(!retained.has(id as any)){this.releaseScreen(id);session.dispose();this.sessions.delete(id);this.workerReasoningProofs.delete(id);}
     this.delivered=new Set([...this.delivered].filter(key=>retained.has(JSON.parse(key)[0])));
   }
   private async stopAll():Promise<boolean> {
@@ -629,12 +666,15 @@ export class PocketRuntime {
   }
   state():any {
     const tasks=this.runtime.listConversations().map(c=>{const g=c.generations.at(-1)!;return {...c,generation:g.generation,status:g.status.kind==='done'?({error:'failed',aborted:'cancelled',skipped:'cancelled'} as any)[g.status.outcome]??g.status.outcome:g.status.kind,output:g.status.kind==='done'?g.status.output:undefined};});
-    return {messages:textMessages(this.main.messages,this.sanitize),tasks,busy:this.busy,lastError:this.lastError,active:this.discoveringModels||hasPendingCodexRefresh(this.credentials)||this.observing||this.busy||tasks.some(t=>t.currentGeneration||t.isStopping)||(!this.mainPaused&&this.inbox.length>0)||Boolean(this.pendingSave),mainPaused:this.mainPaused,mainInterrupted:this.mainInterrupted,provider:{...this.config},mainTurns:this.mainTurns,mainSystemPrompt:this.mainSystemPrompt,defaultMainSystemPrompt:DEFAULT_MAIN_PROMPT,
+    const otherActive=this.discoveringModels||hasPendingCodexRefresh(this.credentials)||this.observing||this.busy||tasks.some(t=>t.currentGeneration||t.isStopping)||(!this.mainPaused&&this.inbox.length>0)||Boolean(this.pendingSave);
+    const cleanupOnly=this.releaseRetries.size>0&&!otherActive;
+    const cleanupWakeMs=cleanupOnly?Math.min(...[...this.releaseRetries.values()].map(retry=>Math.max(1,(retry.dueAt??Date.now()+200)-Date.now()))):0;
+    return {messages:textMessages(this.main.messages,this.sanitize),tasks,busy:this.busy,lastError:this.lastError,active:this.releaseRetries.size>0||otherActive,cleanupOnly,cleanupWakeMs,mainPaused:this.mainPaused,mainInterrupted:this.mainInterrupted,provider:{...this.config},mainTurns:this.mainTurns,mainSystemPrompt:this.mainSystemPrompt,defaultMainSystemPrompt:DEFAULT_MAIN_PROMPT,
       workerMessages:Object.fromEntries([...this.sessions].map(([id,s])=>[id,textMessages(s.messages,this.sanitize)]))};
   }
   publish():void {
     if(this.restoring)return;
-    try {const state=this.state();this.emit({type:'state',state});this.emit({type:'activity',active:state.active});}
+    try {const state=this.state();this.emit({type:'state',state});this.emit({type:'activity',active:state.active,cleanupOnly:state.cleanupOnly,cleanupWakeMs:state.cleanupWakeMs});}
     catch(e) {this.reportError(e);}
   }
 }
