@@ -120,6 +120,8 @@ test('Stop during remote recall prevents inference and redacts secrets sent to H
   const secret='synthetic-hindsight-bearer-secret';
   const configured={...server,authMode:'bearer',bearerToken:secret};
   let checkpoint:any={},releaseRecall:((result:any)=>void)|undefined,querySeen='';
+  const events:any[]=[];
+  const voiceId='9ac6c359-d522-4fa3-a00b-a7efdf0c9571';
   const bridge={
     call(method:string,json:string):string {
       const args=JSON.parse(json);
@@ -131,11 +133,11 @@ test('Stop during remote recall prevents inference and redacts secrets sent to H
       if(method==='tool')result={available:true};
       return JSON.stringify({ok:true,result});
     },
-    emit(_json:string):void{},
+    emit(json:string):void{events.push(JSON.parse(json));}
   };
   const runtime=new PocketRuntime(bridge,undefined,async()=>({
     client:{close:async()=>{},callTool:async(name:string,args:any)=>{
-      if(name==='recall') {
+      if(name==='recall'&&!releaseRecall) {
         querySeen=args.query;
         return new Promise(resolve=>{releaseRecall=resolve;});
       }
@@ -146,16 +148,23 @@ test('Stop during remote recall prevents inference and redacts secrets sent to H
   await until(()=>runtime.debugToolList().some(tool=>tool.name.endsWith('_recall')));
   let inferenceCalls=0;
   runtime.main.continue=async()=>{inferenceCalls++;};
-  runtime.dispatch(JSON.stringify({action:'send',text:'Stop this request: '+secret}));
+  runtime.dispatch(JSON.stringify({action:'send',text:'Stop this request: '+secret,voiceSessionId:voiceId}));
   await until(()=>!!releaseRecall);
   assert.equal(runtime.state().busy,true);
-  assert.equal(JSON.parse(runtime.dispatch(JSON.stringify({action:'stop_main'}))).ok,true);
+  assert.equal(JSON.parse(runtime.dispatch(JSON.stringify({action:'stop_main',voiceSessionId:voiceId}))).ok,true);
   releaseRecall!({content:[{type:'text',text:'Old context'}]});
   await until(()=>!runtime.state().busy);
   assert.equal(inferenceCalls,0,'an abort before inference must not become a new provider request');
   assert.equal(runtime.state().mainInterrupted,true);
   assert.equal(runtime.state().messages.filter(message=>message.role==='assistant').length,0);
-  assert.ok(checkpoint.mainMessages.some((message:any)=>message.role==='user'));
+  assert.ok(!checkpoint.mainMessages.some((message:any)=>message.role==='user'),
+    'stopped instructions must not remain in the model transcript or checkpoint');
+  assert.equal(events.filter(event=>event.type==='voice_end'&&event.sessionId===voiceId).length,1,
+    'stopping during voice recall must release Android responding state');
+  runtime.dispatch(JSON.stringify({action:'send',text:'New harmless request'}));
+  await until(()=>inferenceCalls===1&&!runtime.state().busy);
+  assert.ok(!JSON.stringify(runtime.main.messages).includes('Stop this request'),
+    'later model context must not contain an actionable stopped instruction');
   assert.ok(querySeen.includes('[redacted]'));
   assert.ok(!querySeen.includes(secret));
   runtime.dispatch(JSON.stringify({action:'prepare_shutdown'}));

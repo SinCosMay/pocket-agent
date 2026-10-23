@@ -323,8 +323,21 @@ export class PocketRuntime {
         this.busy=true;this.mainInterrupted=false;this.lastError=null;this.mainTurns++;
         const stopSequence=this.mainStopSequence;
         this.speakingTurn=typeof item.voiceSessionId==='string'&&/^[a-f0-9-]{36}$/.test(item.voiceSessionId)?item.voiceSessionId:null;
-        this.main.agent.state.messages=[...this.main.messages,{role:'user',content:[{type:'text',text:prompt}],timestamp:Date.now()}];
         await this.injectMemory(this.main,'main',prompt);
+        // Recall can outlive a Stop request. Do not admit the request to model
+        // history (or a checkpoint) until recall has finished and Stop is checked.
+        if(this.mainStopSequence!==stopSequence||this.stoppingAll) {
+          this.main.agent.state.messages=previousMessages;
+          this.mainInterrupted=true;
+          if(this.speakingTurn)this.emit({type:'voice_end',sessionId:this.speakingTurn});
+          this.speakingTurn=null;this.busy=false;
+          this.deliveryTransaction=false;
+          this.dropPriorImages('main');this.releaseScreen('main');
+          if(!this.save())this.coalesce();
+          this.publish();
+          continue;
+        }
+        this.main.agent.state.messages=[...this.main.messages,{role:'user',content:[{type:'text',text:prompt}],timestamp:Date.now()}];
         // Never begin inference until queue removal, transcript delivery and the exact
         // completion receipt are durably committed together.
         if(!this.save()) {
@@ -339,7 +352,9 @@ export class PocketRuntime {
         }
         this.deliveryTransaction=false;
         if(this.mainStopSequence!==stopSequence||this.stoppingAll) {
+          this.main.agent.state.messages=previousMessages;
           this.mainInterrupted=true;
+          if(this.speakingTurn)this.emit({type:'voice_end',sessionId:this.speakingTurn});
           this.busy=false;this.speakingTurn=null;
           this.dropPriorImages('main');this.releaseScreen('main');this.save();this.publish();
           continue;
@@ -351,8 +366,8 @@ export class PocketRuntime {
           if(last?.role==='assistant'&&last.stopReason==='error')this.reportError(last.errorMessage??'Provider request failed');
           else if(last?.role==='assistant'&&last.stopReason!=='aborted') {
             const source=item.type==='completion'?'Worker completion (runtime-reported terminal state)':'User request';
-            this.hindsight.capture(source+': '+String(prompt).slice(0,4_200)
-              +'\nAssistant response (claims require evidence): '+messageText(last).slice(0,3_500),
+            this.hindsight.capture(source+': '+this.redact(String(prompt)).slice(0,4_200)
+              +'\nAssistant response (claims require evidence): '+this.redact(messageText(last)).slice(0,3_500),
               item.type==='completion'?'worker_outcome':'conversation');
             if(item.type==='user'&&typeof item.text==='string')this.queueObservation(item.text);
           }

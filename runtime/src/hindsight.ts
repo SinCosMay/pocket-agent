@@ -10,6 +10,7 @@ export type HindsightEvent={id:string,target:string,content:string,context:strin
 export class HindsightMemory {
   private pending:HindsightEvent[]=[];
   private flushing=false;
+  private flushRequested=false;
   constructor(private readonly mcp:McpToolRegistry,
     private readonly target:()=>string|undefined,
     private readonly persist:()=>boolean,
@@ -28,11 +29,21 @@ export class HindsightMemory {
 
   capture(content:string,context:'conversation'|'worker_outcome'):void {
     const target=this.target();
-    if(!target||!content.trim()||this.pending.length>=MAX_PENDING)return;
+    if(!target||!content.trim())return;
     const item:HindsightEvent={id:randomUUID(),target,context,
       content:this.redact(content).slice(0,MAX_EVENT_CHARS),timestamp:new Date().toISOString()};
+    // The native memory store remains authoritative. Prefer the current bank's
+    // newest events when the bounded transport backlog cannot be delivered.
+    const evictIndex=this.pending.length>=MAX_PENDING
+      ?Math.max(0,this.pending.findIndex(event=>event.target!==target)):-1;
+    const evicted=evictIndex>=0?this.pending.splice(evictIndex,1)[0]:undefined;
     this.pending.push(item);
-    if(!this.persist()){this.pending.pop();return;}
+    if(!this.persist()){
+      this.pending.pop();
+      if(evicted)this.pending.splice(evictIndex,0,evicted);
+      void this.flush();
+      return;
+    }
     void this.flush();
   }
 
@@ -47,7 +58,8 @@ export class HindsightMemory {
   }
 
   async flush():Promise<void> {
-    if(this.flushing||!this.target())return;
+    if(this.flushing){this.flushRequested=true;return;}
+    if(!this.target())return;
     this.flushing=true;
     try {
       while(true) {
@@ -61,9 +73,14 @@ export class HindsightMemory {
           });
           if(result===null)break; // Offline or not configured: keep the durable queue.
         } catch {break;}
-        this.pending.splice(index,1);
-        if(!this.persist()){this.pending.splice(index,0,item);break;}
+        const deliveredIndex=this.pending.findIndex(event=>event.id===item.id);
+        if(deliveredIndex<0)continue; // The bounded queue evicted it during this call.
+        this.pending.splice(deliveredIndex,1);
+        if(!this.persist()){this.pending.splice(deliveredIndex,0,item);break;}
       }
-    } finally {this.flushing=false;}
+    } finally {
+      this.flushing=false;
+      if(this.flushRequested){this.flushRequested=false;queueMicrotask(()=>void this.flush());}
+    }
   }
 }
