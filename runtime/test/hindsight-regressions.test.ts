@@ -191,13 +191,33 @@ test('a failed checkpoint after Stop does not replay the canceled request',async
   runtime.main.continue=async()=>{infer++;};
   runtime.dispatch(JSON.stringify({action:'send',text:'canceled command'}));
   await until(()=>!!releaseRecall);
-  runtime.dispatch(JSON.stringify({action:'stop_main'}));
   failNextSave=1;
+  const refused=JSON.parse(runtime.dispatch(JSON.stringify({action:'stop_main'})));
+  assert.equal(refused.ok,false,'Stop cannot acknowledge an unpersisted cancellation');
+  assert.equal((runtime as any).inbox.length,1,'failed Stop retains the active request');
+  const accepted=JSON.parse(runtime.dispatch(JSON.stringify({action:'stop_main'})));
+  assert.equal(accepted.ok,true);
+  const durableAtStop=structuredClone(checkpoint);
+  assert.equal(durableAtStop.inbox?.length,0,'the Stop receipt must already exclude the request');
+  assert.ok(!JSON.stringify(durableAtStop.mainMessages).includes('canceled command'));
+  let replayedInference=0;
+  const reopened=new PocketRuntime({
+    call(method:string,json:string):string {
+      if(method==='store.load')return JSON.stringify({ok:true,result:durableAtStop});
+      if(method==='store.save')return JSON.stringify({ok:true,result:{}});
+      return bridge.call(method,json);
+    },
+    emit(_json:string):void{},
+  },undefined,async()=>({client:{close:async()=>{},callTool:async()=>({content:[]})},tools:advertised}) as any);
+  reopened.main.continue=async()=>{replayedInference++;};
+  await new Promise(resolve=>setTimeout(resolve,60));
+  assert.equal(replayedInference,0,'the saved Stop checkpoint must never replay after restart');
+  reopened.dispatch(JSON.stringify({action:'prepare_shutdown'}));
   releaseRecall!({content:[{type:'text',text:'old recall'}]});
   await until(()=>!runtime.state().busy);
   assert.equal(infer,0);
   assert.equal((runtime as any).inbox.length,0);
-  await until(()=>failNextSave===0&&checkpoint.inbox?.length===0);
+  await until(()=>failNextSave<0&&checkpoint.inbox?.length===0);
   assert.ok(!JSON.stringify(checkpoint.mainMessages).includes('canceled command'));
   runtime.dispatch(JSON.stringify({action:'send',text:'new command'}));
   await until(()=>infer===1&&!runtime.state().busy);

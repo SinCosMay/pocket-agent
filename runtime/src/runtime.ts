@@ -8,7 +8,7 @@ import {memoryTools,recallBlock,MEMORY_GUIDANCE,MEMORY_TOOL_NAMES} from './memor
 import { messageText } from './scripted.js';
 import { modelFor,makeStream,normalizeReasoningEffort,REASONING_EFFORTS,type ReasoningEffort } from './provider.js';
 import { discoverProviderModels, type CatalogModel } from './model-catalog.js';
-import { registerCodexCredentialUpdater,redactProviderSecrets,hasPendingCodexRefresh } from './codex-auth.js';
+import { registerCodexCredentialUpdater,providerSecretVariants,hasPendingCodexRefresh } from './codex-auth.js';
 import { McpToolRegistry,isHindsightBank,validateMcpServer,type McpConnector } from './mcp.js';
 import { HindsightMemory } from './hindsight.js';
 
@@ -61,6 +61,7 @@ export class PocketRuntime {
   private deliveryTransaction=false;
   private speakingTurn:string|null=null;
   private mainStopSequence=0;
+  private mainRecallAbort?:AbortController;
   private observationPending:string[]=[];
   private observing=false;
   private observerSession?:MobileSession;
@@ -71,7 +72,24 @@ export class PocketRuntime {
   private cachedModels?:{at:number,models:CatalogModel[]};
   private readonly workerReasoningProofs=new Map<string,{model:string,levels:ReasoningEffort[]}>();
   private catalogEpoch=0;
-  private redact=(text:string)=>{for(const credentials of this.credentialHistory){text=redactProviderSecrets(text,credentials);for(const server of credentials.mcpServers??[]){const secrets=[server?.bearerToken,server?.headerValue,...(Array.isArray(server?.headers)?server.headers.map((header:any)=>header?.value):[])];const variants=new Set<string>();for(const raw of secrets)if(typeof raw==='string'&&raw){for(const secret of [raw,raw.replace(/^(?:Bearer|Basic)\s+/i,'')])if(secret){variants.add(secret);variants.add(JSON.stringify(secret).slice(1,-1));}}for(const secret of [...variants].sort((a,b)=>b.length-a.length))text=text.replaceAll(secret,'[redacted]');}}return text;};
+  private redact=(text:string)=>{
+    const variants=new Set<string>();
+    for(const credentials of this.credentialHistory) {
+      for(const secret of providerSecretVariants(credentials))variants.add(secret);
+      for(const server of credentials.mcpServers??[]) {
+        const secrets=[server?.bearerToken,server?.headerValue,
+          ...(Array.isArray(server?.headers)?server.headers.map((header:any)=>header?.value):[])];
+        for(const raw of secrets)if(typeof raw==='string'&&raw) {
+          for(const secret of [raw,raw.replace(/^(?:Bearer|Basic)\s+/i,'')])if(secret) {
+            variants.add(secret);
+            variants.add(JSON.stringify(secret).slice(1,-1));
+          }
+        }
+      }
+    }
+    for(const secret of [...variants].sort((a,b)=>b.length-a.length))text=text.replaceAll(secret,'[redacted]');
+    return text;
+  };
   private redactJson=(value:any)=>JSON.stringify(value,(_key,child)=>typeof child==='string'?this.redact(child):child);
   private sanitize=(text:string)=>this.redact(text).slice(0,2000);
   private readonly mcp:McpToolRegistry;
@@ -235,7 +253,7 @@ export class PocketRuntime {
       conversation.setEffectiveConfig({cwd:'.',model:session.agent.state.model.id,skills:[],tools:session.agent.state.tools.map((x:any)=>x.name)});
       const abort=()=>void session?.abort();signal?.addEventListener('abort',abort,{once:true});
       try {
-        await this.injectMemory(session,conversation.conversationId,generation.prompt);
+        await this.injectMemory(session,conversation.conversationId,generation.prompt,signal);
         if(signal?.aborted)return interruptedGeneration(conversation,generation,'Worker request aborted');
         await session.prompt(generation.prompt);
       } finally {signal?.removeEventListener('abort',abort);}
@@ -246,12 +264,27 @@ export class PocketRuntime {
     } catch(e){return errorGeneration(conversation,generation,this.sanitize(String(e)));}
     finally {this.dropPriorImages(conversation.conversationId);this.releaseScreen(conversation.conversationId);this.save();this.publish();}
   };
-  private async injectMemory(session:MobileSession,owner:string,query:string):Promise<void> {
-    const remote=await this.hindsight.recall(query);
+  private async injectMemory(session:MobileSession,owner:string,query:string,signal?:AbortSignal):Promise<void> {
+    let remote:string;
+    if(signal) {
+      let onAbort:()=>void=()=>{};
+      const aborted=new Promise<string>(resolve=>{
+        onAbort=()=>resolve('');
+        if(signal.aborted)onAbort();
+        else signal.addEventListener('abort',onAbort,{once:true});
+      });
+      try {remote=await Promise.race([this.hindsight.recall(query),aborted]);}
+      finally {signal.removeEventListener('abort',onAbort);}
+      if(signal.aborted)return;
+    } else remote=await this.hindsight.recall(query);
     const initial=owner==='main'?this.mainSystemPrompt:(this.registry.agents.get('researcher') && session.agent.state.systemPrompt.startsWith('Read-only bounded worker')?'Read-only bounded worker. Report evidence and uncertainty.':WORKER_PROMPT);
     const messages=session.agent.state.messages;
     if(messages[0]?.role!=='system')throw Error('Memory injection requires a system transcript');
     session.agent.state.messages=[{...messages[0],content:initial+'\n'+MEMORY_GUIDANCE+recallBlock(this,owner,query)+remote},...messages.slice(1)];
+  }
+  private finishSpeakingTurn():void {
+    if(this.speakingTurn)this.emit({type:'voice_end',sessionId:this.speakingTurn});
+    this.speakingTurn=null;
   }
   dropPriorImages(owner:string):void {(owner==='main'?this.main:this.sessions.get(owner))?.dropPriorImages();}
   async ensureDisplay(owner:string,signal?:AbortSignal):Promise<any> {
@@ -314,7 +347,7 @@ export class PocketRuntime {
       while(this.inbox.length&&!this.stoppingAll&&!this.mainPaused) {
         if(this.main.full()){this.mainPaused=true;this.reportError('Main conversation reached the mobile context limit; pending results and history were retained.');this.save();break;}
         this.deliveryTransaction=true;
-        const item=this.inbox.shift();
+        const item=this.inbox[0];
         const previousMessages=this.main.agent.state.messages;
         const previousTurns=this.mainTurns,previousInterrupted=this.mainInterrupted,previousSpeaking=this.speakingTurn;
         let completion:any,receiptBefore:any,deliveredAdded=false;
@@ -323,19 +356,24 @@ export class PocketRuntime {
           const c=this.runtime.generationCaller(item).conversation,g=c.generation(item.generation)!;
           completion={c,g};receiptBefore=g.receipts.model;
           prompt=`[Worker completion] ${item.conversationId} generation ${item.generation}: ${JSON.stringify(g.state)}`;
-          deliveredAdded=!this.delivered.has(item.key);this.delivered.add(item.key);c.markCollected(g,'model');
         }
         this.busy=true;this.mainInterrupted=false;this.lastError=null;this.mainTurns++;
         const stopSequence=this.mainStopSequence;
         this.speakingTurn=typeof item.voiceSessionId==='string'&&/^[a-f0-9-]{36}$/.test(item.voiceSessionId)?item.voiceSessionId:null;
-        await this.injectMemory(this.main,'main',prompt);
+        const recallAbort=new AbortController();
+        this.mainRecallAbort=recallAbort;
+        try {await this.injectMemory(this.main,'main',prompt,recallAbort.signal);}
+        finally {if(this.mainRecallAbort===recallAbort)this.mainRecallAbort=undefined;}
         // Recall can outlive a Stop request. Do not admit the request to model
         // history (or a checkpoint) until recall has finished and Stop is checked.
         if(this.mainStopSequence!==stopSequence||this.stoppingAll) {
           this.main.agent.state.messages=previousMessages;
           this.mainInterrupted=true;
-          if(this.speakingTurn)this.emit({type:'voice_end',sessionId:this.speakingTurn});
-          this.speakingTurn=null;this.busy=false;
+          this.finishSpeakingTurn();this.busy=false;
+          if(item.type==='user') {
+            const index=this.inbox.indexOf(item);
+            if(index>=0)this.inbox.splice(index,1);
+          } else this.mainPaused=true;
           this.deliveryTransaction=false;
           this.recoverUndeliveredCompletions();
           this.dropPriorImages('main');this.releaseScreen('main');
@@ -344,6 +382,12 @@ export class PocketRuntime {
           continue;
         }
         this.main.agent.state.messages=[...this.main.messages,{role:'user',content:[{type:'text',text:prompt}],timestamp:Date.now()}];
+        if(this.inbox[0]!==item)throw new Error('Active main delivery changed before commit');
+        this.inbox.shift();
+        if(completion) {
+          deliveredAdded=!this.delivered.has(item.key);
+          this.delivered.add(item.key);completion.c.markCollected(completion.g,'model');
+        }
         // Never begin inference until queue removal, transcript delivery and the exact
         // completion receipt are durably committed together.
         if(!this.save()) {
@@ -362,8 +406,7 @@ export class PocketRuntime {
         if(this.mainStopSequence!==stopSequence||this.stoppingAll) {
           this.main.agent.state.messages=previousMessages;
           this.mainInterrupted=true;
-          if(this.speakingTurn)this.emit({type:'voice_end',sessionId:this.speakingTurn});
-          this.busy=false;this.speakingTurn=null;
+          this.finishSpeakingTurn();this.busy=false;
           this.dropPriorImages('main');this.releaseScreen('main');this.save();this.publish();
           continue;
         }
@@ -381,8 +424,7 @@ export class PocketRuntime {
           }
         }catch(e){this.reportError(e);}
         finally {
-          if(this.speakingTurn)this.emit({type:'voice_end',sessionId:this.speakingTurn});
-          this.speakingTurn=null;
+          this.finishSpeakingTurn();
           this.busy=false;this.dropPriorImages('main');this.releaseScreen('main');this.save();this.publish();void this.observePending();
         }
       }
@@ -442,20 +484,56 @@ export class PocketRuntime {
         }
       } else if(cmd.action==='stop_main') {
         if(cmd.voiceSessionId===undefined) {
-          if(this.busy)this.mainStopSequence++;
+          // During recall the active request has not yet been removed from the
+          // durable inbox. Commit its cancellation before acknowledging Stop.
+          if(this.mainRecallAbort&&this.inbox.length) {
+            const previousInbox=this.inbox,previousPaused=this.mainPaused;
+            if(this.inbox[0].type==='user')this.inbox=this.inbox.slice(1);
+            else this.mainPaused=true; // Worker completions remain pending for a later turn.
+            if(!this.save()) {
+              this.inbox=previousInbox;this.mainPaused=previousPaused;
+              throw new Error('Could not durably cancel the active main request');
+            }
+          }
+          if(this.busy) {
+            this.mainStopSequence++;
+            this.mainRecallAbort?.abort();
+            this.finishSpeakingTurn();
+          }
           this.main.agent.abort();
         }
         else {
           const sessionId=cmd.voiceSessionId;
           if(typeof sessionId!=='string'||!/^[a-f0-9-]{36}$/.test(sessionId))
             throw new Error('Invalid voice session identifier for scoped stop');
+          const previousInbox=this.inbox;
+          const remaining=this.inbox.filter(item=>item.voiceSessionId!==sessionId);
+          if(remaining.length!==previousInbox.length) {
+            this.inbox=remaining;
+            if(!this.save()) {
+              this.inbox=previousInbox;
+              throw new Error('Could not durably cancel the voice request');
+            }
+          }
           // A late interruption must never abort a newer spoken response.
           // Also drop the old request if it was still waiting behind other work.
-          if(this.speakingTurn===sessionId){this.mainStopSequence++;this.main.agent.abort();}
-          this.inbox=this.inbox.filter(item=>item.voiceSessionId!==sessionId);
+          if(this.speakingTurn===sessionId) {
+            this.mainStopSequence++;
+            this.mainRecallAbort?.abort();
+            this.finishSpeakingTurn();
+            this.main.agent.abort();
+          }
         }
       }
-      else if(cmd.action==='stop_all')void this.stopAll().catch(this.reportError);
+      else if(cmd.action==='stop_all') {
+        const previousInbox=this.inbox,previousPaused=this.mainPaused;
+        this.inbox=[];this.mainPaused=true;
+        if(!this.save()) {
+          this.inbox=previousInbox;this.mainPaused=previousPaused;
+          throw new Error('Could not durably stop all work');
+        }
+        void this.stopAll().catch(this.reportError);
+      }
       else if(cmd.action==='cancel_worker')void this.runtime.cancelSubagent(cmd.conversationId,this.hostCaller(cmd.conversationId)).catch(this.reportError);
       else if(cmd.action==='steer_worker')void this.steer(cmd.conversationId,cmd.text,this.hostCaller(cmd.conversationId),'user').catch(this.reportError);
       else if(cmd.action==='inspect_worker') {
@@ -582,7 +660,7 @@ export class PocketRuntime {
     this.stoppingAll=true;
     let saved=false;
     try {
-      this.mainPaused=true;this.inbox=[];this.mainStopSequence++;this.main.agent.abort();this.observerSession?.abort();this.releaseScreen('main');
+      this.mainPaused=true;this.inbox=[];this.mainStopSequence++;this.mainRecallAbort?.abort();this.finishSpeakingTurn();this.main.agent.abort();this.observerSession?.abort();this.releaseScreen('main');
       // Child ownership cancellation is explicit through each owning caller.
       await Promise.allSettled(this.runtime.listConversations().filter(c=>c.currentGeneration).map(c=>{
         const parent=c.parentConversationId?this.runtime.generationCaller({conversationId:c.parentConversationId,generation:this.runtime.conversation(c.parentConversationId).generations.at(-1)!.generation}):undefined;
