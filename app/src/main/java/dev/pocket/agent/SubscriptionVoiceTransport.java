@@ -35,7 +35,7 @@ final class SubscriptionVoiceTransport implements AutoCloseable {
         this.callback = callback;
     }
 
-    synchronized void connect(long epoch, String accessToken, String accountId, boolean allowMicrophone) {
+    synchronized void connect(long epoch, String accessToken, String accountId) {
         if (disposed || epoch < 0) return;
         if (transport != null && activeEpoch == epoch) return;
         releaseCurrent();
@@ -84,7 +84,7 @@ final class SubscriptionVoiceTransport implements AutoCloseable {
                     }
                 });
         transport = next;
-        next.connect(epoch, allowMicrophone);
+        next.connect(epoch);
     }
 
     private synchronized boolean matches(long epoch) {

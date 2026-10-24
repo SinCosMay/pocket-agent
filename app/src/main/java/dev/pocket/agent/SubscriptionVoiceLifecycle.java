@@ -31,7 +31,7 @@ final class SubscriptionVoiceLifecycle {
     private final LinkedHashSet<String> delivered = new LinkedHashSet<>();
     private State state = State.CLOSED;
     private long epoch, connectionDeadline;
-    private boolean transportReady, capturingInitial, speechActive;
+    private boolean transportReady, microphoneReady, capturingInitial, speechActive;
     private String initialTranscript;
     private boolean listenAfterSpeech = true;
     private boolean allowMicrophone;
@@ -58,6 +58,7 @@ final class SubscriptionVoiceLifecycle {
     long epoch() { return epoch; }
     boolean microphoneAllowed() { return allowMicrophone; }
     boolean initialCaptureActive() { return capturingInitial; }
+    boolean microphoneStarted() { return microphoneReady; }
     boolean connecting(long id) { return id == epoch && state != State.CLOSED && !transportReady; }
 
     void wake(long nowMs) {
@@ -80,6 +81,7 @@ final class SubscriptionVoiceLifecycle {
         epoch++;
         allowMicrophone = microphone;
         transportReady = false;
+        microphoneReady = false;
         speechActive = false;
         initialTranscript = null;
         connectionDeadline = nowMs + CONNECT_MS;
@@ -115,6 +117,13 @@ final class SubscriptionVoiceLifecycle {
     }
 
     void initialCaptureUnavailable(long id) { initialCaptured(id, null); }
+
+    void microphoneReady(long id) {
+        if (id != epoch || state == State.CLOSED || !transportReady
+                || !allowMicrophone || capturingInitial || microphoneReady) return;
+        microphoneReady = true;
+        drain();
+    }
 
     private void sendInitialContext() {
         if (transportReady && initialTranscript != null) {
@@ -195,6 +204,10 @@ final class SubscriptionVoiceLifecycle {
             port.status("Listening to your first request");
             return;
         }
+        if (allowMicrophone && !microphoneReady) {
+            port.status("Starting voice microphone");
+            return;
+        }
         if (!speechActive && !turns.isEmpty() && turns.peekFirst().finished) {
             PiTurn turn = turns.removeFirst();
             String text = turn.output.toString().trim();
@@ -260,6 +273,7 @@ final class SubscriptionVoiceLifecycle {
         long oldEpoch = epoch;
         state = State.CLOSED;
         transportReady = false;
+        microphoneReady = false;
         capturingInitial = false;
         initialTranscript = null;
         // Detach voice delivery. Accepted Pi work continues in AgentService and

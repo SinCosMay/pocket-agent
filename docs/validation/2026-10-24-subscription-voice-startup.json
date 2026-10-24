@@ -53,6 +53,22 @@
     "The successful case used the complete updated SubscriptionVoiceContext.BASE_INSTRUCTIONS, an already-submitted initial transcript as developer context, then a mocked Pi result as speakable session context.",
     "Input audio must be active for the voice session timeline. An earlier probe with a suspended WebAudio clock acknowledged context without speaking.",
     "An earlier developer-context wording that asked the model to wait did not produce an answer. The updated wording explicitly permits subsequent speakable results.",
-    "The final protocol probe proves accepted context and matching assistant speech/audio, not Android recognition quality, actual Pi execution, or audible speaker routing."
-  ]
+    "The final protocol probe proves accepted context and matching assistant speech/audio, not Android recognition quality, actual Pi execution, or audible speaker routing.",
+    "A receive-only probe acknowledged speakable context but produced no assistant turn or audio. Output-only Android announcements now use the system TextToSpeech engine without a WebRTC call or microphone. This does not validate actual system-engine audibility."
+  ],
+  "receive_only_without_input": {
+    "mode": "recvonly",
+    "events": [
+      "session.context.appended",
+      "session.started",
+      "session.usage.updated"
+    ],
+    "errors": [],
+    "delegations": [],
+    "assistant_turns": [],
+    "http_status": 201,
+    "offer_seconds": 1.91,
+    "connected_seconds": 3.89,
+    "audio_packets": 0
+  }
 }

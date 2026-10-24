@@ -38,11 +38,9 @@ import org.webrtc.DataChannel;
 import org.webrtc.IceCandidate;
 import org.webrtc.MediaConstraints;
 import org.webrtc.MediaStream;
-import org.webrtc.MediaStreamTrack;
 import org.webrtc.PeerConnection;
 import org.webrtc.PeerConnectionFactory;
 import org.webrtc.RtpReceiver;
-import org.webrtc.RtpTransceiver;
 import org.webrtc.SdpObserver;
 import org.webrtc.SessionDescription;
 import org.webrtc.audio.JavaAudioDeviceModule;
@@ -131,7 +129,6 @@ final class SubscriptionWebRtcTransport implements AutoCloseable {
 
     private static final class Session {
         final long epoch;
-        final boolean allowMicrophone;
         final String requestId = UUID.randomUUID().toString();
         final LinkedHashSet<String> delegations = new LinkedHashSet<>();
         final LinkedHashSet<String> pendingSpeech = new LinkedHashSet<>();
@@ -164,7 +161,7 @@ final class SubscriptionWebRtcTransport implements AutoCloseable {
         String clearEventId;
         boolean responseActive;
         boolean finished;
-        Session(long epoch, boolean microphone) { this.epoch = epoch; this.allowMicrophone = microphone; }
+        Session(long epoch) { this.epoch = epoch; }
     }
 
     SubscriptionWebRtcTransport(Context context, CredentialProvider credentials, Listener listener) {
@@ -178,7 +175,7 @@ final class SubscriptionWebRtcTransport implements AutoCloseable {
     }
 
     /** Asynchronous; repeated calls with the same epoch reuse the running session. */
-    void connect(long epoch, boolean microphone) {
+    void connect(long epoch) {
         if (disposed.get() || epoch < 0) return;
         failureEpoch.set(-1);
         wantedEpoch.set(epoch);
@@ -186,7 +183,7 @@ final class SubscriptionWebRtcTransport implements AutoCloseable {
             if (wantedEpoch.get() != epoch || disposed.get()) return;
             if (current != null && current.epoch == epoch) return;
             disposeSession();
-            Session session = new Session(epoch, microphone);
+            Session session = new Session(epoch);
             current = session;
             worker.postDelayed(() -> {
                 if (active(session) && !session.connectedNotified)
@@ -219,7 +216,7 @@ final class SubscriptionWebRtcTransport implements AutoCloseable {
         worker.post(() -> {
             Session session = current;
             if (!active(session) || session.epoch != epoch || !session.connectedNotified) return;
-            boolean recording = enabled && session.allowMicrophone;
+            boolean recording = enabled;
             if (recording == session.microphoneEnabled) return;
             try {
                 if (session.track != null) session.track.setEnabled(recording);
@@ -341,7 +338,7 @@ final class SubscriptionWebRtcTransport implements AutoCloseable {
 
     private void initialize(Session session) {
         try {
-            if (session.allowMicrophone && context.checkSelfPermission(Manifest.permission.RECORD_AUDIO)
+            if (context.checkSelfPermission(Manifest.permission.RECORD_AUDIO)
                     != PackageManager.PERMISSION_GRANTED) {
                 fail(session, "Microphone permission is required for subscription voice");
                 return;
@@ -394,18 +391,11 @@ final class SubscriptionWebRtcTransport implements AutoCloseable {
             // A disabled track alone still allows AudioRecord to own the mic.
             // Disable recording before applying SDP, not after the peer connects.
             session.peer.setAudioRecording(false);
-            if (session.allowMicrophone) {
-                session.microphone = session.factory.createAudioSource(new MediaConstraints());
-                session.track = session.factory.createAudioTrack("pocket-microphone", session.microphone);
-                session.track.setEnabled(false);
-                if (session.peer.addTrack(session.track, Collections.singletonList("pocket-audio")) == null)
-                    throw new IllegalStateException("WebRTC microphone track could not be added");
-            } else {
-                RtpTransceiver receiver = session.peer.addTransceiver(
-                    MediaStreamTrack.MediaType.MEDIA_TYPE_AUDIO,
-                    new RtpTransceiver.RtpTransceiverInit(RtpTransceiver.RtpTransceiverDirection.RECV_ONLY));
-                if (receiver == null) throw new IllegalStateException("WebRTC receive-only track unavailable");
-            }
+            session.microphone = session.factory.createAudioSource(new MediaConstraints());
+            session.track = session.factory.createAudioTrack("pocket-microphone", session.microphone);
+            session.track.setEnabled(false);
+            if (session.peer.addTrack(session.track, Collections.singletonList("pocket-audio")) == null)
+                throw new IllegalStateException("WebRTC microphone track could not be added");
             session.channel = session.peer.createDataChannel("oai-events", new DataChannel.Init());
             if (session.channel == null) throw new IllegalStateException("WebRTC data channel unavailable");
             session.channel.registerObserver(channelObserver(session));

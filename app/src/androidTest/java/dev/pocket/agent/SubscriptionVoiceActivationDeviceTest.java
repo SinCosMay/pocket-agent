@@ -11,10 +11,16 @@ import android.os.Build;
 import android.os.SystemClock;
 import android.media.AudioDeviceInfo;
 import android.media.AudioManager;
+import android.media.AudioAttributes;
+import android.speech.tts.TextToSpeech;
+import android.speech.tts.UtteranceProgressListener;
 import android.util.Base64;
 import androidx.test.ext.junit.runners.AndroidJUnit4;
 import androidx.test.platform.app.InstrumentationRegistry;
 import java.nio.charset.StandardCharsets;
+import java.util.ArrayList;
+import java.util.List;
+import java.util.Locale;
 import org.json.JSONObject;
 import org.junit.Test;
 import org.junit.runner.RunWith;
@@ -161,5 +167,88 @@ public final class SubscriptionVoiceActivationDeviceTest {
         while (audio.getMode() != AudioManager.MODE_NORMAL && SystemClock.elapsedRealtime() < deadline)
             SystemClock.sleep(50);
         assertEquals(AudioManager.MODE_NORMAL, audio.getMode());
+    }
+
+    private static final class FakeSpeechEngine implements SubscriptionVoiceOutputSpeech.Engine {
+        final TextToSpeech.OnInitListener init;
+        UtteranceProgressListener progress;
+        String utterance;
+        AudioAttributes attributes;
+        boolean closed;
+        int speakResult = TextToSpeech.SUCCESS;
+        FakeSpeechEngine(TextToSpeech.OnInitListener init) { this.init = init; }
+        @Override public int setLanguage(Locale locale) { return TextToSpeech.LANG_AVAILABLE; }
+        @Override public int setAudioAttributes(AudioAttributes value) { attributes = value; return TextToSpeech.SUCCESS; }
+        @Override public int setOnUtteranceProgressListener(UtteranceProgressListener value) {
+            progress = value; return TextToSpeech.SUCCESS;
+        }
+        @Override public int speak(String text, String value) { utterance = value; return speakResult; }
+        @Override public void stop() { }
+        @Override public void shutdown() { closed = true; }
+    }
+
+    private static SubscriptionVoiceOutputSpeech.Listener speechEvents(List<String> events) {
+        return new SubscriptionVoiceOutputSpeech.Listener() {
+            @Override public void ready(long epoch) { events.add("ready:" + epoch); }
+            @Override public void finished(long epoch) { events.add("finished:" + epoch); }
+            @Override public void failed(long epoch) { events.add("failed:" + epoch); }
+        };
+    }
+
+    @Test public void outputOnlySpeechIgnoresRetiredEnginesAndMatchesPlaybackCompletion() {
+        List<String> events = new ArrayList<>();
+        List<FakeSpeechEngine> engines = new ArrayList<>();
+        SubscriptionVoiceOutputSpeech output = new SubscriptionVoiceOutputSpeech(context(), speechEvents(events),
+            (ctx, init) -> { FakeSpeechEngine engine = new FakeSpeechEngine(init); engines.add(engine); return engine; });
+        android.app.Instrumentation instrumentation = InstrumentationRegistry.getInstrumentation();
+        try {
+            instrumentation.runOnMainSync(() -> {
+                output.connect(1);
+                output.connect(2);
+                engines.get(0).init.onInit(TextToSpeech.SUCCESS);
+                engines.get(1).init.onInit(TextToSpeech.SUCCESS);
+            });
+            instrumentation.waitForIdleSync();
+            assertEquals(List.of("ready:2"), events);
+            assertTrue(engines.get(0).closed);
+            assertEquals(AudioAttributes.USAGE_VOICE_COMMUNICATION, engines.get(1).attributes.getUsage());
+            instrumentation.runOnMainSync(() -> output.speak(2, "The task is finished."));
+            instrumentation.runOnMainSync(() -> output.connect(3));
+            engines.get(2).init.onInit(TextToSpeech.SUCCESS);
+            instrumentation.waitForIdleSync();
+            instrumentation.runOnMainSync(() -> output.speak(3, "The next announcement."));
+            engines.get(1).progress.onDone(engines.get(1).utterance);
+            engines.get(2).progress.onDone("stale-utterance");
+            instrumentation.waitForIdleSync();
+            assertEquals(List.of("ready:2", "ready:3"), events);
+            engines.get(2).progress.onDone(engines.get(2).utterance);
+            instrumentation.waitForIdleSync();
+            assertEquals(List.of("ready:2", "ready:3", "finished:3"), events);
+            // A duplicated completion must not drain the next announcement.
+            engines.get(2).progress.onDone(engines.get(2).utterance);
+            instrumentation.waitForIdleSync();
+            assertEquals(3, events.size());
+        } finally { instrumentation.runOnMainSync(output::close); }
+        assertTrue(engines.get(1).closed);
+        assertTrue(engines.get(2).closed);
+    }
+
+    @Test public void outputOnlySpeechReportsEngineFailureWithoutClaimingPlayback() {
+        List<String> events = new ArrayList<>();
+        List<FakeSpeechEngine> engines = new ArrayList<>();
+        SubscriptionVoiceOutputSpeech output = new SubscriptionVoiceOutputSpeech(context(), speechEvents(events),
+            (ctx, init) -> { FakeSpeechEngine engine = new FakeSpeechEngine(init); engines.add(engine); return engine; });
+        android.app.Instrumentation instrumentation = InstrumentationRegistry.getInstrumentation();
+        try {
+            instrumentation.runOnMainSync(() -> output.connect(3));
+            engines.get(0).init.onInit(TextToSpeech.SUCCESS);
+            instrumentation.waitForIdleSync();
+            engines.get(0).speakResult = TextToSpeech.ERROR;
+            instrumentation.runOnMainSync(() -> output.speak(3, "An announcement."));
+            engines.get(0).progress.onDone(engines.get(0).utterance);
+            instrumentation.waitForIdleSync();
+            assertEquals(List.of("ready:3", "failed:3"), events);
+            assertTrue(engines.get(0).closed);
+        } finally { instrumentation.runOnMainSync(output::close); }
     }
 }

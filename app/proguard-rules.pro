@@ -63,6 +63,8 @@
 -keep class dev.pocket.agent.SubscriptionVoiceFailureStore { *; }
 -keep class dev.pocket.agent.SubscriptionVoiceContext { *; }
 -keep class dev.pocket.agent.SubscriptionVoiceAudioRoute { *; }
+-keep class dev.pocket.agent.SubscriptionVoiceOutputSpeech** { *; }
+-keep interface dev.pocket.agent.SubscriptionVoiceOutputSpeech$* { *; }
 
 # WebRTC's JNI entry points reference org.webrtc classes by their original names.
 # Preserve JNI-visible classes/methods in the minified release APK.

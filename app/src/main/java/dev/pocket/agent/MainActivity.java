@@ -584,7 +584,7 @@ public final class MainActivity extends Activity implements AgentService.Observe
         }));
         String lastVoiceFailure = SubscriptionVoiceFailureStore.lastStatus(this);
         if (!lastVoiceFailure.isEmpty()) panel.addView(text(lastVoiceFailure));
-        panel.addView(text("Experimental: uses a separate protected ChatGPT voice login, independent of your chat model. Pi still runs tools. Legacy Android/Deepgram is unchanged when disabled. Voice disconnects after silence."));
+        panel.addView(text("Experimental: uses a protected ChatGPT voice login. Pi still runs tools. Subscription listening stays open during silence; use Stop voice to end it. Announcements without listening use the phone's speech voice."));
         panel.addView(text("Speech-to-text mode"));
         Spinner sttMode = new Spinner(this);
         String[] sttModeNames = {

@@ -82,6 +82,7 @@ final class SubscriptionVoiceFailureStore {
             return "ChatGPT voice rate limited";
         if (value.contains("network") || value.contains("connection") || value.contains("timed out"))
             return "Voice connection unavailable or timed out";
+        if (value.contains("phone speech audio")) return "Phone speech audio unavailable";
         if (value.contains("webrtc") || value.contains("native") || value.contains("audio"))
             return "Native voice audio failed to initialize";
         return "Subscription voice setup failed";
@@ -90,7 +91,7 @@ final class SubscriptionVoiceFailureStore {
     private static String safePhase(String phase) {
         if ("permissions".equals(phase) || "authentication".equals(phase)
                 || "webrtc".equals(phase) || "foreground".equals(phase)
-                || "connected".equals(phase)) return phase;
+                || "connected".equals(phase) || "playback".equals(phase)) return phase;
         return "startup";
     }
 }

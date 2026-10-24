@@ -21,7 +21,8 @@ import org.json.JSONObject;
 /**
  * Opt-in, standalone Codex-subscription voice foreground session. Pi remains the
  * sole agent harness; this service never exposes device tools to the voice model.
- * Only the worker-side SubscriptionVoiceTransport owns network/audio resources.
+ * SubscriptionVoiceTransport owns live audio; output-only announcements use
+ * Android speech synthesis without opening a microphone or a subscription call.
  */
 public final class SubscriptionVoiceService extends Service implements AgentService.Observer {
     static final String ACTION_WAKE = "dev.pocket.agent.SUBSCRIPTION_VOICE_WAKE";
@@ -40,12 +41,13 @@ public final class SubscriptionVoiceService extends Service implements AgentServ
     private SubscriptionVoiceLifecycle lifecycle;
     private SubscriptionVoiceTransport transport;
     private SubscriptionVoiceAudioRoute audioRoute;
+    private SubscriptionVoiceOutputSpeech outputSpeech;
     private AndroidDefaultSpeechRecognizer initialSpeech;
     private long initialCaptureEpoch = -1;
     private final Runnable initialCaptureTimeout = () -> finishInitialCapture(null);
+    private Runnable microphoneStartTimeout;
     private boolean started;
     private boolean wakeNeedsReadyCue;
-    private boolean microphoneForeground;
     private String startupPhase = "startup";
     private static volatile boolean active;
     static boolean isActive() { return active; }
@@ -91,6 +93,8 @@ public final class SubscriptionVoiceService extends Service implements AgentServ
             main.post(() -> {
                 if (!started || lifecycle.epoch() != epoch
                         || lifecycle.state() == SubscriptionVoiceLifecycle.State.CLOSED) return;
+                if (microphoneStartTimeout != null) main.removeCallbacks(microphoneStartTimeout);
+                lifecycle.microphoneReady(epoch);
                 if (wakeNeedsReadyCue) {
                     wakeNeedsReadyCue = false;
                     playReadyCue();
@@ -123,6 +127,11 @@ public final class SubscriptionVoiceService extends Service implements AgentServ
                 NotificationManager.IMPORTANCE_DEFAULT));
         transport = new SubscriptionVoiceTransport(getApplicationContext(), callbacks);
         audioRoute = new SubscriptionVoiceAudioRoute(this);
+        outputSpeech = new SubscriptionVoiceOutputSpeech(this, new SubscriptionVoiceOutputSpeech.Listener() {
+            @Override public void ready(long epoch) { callbacks.onConnected(epoch); }
+            @Override public void finished(long epoch) { callbacks.onPlaybackFinished(epoch); }
+            @Override public void failed(long epoch) { callbacks.onError(epoch, "Phone speech audio unavailable"); }
+        });
         lifecycle = new SubscriptionVoiceLifecycle(new SubscriptionVoiceLifecycle.Port() {
             @Override public boolean startInitialCapture(long epoch) {
                 return startInitialCaptureForWake(epoch);
@@ -130,11 +139,27 @@ public final class SubscriptionVoiceService extends Service implements AgentServ
             @Override public void setMicrophoneEnabled(boolean enabled) {
                 if (enabled && !ensureSpeakerRoute()) return;
                 transport.setMicrophoneEnabled(enabled);
+                if (microphoneStartTimeout != null) main.removeCallbacks(microphoneStartTimeout);
+                if (enabled && !lifecycle.microphoneStarted()) {
+                    long epoch = lifecycle.epoch();
+                    microphoneStartTimeout = () -> {
+                        if (started && lifecycle.epoch() == epoch && !lifecycle.microphoneStarted())
+                            lifecycle.failed(epoch, "Native microphone audio start timed out");
+                    };
+                    main.postDelayed(microphoneStartTimeout, 10_000);
+                }
             }
             @Override public void sendUserContext(String text) {
                 transport.sendUserContext(text);
             }
             @Override public void connect(long epoch, boolean allowMicrophone) {
+                if (!allowMicrophone) {
+                    startupPhase = "playback";
+                    SubscriptionVoiceFailureStore.phase(SubscriptionVoiceService.this, startupPhase);
+                    notifyStatus("Preparing phone speech");
+                    outputSpeech.connect(epoch);
+                    return;
+                }
                 if (allowMicrophone && checkSelfPermission(Manifest.permission.RECORD_AUDIO) != PackageManager.PERMISSION_GRANTED) {
                     lifecycle.failed(epoch, "Microphone permission is required for subscription voice");
                     return;
@@ -167,7 +192,7 @@ public final class SubscriptionVoiceService extends Service implements AgentServ
                         startupPhase = "webrtc";
                         SubscriptionVoiceFailureStore.phase(SubscriptionVoiceService.this, startupPhase);
                         notifyStatus("Connecting ChatGPT voice audio");
-                        try { transport.connect(epoch, ready.access, ready.account, allowMicrophone); }
+                        try { transport.connect(epoch, ready.access, ready.account); }
                         catch (RuntimeException invalid) {
                             lifecycle.failed(epoch, "Unable to initialize native voice audio");
                         }
@@ -176,7 +201,9 @@ public final class SubscriptionVoiceService extends Service implements AgentServ
             }
             @Override public void close(long epoch) {
                 stopInitialCapture();
+                if (microphoneStartTimeout != null) main.removeCallbacks(microphoneStartTimeout);
                 transport.close(epoch);
+                outputSpeech.close(epoch);
                 audioRoute.close();
             }
             @Override public void sendToPi(String turnId, String utterance) {
@@ -188,7 +215,9 @@ public final class SubscriptionVoiceService extends Service implements AgentServ
                 }
             }
             @Override public void sendSpeech(String delegationId, String text) {
-                if (ensureSpeakerRoute()) transport.sendSpeech(delegationId, text);
+                if (!ensureSpeakerRoute()) return;
+                if (lifecycle.microphoneAllowed()) transport.sendSpeech(delegationId, text);
+                else outputSpeech.speak(lifecycle.epoch(), text);
             }
             @Override public void interruptSpeech() { transport.interruptSpeech(); }
             @Override public void announcementFailed(String id, String reason) {
@@ -345,7 +374,8 @@ public final class SubscriptionVoiceService extends Service implements AgentServ
                 return START_NOT_STICKY;
             }
         }
-        boolean needsMicrophone = wake || pendingAnnouncement.listenAfter || microphoneForeground;
+        boolean needsMicrophone = wake || pendingAnnouncement.listenAfter
+            || (lifecycle.state() != SubscriptionVoiceLifecycle.State.CLOSED && lifecycle.microphoneAllowed());
         if (lifecycle.state() == SubscriptionVoiceLifecycle.State.CLOSED) {
             startupPhase = "foreground";
             SubscriptionVoiceFailureStore.starting(this, startupPhase);
@@ -354,7 +384,6 @@ public final class SubscriptionVoiceService extends Service implements AgentServ
             int serviceType = ServiceInfo.FOREGROUND_SERVICE_TYPE_MEDIA_PLAYBACK;
             if (needsMicrophone) serviceType |= ServiceInfo.FOREGROUND_SERVICE_TYPE_MICROPHONE;
             startForeground(NOTIFICATION_ID, notification("Preparing ChatGPT voice"), serviceType);
-            microphoneForeground = needsMicrophone;
         } catch (RuntimeException denied) {
             Log.w("PocketSubscriptionVoice", "Voice foreground service denied");
             SubscriptionVoiceFailureStore.failed(this, "foreground", "Microphone permission unavailable");
@@ -427,6 +456,7 @@ public final class SubscriptionVoiceService extends Service implements AgentServ
         stopInitialCapture();
         if (lifecycle != null) lifecycle.close();
         if (transport != null) transport.close();
+        if (outputSpeech != null) outputSpeech.close();
         if (audioRoute != null) audioRoute.close();
         SubscriptionVoiceFailureStore.normalStop(this);
         credentialWorker.shutdownNow();
