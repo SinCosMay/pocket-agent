@@ -3,6 +3,7 @@ package dev.pocket.agent;
 import android.content.Context;
 import android.media.AudioDeviceInfo;
 import android.media.AudioManager;
+import android.util.Log;
 
 /** Main-looper-owned speaker route, released with the voice session. */
 final class SubscriptionVoiceAudioRoute implements AutoCloseable {
@@ -31,7 +32,8 @@ final class SubscriptionVoiceAudioRoute implements AutoCloseable {
                 }
             }
         } catch (RuntimeException unavailable) {
-            // The service reports route failure without exposing platform details.
+            Log.w("PocketSubscriptionVoice", "Speaker route unavailable ("
+                + unavailable.getClass().getSimpleName() + ")");
         }
         close();
         return false;

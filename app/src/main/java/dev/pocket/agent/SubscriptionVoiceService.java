@@ -134,7 +134,12 @@ public final class SubscriptionVoiceService extends Service implements AgentServ
         });
         lifecycle = new SubscriptionVoiceLifecycle(new SubscriptionVoiceLifecycle.Port() {
             @Override public boolean startInitialCapture(long epoch) {
-                return startInitialCaptureForWake(epoch);
+                try { return startInitialCaptureForWake(epoch); }
+                catch (RuntimeException unavailable) {
+                    stopInitialCapture();
+                    showInitialCaptureFallback();
+                    return false;
+                }
             }
             @Override public void setMicrophoneEnabled(boolean enabled) {
                 if (enabled && !ensureSpeakerRoute()) return;
@@ -244,13 +249,22 @@ public final class SubscriptionVoiceService extends Service implements AgentServ
 
     private boolean startInitialCaptureForWake(long epoch) {
         stopInitialCapture();
-        if (!AndroidDefaultSpeechRecognizer.supported(this)) return false;
+        if (!AndroidDefaultSpeechRecognizer.supported(this)) {
+            showInitialCaptureFallback();
+            return false;
+        }
         initialCaptureEpoch = epoch;
         initialSpeech = new AndroidDefaultSpeechRecognizer(this,
             new AndroidDefaultSpeechRecognizer.Callback() {
+                private boolean readyCued;
                 private boolean current() { return started && initialCaptureEpoch == epoch; }
                 @Override public void onReady() {
-                    if (current()) notifyStatus("Listening now · voice is connecting");
+                    if (!current()) return;
+                    notifyStatus("Listening now · speak after the cue");
+                    if (!readyCued) {
+                        readyCued = true;
+                        playReadyCue();
+                    }
                 }
                 @Override public void onSpeechStarted() { }
                 @Override public void onSpeechEnded() {
@@ -269,6 +283,7 @@ public final class SubscriptionVoiceService extends Service implements AgentServ
             });
         if (!initialSpeech.start()) {
             stopInitialCapture();
+            showInitialCaptureFallback();
             return false;
         }
         main.postDelayed(initialCaptureTimeout, 60_000);
@@ -285,11 +300,15 @@ public final class SubscriptionVoiceService extends Service implements AgentServ
             lifecycle.initialCaptured(epoch, text);
         } else {
             // Never execute an incomplete partial transcript as a full command.
-            android.widget.Toast.makeText(this,
-                "First transcript unavailable · speak after the voice-ready cue",
-                android.widget.Toast.LENGTH_LONG).show();
+            showInitialCaptureFallback();
             lifecycle.initialCaptureUnavailable(epoch);
         }
+    }
+
+    private void showInitialCaptureFallback() {
+        android.widget.Toast.makeText(this,
+            "First transcript unavailable · speak after the voice-ready cue",
+            android.widget.Toast.LENGTH_LONG).show();
     }
 
     private void stopInitialCapture() {
