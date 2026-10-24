@@ -126,7 +126,7 @@ final class SubscriptionVoiceLifecycle {
     /** Voice activity interrupts playback, never an accepted Pi task. */
     void transcriptActivity(long id, String text, long nowMs) {
         if (id != epoch || !allowMicrophone || state == State.CLOSED ||
-                text == null || text.isBlank()) return;
+                text == null || text.trim().isEmpty()) return;
         if (state == State.SPEAKING) inputInterrupted(id, nowMs);
     }
 

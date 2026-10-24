@@ -57,7 +57,8 @@ final class SubscriptionVoiceFailureStore {
         String version = state.getString(VERSION, "");
         String phase = state.getString(PHASE, "startup");
         if ("starting".equals(kind)) {
-            if (System.currentTimeMillis() - state.getLong(WHEN, 0) < PENDING_GRACE_MS)
+            if (SubscriptionVoiceService.isActive()
+                    || System.currentTimeMillis() - state.getLong(WHEN, 0) < PENDING_GRACE_MS)
                 return "ChatGPT voice is starting (" + phase + ")";
             return "Previous voice activation stopped before readiness (" + phase
                     + "). Check the build's Android crash log. Build: " + version;

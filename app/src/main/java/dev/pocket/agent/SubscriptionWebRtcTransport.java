@@ -233,7 +233,7 @@ final class SubscriptionWebRtcTransport implements AutoCloseable {
 
     /** Context for a first turn already durably submitted to Pi by Android STT. */
     void sendUserContext(long epoch, String text) {
-        if (text == null || text.isBlank() || text.length() > MAX_SPEECH_CHARS) return;
+        if (text == null || text.trim().isEmpty() || text.length() > MAX_SPEECH_CHARS) return;
         worker.post(() -> {
             Session session = current;
             if (!active(session) || session.epoch != epoch || !session.connectedNotified) return;
@@ -253,7 +253,7 @@ final class SubscriptionWebRtcTransport implements AutoCloseable {
     }
 
     void sendSpeech(long epoch, String delegationId, String text) {
-        if (text == null || text.isBlank() || text.length() > MAX_SPEECH_CHARS) return;
+        if (text == null || text.trim().isEmpty() || text.length() > MAX_SPEECH_CHARS) return;
         worker.post(() -> {
             Session session = current;
             if (!active(session) || session.epoch != epoch || !session.connectedNotified) return;
@@ -794,8 +794,8 @@ final class SubscriptionWebRtcTransport implements AutoCloseable {
             case "session.input_transcript.added":
             case "input_transcript.added": {
                 String input = event.optString("delta", "");
-                if (input.isBlank()) input = textOf(event);
-                if (session.microphoneEnabled && !input.isBlank() && input.length() <= MAX_SPEECH_CHARS) {
+                if (input.trim().isEmpty()) input = textOf(event);
+                if (session.microphoneEnabled && !input.trim().isEmpty() && input.length() <= MAX_SPEECH_CHARS) {
                     String spoken = input;
                     // Input transcripts are speech evidence on GPT-Live v3; the
                     // protocol does not guarantee legacy VAD start/stop events.
@@ -809,8 +809,8 @@ final class SubscriptionWebRtcTransport implements AutoCloseable {
                 String id = item.optString("id");
                 if (id.isEmpty() || session.delegations.contains(id)) return;
                 String spoken = textOf(item);
-                if (spoken.isBlank()) spoken = textOf(event);
-                if (spoken.isBlank() || !session.delegations.add(id)) return;
+                if (spoken.trim().isEmpty()) spoken = textOf(event);
+                if (spoken.trim().isEmpty() || !session.delegations.add(id)) return;
                 if (session.delegations.size() > 512)
                     session.delegations.remove(session.delegations.iterator().next());
                 String requestText = spoken;
@@ -824,7 +824,7 @@ final class SubscriptionWebRtcTransport implements AutoCloseable {
             case "conversation.item.input_audio_transcription.delta": {
                 if (!session.microphoneEnabled) break;
                 String spoken = textOf(event);
-                if (!spoken.isBlank())
+                if (!spoken.trim().isEmpty())
                     onMain(session, () -> listener.onTranscript(session.epoch, spoken));
                 else
                     onMain(session, () -> listener.onActivity(session.epoch));
@@ -840,7 +840,7 @@ final class SubscriptionWebRtcTransport implements AutoCloseable {
                     }
                 } else if (session.microphoneEnabled && turn != null && "user".equals(turn.optString("role"))) {
                     String spoken = textOf(event);
-                    if (!spoken.isBlank())
+                    if (!spoken.trim().isEmpty())
                         onMain(session, () -> listener.onTranscript(session.epoch, spoken));
                 }
                 // The assistant's own transcript must never trigger user barge-in.
@@ -935,13 +935,13 @@ final class SubscriptionWebRtcTransport implements AutoCloseable {
         if (depth > 6) return "";
         for (String key : new String[]{"transcript", "text", "input_text"}) {
             String value = event.optString(key);
-            if (!value.isBlank() && value.length() <= MAX_SPEECH_CHARS) return value;
+            if (!value.trim().isEmpty() && value.length() <= MAX_SPEECH_CHARS) return value;
         }
         for (String key : new String[]{"input", "item", "turn"}) {
             JSONObject nested = event.optJSONObject(key);
             if (nested != null) {
                 String value = textOf(nested, depth + 1);
-                if (!value.isBlank()) return value;
+                if (!value.trim().isEmpty()) return value;
             }
         }
         for (String key : new String[]{"content", "parts"}) {
@@ -951,7 +951,7 @@ final class SubscriptionWebRtcTransport implements AutoCloseable {
                 JSONObject part = parts.optJSONObject(i);
                 if (part != null) {
                     String value = textOf(part, depth + 1);
-                    if (!value.isBlank()) return value;
+                    if (!value.trim().isEmpty()) return value;
                 }
             }
         }

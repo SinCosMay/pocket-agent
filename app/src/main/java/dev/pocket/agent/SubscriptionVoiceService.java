@@ -9,7 +9,6 @@ import android.app.Service;
 import android.content.Intent;
 import android.content.pm.PackageManager;
 import android.content.pm.ServiceInfo;
-import android.os.Build;
 import android.os.Handler;
 import android.os.IBinder;
 import android.os.Looper;
@@ -197,7 +196,7 @@ public final class SubscriptionVoiceService extends Service implements AgentServ
             }
             @Override public void failure(String safeMessage) {
                 String reason = SubscriptionVoiceFailureStore.safeReason(safeMessage);
-                SubscriptionVoiceFailureStore.failed(SubscriptionVoiceService.this, startupPhase, reason);
+                SubscriptionVoiceFailureStore.failed(SubscriptionVoiceService.this, startupPhase, safeMessage);
                 notifyFailure(reason);
             }
             @Override public void status(String status) {
@@ -252,7 +251,7 @@ public final class SubscriptionVoiceService extends Service implements AgentServ
         if (epoch < 0) return;
         stopInitialCapture();
         if (!started || lifecycle == null || lifecycle.epoch() != epoch) return;
-        if (text != null && !text.isBlank()) {
+        if (text != null && !text.trim().isEmpty()) {
             wakeNeedsReadyCue = false;
             lifecycle.initialCaptured(epoch, text);
         } else {
@@ -352,11 +351,9 @@ public final class SubscriptionVoiceService extends Service implements AgentServ
             SubscriptionVoiceFailureStore.starting(this, startupPhase);
         }
         try {
-            if (Build.VERSION.SDK_INT >= 34) {
-                int serviceType = ServiceInfo.FOREGROUND_SERVICE_TYPE_MEDIA_PLAYBACK;
-                if (needsMicrophone) serviceType |= ServiceInfo.FOREGROUND_SERVICE_TYPE_MICROPHONE;
-                startForeground(NOTIFICATION_ID, notification("Preparing ChatGPT voice"), serviceType);
-            } else startForeground(NOTIFICATION_ID, notification("Preparing ChatGPT voice"));
+            int serviceType = ServiceInfo.FOREGROUND_SERVICE_TYPE_MEDIA_PLAYBACK;
+            if (needsMicrophone) serviceType |= ServiceInfo.FOREGROUND_SERVICE_TYPE_MICROPHONE;
+            startForeground(NOTIFICATION_ID, notification("Preparing ChatGPT voice"), serviceType);
             microphoneForeground = needsMicrophone;
         } catch (RuntimeException denied) {
             Log.w("PocketSubscriptionVoice", "Voice foreground service denied");

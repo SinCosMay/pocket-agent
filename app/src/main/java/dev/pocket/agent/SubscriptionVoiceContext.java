@@ -58,7 +58,7 @@ final class SubscriptionVoiceContext {
             String role = message.optString("role", "");
             Object raw = message.opt("text");
             if (!(role.equals("user") || role.equals("assistant"))
-                    || !(raw instanceof String) || ((String) raw).isBlank()) continue;
+                    || !(raw instanceof String) || ((String) raw).trim().isEmpty()) continue;
             JSONObject item = new JSONObject().put("role", role)
                     .put("text", clip((String) raw, MAX_MESSAGE_CHARS));
             int size = item.toString().length() + 1;

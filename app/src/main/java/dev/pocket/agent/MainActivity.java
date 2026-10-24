@@ -111,8 +111,10 @@ public final class MainActivity extends Activity implements AgentService.Observe
         controls.addView(button("Stop all", () -> {
             if (AgentService.isRunning()) startService(new Intent(this, AgentService.class).setAction(AgentService.ACTION_STOP));
         })); root.addView(controls);
-        root.addView(button("Stop voice listening", () -> startService(new Intent(this,
-            VoiceListeningService.class).setAction(VoiceListeningService.ACTION_STOP))));
+        root.addView(button("Stop voice listening", () -> {
+            stopService(new Intent(this, VoiceListeningService.class));
+            stopService(new Intent(this, SubscriptionVoiceService.class));
+        }));
         setContentView(root);
     }
     @Override protected void onStart() {
@@ -572,6 +574,7 @@ public final class MainActivity extends Activity implements AgentService.Observe
         panel.addView(button("Disconnect ChatGPT voice account", () -> {
             if (activeWork()) { toast("Stop active work before changing voice login"); return; }
             try {
+                stopService(new Intent(this, SubscriptionVoiceService.class));
                 credentials.signOutVoiceCodex();
                 invalidateAccountOperations();
                 if (AgentService.isRunning()) command(json("action", "configure"));
