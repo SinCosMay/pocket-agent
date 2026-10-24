@@ -10,7 +10,6 @@ public final class SubscriptionVoiceStartupSimulator {
         @Override public void connect(long epoch, boolean microphone) { }
         @Override public void close(long epoch) { }
         @Override public void sendToPi(String turnId, String utterance) { }
-        @Override public void cancelPi(String turnId) { }
         @Override public void sendSpeech(String delegationId, String text) { }
         @Override public void interruptSpeech() { }
         @Override public void status(String text) { statuses.add(text); }

@@ -1,59 +1,55 @@
 package dev.pocket.agent;
 
 import java.util.ArrayDeque;
-import java.util.HashSet;
-import java.util.Set;
+import java.util.LinkedHashSet;
 import java.util.UUID;
 
-/**
- * UI/Android-independent coordinator for a subscription realtime voice session.
- * A wake or speak_to_user request opens exactly one transport; all tool work stays
- * with the existing Pi main thread. Does not hold microphone/network resources.
- */
+/** Coordinates voice delivery. Pi owns accepted tasks independently of the call. */
 final class SubscriptionVoiceLifecycle {
     interface Port {
         void connect(long epoch, boolean allowMicrophone);
         void close(long epoch);
         void sendToPi(String turnId, String utterance);
-        void cancelPi(String turnId);
         void sendSpeech(String delegationId, String text);
         void interruptSpeech();
         void status(String text);
+        default boolean startInitialCapture(long epoch) { return false; }
+        default void setMicrophoneEnabled(boolean enabled) { }
+        default void sendUserContext(String text) { }
         default void failure(String safeMessage) { }
         void announcementFailed(String id, String reason);
     }
 
-    private static final long IDLE_MS = 3000L;
-    // Initial capture may precede the first delayed live transcript fragment.
-    private static final long FIRST_UTTERANCE_MS = 12_000L;
-    private static final long MAX_UTTERANCE_MS = 60_000L;
-    // Allow VAD finalization and delegation.created to arrive after speech stops.
-    private static final long POST_SPEECH_MS = 8_000L;
-    // Includes a bounded OAuth refresh followed by peer/sideband negotiation.
-    private static final long CONNECT_MS = 45000L;
+    private static final long CONNECT_MS = 45_000L;
     private static final int MAX_ANNOUNCEMENTS = 8;
+    private static final int MAX_PENDING_TURNS = 16;
     private static final int MAX_OUTPUT_CHARS = 8000;
     enum State { CLOSED, CONNECTING, LISTENING, WAITING_PI, SPEAKING }
     private final Port port;
     private final ArrayDeque<Announcement> announcements = new ArrayDeque<>();
-    private final Set<String> delivered = new HashSet<>();
+    private final ArrayDeque<PiTurn> turns = new ArrayDeque<>();
+    private final LinkedHashSet<String> delivered = new LinkedHashSet<>();
     private State state = State.CLOSED;
-    private long epoch, deadline;
-    private String turnId, delegationId;
-    private StringBuilder output;
+    private long epoch, connectionDeadline;
+    private boolean transportReady, capturingInitial, speechActive;
+    private String initialTranscript;
     private boolean listenAfterSpeech = true;
     private boolean allowMicrophone;
-    private boolean speechActive;
     private String activeAnnouncementId;
 
+    private static final class PiTurn {
+        final String id = UUID.randomUUID().toString();
+        final String delegationId;
+        final StringBuilder output = new StringBuilder();
+        boolean finished;
+        PiTurn(String delegationId) { this.delegationId = delegationId; }
+    }
+
     private static final class Announcement {
-        final String id;
-        final String text;
+        final String id, text;
         final boolean listenAfter;
         Announcement(String id, String text, boolean listenAfter) {
-            this.id = id;
-            this.text = text;
-            this.listenAfter = listenAfter;
+            this.id = id; this.text = text; this.listenAfter = listenAfter;
         }
     }
 
@@ -61,13 +57,12 @@ final class SubscriptionVoiceLifecycle {
     State state() { return state; }
     long epoch() { return epoch; }
     boolean microphoneAllowed() { return allowMicrophone; }
+    boolean initialCaptureActive() { return capturingInitial; }
+    boolean connecting(long id) { return id == epoch && state != State.CLOSED && !transportReady; }
 
     void wake(long nowMs) {
-        // A speech-only connection has no input track. A later explicit wake must
-        // establish a new microphone-authorized peer, never silently record.
         if (state != State.CLOSED && !allowMicrophone) close();
-        if (state == State.CLOSED) connect(nowMs, true);
-        else if (state == State.LISTENING) deadline = nowMs + IDLE_MS;
+        if (state == State.CLOSED) connect(nowMs, true, true);
     }
 
     boolean announce(String id, String text, boolean listenAfter, long nowMs) {
@@ -75,154 +70,178 @@ final class SubscriptionVoiceLifecycle {
                 text.length() > 800 || announcements.size() >= MAX_ANNOUNCEMENTS ||
                 (state != State.CLOSED && !allowMicrophone && listenAfter)) return false;
         announcements.addLast(new Announcement(id, text.trim(), listenAfter));
-        if (state == State.CLOSED) connect(nowMs, listenAfter);
-        else if (state == State.LISTENING) playAnnouncement();
+        if (state == State.CLOSED) connect(nowMs, listenAfter, false);
+        else drain();
         return true;
     }
 
-    private void connect(long nowMs, boolean microphone) {
+    private void connect(long nowMs, boolean microphone, boolean captureFirst) {
         state = State.CONNECTING;
         epoch++;
         allowMicrophone = microphone;
+        transportReady = false;
         speechActive = false;
-        deadline = nowMs + CONNECT_MS;
+        initialTranscript = null;
+        connectionDeadline = nowMs + CONNECT_MS;
         delivered.clear();
         port.status("Connecting subscription voice");
+        // Start Android recognition before OAuth/SDP work. Native WebRTC recording
+        // remains disabled until this recognizer releases the microphone.
+        capturingInitial = captureFirst && port.startInitialCapture(epoch);
         port.connect(epoch, microphone);
     }
 
     void connected(long id, long nowMs) {
-        if (state != State.CONNECTING || id != epoch) return;
-        state = State.LISTENING;
-        deadline = nowMs + (allowMicrophone ? FIRST_UTTERANCE_MS : IDLE_MS);
-        port.status(allowMicrophone ? "Ready · speak after the cue" : "Preparing announcement");
-        playAnnouncement();
-        if (!allowMicrophone && announcements.isEmpty() && state == State.LISTENING) close();
+        if (!connecting(id)) return;
+        transportReady = true;
+        if (state == State.CONNECTING) state = State.LISTENING;
+        sendInitialContext();
+        port.setMicrophoneEnabled(allowMicrophone && !capturingInitial);
+        drain();
     }
 
-    /** GPT-Live transcript fragments are meaningful speech evidence, not PCM silence. */
+    void initialCaptured(long id, String text) {
+        if (id != epoch || state == State.CLOSED || !capturingInitial) return;
+        capturingInitial = false;
+        if (text != null && !text.trim().isEmpty()) {
+            initialTranscript = text.trim();
+            // Dispatch immediately, even if the voice connection is still starting.
+            // AgentService durably queues this like an ordinary chat request.
+            submit(null, initialTranscript);
+        }
+        sendInitialContext();
+        if (transportReady) port.setMicrophoneEnabled(allowMicrophone);
+        drain();
+    }
+
+    void initialCaptureUnavailable(long id) { initialCaptured(id, null); }
+
+    private void sendInitialContext() {
+        if (transportReady && initialTranscript != null) {
+            port.sendUserContext(initialTranscript);
+            initialTranscript = null;
+        }
+    }
+
+    /** Voice activity interrupts playback, never an accepted Pi task. */
     void transcriptActivity(long id, String text, long nowMs) {
         if (id != epoch || !allowMicrophone || state == State.CLOSED ||
                 text == null || text.isBlank()) return;
         if (state == State.SPEAKING) inputInterrupted(id, nowMs);
-        if (state == State.LISTENING)
-            deadline = speechActive ? Math.max(deadline, nowMs + POST_SPEECH_MS)
-                : nowMs + POST_SPEECH_MS;
     }
 
-    /** Called for new or continuing input transcript and voice activity. */
-    void activity(long id, long nowMs) {
-        if (id != epoch || state == State.CLOSED) return;
-        if (state == State.LISTENING && !speechActive) deadline = nowMs + IDLE_MS;
-    }
+    void activity(long id, long nowMs) { /* Silence does not close an explicit voice session. */ }
 
     void speechStarted(long id, long nowMs) {
         if (id != epoch || !allowMicrophone || state == State.CLOSED) return;
         speechActive = true;
-        if (state == State.LISTENING) deadline = nowMs + MAX_UTTERANCE_MS;
+        inputInterrupted(id, nowMs);
     }
 
     void speechStopped(long id, long nowMs) {
-        if (id != epoch || !speechActive) return;
+        if (id != epoch || !allowMicrophone || state == State.CLOSED) return;
         speechActive = false;
-        if (state == State.LISTENING) deadline = nowMs + POST_SPEECH_MS;
+        drain();
     }
 
     void delegated(long id, String requestId, String transcript) {
-        if (id != epoch || state == State.CLOSED || state == State.CONNECTING ||
+        if (id != epoch || !transportReady || state == State.CLOSED ||
                 requestId == null || requestId.isEmpty() ||
                 transcript == null || transcript.trim().isEmpty() ||
                 !delivered.add(requestId)) return;
-        if (state == State.SPEAKING) {
-            port.interruptSpeech();
-            if (activeAnnouncementId != null) {
-                port.announcementFailed(activeAnnouncementId, "Announcement interrupted by new voice request");
-                activeAnnouncementId = null;
-            }
+        if (delivered.size() > 512) delivered.remove(delivered.iterator().next());
+        if (state == State.SPEAKING) interruptPlayback();
+        // A complete new request is queued behind existing work. Noise, barge-in,
+        // stopping voice, and network loss must not abort the main agent.
+        submit(requestId, transcript.trim());
+        drain();
+    }
+
+    private void submit(String delegationId, String text) {
+        if (turns.size() >= MAX_PENDING_TURNS) {
+            failed(epoch, "Voice request queue is full; use the chat to continue");
+            return;
         }
-        if (turnId != null) port.cancelPi(turnId);
-        delegationId = requestId;
-        // Pi accepts only UUID-shaped voice session IDs for scoped cancellation.
-        turnId = UUID.randomUUID().toString();
-        output = new StringBuilder();
-        state = State.WAITING_PI;
-        deadline = Long.MAX_VALUE;
-        port.status("Pi is working");
-        port.sendToPi(turnId, transcript.trim());
+        PiTurn turn = new PiTurn(delegationId);
+        turns.addLast(turn);
+        if (state != State.SPEAKING) state = State.WAITING_PI;
+        port.status(transportReady ? "Pi is working · voice stays connected"
+            : "Pi is working · connecting voice");
+        port.sendToPi(turn.id, text);
     }
 
     void piDelta(String id, String text) {
-        if (state != State.WAITING_PI || !matches(id) || text == null || output == null) return;
-        if (output.length() + text.length() <= MAX_OUTPUT_CHARS) output.append(text);
+        PiTurn turn = findTurn(id);
+        if (turn == null || turn.finished || text == null) return;
+        if (turn.output.length() + text.length() <= MAX_OUTPUT_CHARS) turn.output.append(text);
     }
 
     void piFinished(String id) {
-        if (state != State.WAITING_PI || !matches(id)) return;
-        String spoken = output == null ? "" : output.toString().trim();
-        String delegation = delegationId;
-        turnId = null;
-        delegationId = null;
-        output = null;
-        listenAfterSpeech = true;
-        state = State.SPEAKING;
-        port.status("Speaking");
-        port.sendSpeech(delegation, spoken.isEmpty()
-            ? "I couldn't complete that request." : spoken);
+        PiTurn turn = findTurn(id);
+        if (turn == null || turn.finished) return;
+        turn.finished = true;
+        drain();
     }
 
-    private boolean matches(String id) { return id != null && id.equals(turnId); }
+    private PiTurn findTurn(String id) {
+        if (id == null) return null;
+        for (PiTurn turn : turns) if (turn.id.equals(id)) return turn;
+        return null;
+    }
 
-    private void playAnnouncement() {
-        if (state != State.LISTENING || announcements.isEmpty()) return;
-        Announcement announcement = announcements.removeFirst();
-        activeAnnouncementId = announcement.id;
-        state = State.SPEAKING;
-        deadline = Long.MAX_VALUE;
-        listenAfterSpeech = announcement.listenAfter;
-        port.status("Speaking announcement");
-        port.sendSpeech(null, announcement.text);
+    private void drain() {
+        if (state == State.CLOSED || state == State.SPEAKING || !transportReady) return;
+        if (capturingInitial) {
+            port.status("Listening to your first request");
+            return;
+        }
+        if (!speechActive && !turns.isEmpty() && turns.peekFirst().finished) {
+            PiTurn turn = turns.removeFirst();
+            String text = turn.output.toString().trim();
+            state = State.SPEAKING;
+            listenAfterSpeech = true;
+            port.status("Speaking");
+            port.sendSpeech(turn.delegationId, text.isEmpty()
+                ? "I couldn't complete that request." : text);
+        } else if (!speechActive && !announcements.isEmpty()) {
+            Announcement announcement = announcements.removeFirst();
+            activeAnnouncementId = announcement.id;
+            state = State.SPEAKING;
+            listenAfterSpeech = announcement.listenAfter;
+            port.status("Speaking announcement");
+            port.sendSpeech(null, announcement.text);
+        } else {
+            state = turns.isEmpty() ? State.LISTENING : State.WAITING_PI;
+            port.status(turns.isEmpty() ? "Listening · Stop voice to finish"
+                : "Pi is working · voice stays connected");
+        }
     }
 
     void playbackFinished(long id, long nowMs) {
         if (id != epoch || state != State.SPEAKING) return;
-        activeAnnouncementId = null; // This announcement reached the playback-complete event.
-        if (!announcements.isEmpty()) {
-            state = State.LISTENING;
-            playAnnouncement();
-        } else if (!listenAfterSpeech) close();
-        else {
-            state = State.LISTENING;
-            deadline = nowMs + IDLE_MS;
-            port.status("Listening for follow-up");
+        activeAnnouncementId = null;
+        state = State.LISTENING;
+        if (!listenAfterSpeech && announcements.isEmpty() && turns.isEmpty()) close();
+        else drain();
+    }
+
+    private void interruptPlayback() {
+        port.interruptSpeech();
+        if (activeAnnouncementId != null) {
+            port.announcementFailed(activeAnnouncementId, "Announcement interrupted before playback completion");
+            activeAnnouncementId = null;
         }
+        state = turns.isEmpty() ? State.LISTENING : State.WAITING_PI;
     }
 
     void inputInterrupted(long id, long nowMs) {
-        if (id != epoch || state == State.CLOSED || state == State.CONNECTING) return;
-        if (state == State.SPEAKING) {
-            port.interruptSpeech();
-            if (activeAnnouncementId != null) {
-                port.announcementFailed(activeAnnouncementId, "Announcement interrupted before playback completion");
-                activeAnnouncementId = null;
-            }
-            state = State.LISTENING;
-            deadline = nowMs + (speechActive ? MAX_UTTERANCE_MS : IDLE_MS);
-        }
-        if (state == State.WAITING_PI && turnId != null) {
-            port.cancelPi(turnId);
-            turnId = null;
-            output = null;
-            delegationId = null;
-            state = State.LISTENING;
-            deadline = nowMs + IDLE_MS;
-        }
+        if (id != epoch || state == State.CLOSED) return;
+        if (state == State.SPEAKING) interruptPlayback();
     }
 
     void tick(long nowMs) {
-        if (state != State.CLOSED && nowMs >= deadline) {
-            if (state == State.CONNECTING) failed(epoch, "Voice connection timed out");
-            else close();
-        }
+        if (state != State.CLOSED && !transportReady && nowMs >= connectionDeadline)
+            failed(epoch, "Voice connection timed out");
     }
 
     void disconnected(long id) {
@@ -233,7 +252,6 @@ final class SubscriptionVoiceLifecycle {
     void failed(long id, String safeMessage) {
         if (id != epoch || state == State.CLOSED) return;
         close();
-        // Make the actionable failure the final state, after generic disconnect cleanup.
         port.failure(safeMessage);
     }
 
@@ -241,22 +259,21 @@ final class SubscriptionVoiceLifecycle {
         if (state == State.CLOSED) return;
         long oldEpoch = epoch;
         state = State.CLOSED;
-        deadline = 0;
-        // Stop only the voice-scoped main turn. Other Pi workers must survive.
-        if (turnId != null) port.cancelPi(turnId);
-        turnId = null;
-        delegationId = null;
-        output = null;
+        transportReady = false;
+        capturingInitial = false;
+        initialTranscript = null;
+        // Detach voice delivery. Accepted Pi work continues in AgentService and
+        // its results remain in the main chat. Only explicit task controls stop it.
+        turns.clear();
         if (activeAnnouncementId != null) {
             port.announcementFailed(activeAnnouncementId, "Subscription speech ended before playback completed");
             activeAnnouncementId = null;
         }
-        while (!announcements.isEmpty()) {
+        while (!announcements.isEmpty())
             port.announcementFailed(announcements.removeFirst().id, "Subscription speech queue closed before playback");
-        }
         delivered.clear();
         speechActive = false;
         port.close(oldEpoch);
-        port.status("Voice disconnected");
+        port.status("Voice disconnected · tasks continue in chat");
     }
 }

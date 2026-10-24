@@ -3,20 +3,29 @@ package dev.pocket.agent;
 import java.util.ArrayList;
 import java.util.List;
 
+/** Deterministic regressions for startup capture, pauses, and task ownership. */
 public final class SubscriptionVoiceLifecycleSimulator {
     private static final class FakePort implements SubscriptionVoiceLifecycle.Port {
         final List<String> calls = new ArrayList<>();
+        boolean capture;
+        @Override public boolean startInitialCapture(long epoch) {
+            calls.add("capture:" + epoch); return capture;
+        }
         @Override public void connect(long epoch, boolean microphone) { calls.add("connect:" + epoch + ":" + microphone); }
         @Override public void close(long epoch) { calls.add("close:" + epoch); }
+        @Override public void setMicrophoneEnabled(boolean enabled) { calls.add("mic:" + enabled); }
+        @Override public void sendUserContext(String text) { calls.add("context:" + text); }
         @Override public void sendToPi(String turnId, String text) { calls.add("pi:" + turnId + ":" + text); }
-        @Override public void cancelPi(String turnId) { calls.add("cancel:" + turnId); }
         @Override public void sendSpeech(String id, String text) { calls.add("speech:" + id + ":" + text); }
         @Override public void interruptSpeech() { calls.add("interrupt-speech"); }
         @Override public void status(String text) { }
+        @Override public void failure(String reason) { calls.add("failure:" + reason); }
         @Override public void announcementFailed(String id, String reason) { calls.add("failed:" + id); }
         boolean has(String fragment) { return calls.stream().anyMatch(c -> c.contains(fragment)); }
         long count(String prefix) { return calls.stream().filter(c -> c.startsWith(prefix)).count(); }
-        String lastPi() { return calls.stream().filter(c -> c.startsWith("pi:")).reduce((a,b)->b).orElse(""); }
+        String turn(int index) {
+            return calls.stream().filter(c -> c.startsWith("pi:")).toList().get(index).split(":")[1];
+        }
     }
 
     private static void check(boolean ok, String message) {
@@ -31,144 +40,159 @@ public final class SubscriptionVoiceLifecycleSimulator {
         s.connected(999, 210);
         check(s.state() == SubscriptionVoiceLifecycle.State.CONNECTING, "stale connect accepted");
         s.connected(1, 300);
-        check(s.state() == SubscriptionVoiceLifecycle.State.LISTENING, "not listening");
         s.delegated(1, "delegate-1", "Open the browser");
-        check(s.state() == SubscriptionVoiceLifecycle.State.WAITING_PI && p.has("Open the browser"), "Pi dispatch missing");
+        check(s.state() == SubscriptionVoiceLifecycle.State.WAITING_PI, "Pi dispatch missing");
         s.tick(200000);
-        check(s.state() == SubscriptionVoiceLifecycle.State.WAITING_PI, "idle stopped active Pi");
-        String turn = p.lastPi().split(":")[1];
+        check(s.state() == SubscriptionVoiceLifecycle.State.WAITING_PI, "silence stopped active Pi");
+        String turn = p.turn(0);
         check(java.util.UUID.fromString(turn).toString().equals(turn), "Pi voice turn must be a UUID");
         s.delegated(1, "delegate-1", "duplicate");
         check(p.count("pi:") == 1, "duplicate request dispatched");
         s.piDelta("wrong-id", "not spoken");
-        s.piDelta(turn, "Done ");
-        s.piDelta(turn, "opening browser.");
+        s.piDelta(turn, "Done opening browser.");
         s.piFinished("wrong-id");
         check(p.count("speech:") == 0, "stale Pi end spoke");
         s.piFinished(turn);
-        check(p.has("speech:delegate-1:Done opening browser."), "voice did not speak Pi output");
+        check(p.has("speech:delegate-1:Done opening browser."), "Pi output missing");
         s.playbackFinished(1, 200500);
-        check(s.state() == SubscriptionVoiceLifecycle.State.LISTENING, "follow-up not listening");
-        s.tick(203499);
-        check(s.state() == SubscriptionVoiceLifecycle.State.LISTENING, "early idle disconnect");
-        s.tick(203500);
-        check(s.state() == SubscriptionVoiceLifecycle.State.CLOSED && p.count("close:") == 1, "idle did not close transport");
+        s.tick(3_600_000);
+        check(s.state() == SubscriptionVoiceLifecycle.State.LISTENING, "follow-up silence dropped microphone");
+        s.close();
+        check(p.count("close:") == 1, "explicit stop did not release transport");
     }
 
-    private static void announcementsAndShutdown() {
-        FakePort p = new FakePort();
+    private static void firstTranscriptBeforeConnection() {
+        FakePort p = new FakePort(); p.capture = true;
         SubscriptionVoiceLifecycle s = new SubscriptionVoiceLifecycle(p);
-        check(!s.announce("empty", " ", true, 0), "empty speech accepted");
-        check(s.announce("hello", "Hello user", true, 100), "speech rejected");
-        check(p.count("connect:") == 1, "on-demand speech didn't connect");
-        s.connected(1, 200);
-        check(p.has("speech:null:Hello user"), "announcement didn't speak");
-        s.announce("bye", "Goodbye", false, 201);
-        s.playbackFinished(1, 300);
-        check(p.has("speech:null:Goodbye"), "announcement queue was not drained");
-        s.playbackFinished(1, 400);
-        check(s.state() == SubscriptionVoiceLifecycle.State.CLOSED, "no-listen announcement remained connected");
-        s.wake(450);
-        check(s.epoch() == 2, "epoch not renewed");
-        s.playbackFinished(1, 600);
-        check(s.state() == SubscriptionVoiceLifecycle.State.CONNECTING, "stale playback mutated reopened session");
-        s.tick(45450);
-        check(s.state() == SubscriptionVoiceLifecycle.State.CLOSED, "connect timeout did not cleanup");
-        check(p.count("close:") == 2, "connection timeout did not release reopened transport");
+        s.wake(0);
+        check(p.calls.get(0).equals("capture:1"), "OAuth began before capture");
+        s.initialCaptured(99, "stale");
+        check(p.count("pi:") == 0, "stale recognizer submitted text");
+        s.initialCaptured(1, "Find the blue button");
+        check(s.connecting(1) && p.has("Find the blue button"), "first transcript waited for WebRTC");
+        s.initialCaptured(1, "duplicate");
+        check(p.count("pi:") == 1, "initial result submitted twice");
+        s.piDelta(p.turn(0), "The button is on the left.");
+        s.piFinished(p.turn(0));
+        check(p.count("speech:") == 0, "Pi result was lost to an unready transport");
+        s.connected(1, 9000);
+        check(p.has("context:Find the blue button"), "initial request absent from live context");
+        check(p.has("speech:null:The button is on the left."), "buffered result not spoken");
+        check(p.calls.indexOf("mic:true") < p.calls.indexOf("speech:null:The button is on the left."),
+            "speakable context sent without active input audio");
     }
 
-    private static void interruptionAndDisconnect() {
+    private static void connectionBeforeFirstTranscript() {
+        FakePort p = new FakePort(); p.capture = true;
+        SubscriptionVoiceLifecycle s = new SubscriptionVoiceLifecycle(p);
+        s.wake(0); s.connected(1, 3000);
+        check(p.has("mic:false") && !p.has("mic:true"), "native mic competed with Android recognizer");
+        s.tick(120_000);
+        check(s.initialCaptureActive(), "listening timeout interrupted initial transcription");
+        s.initialCaptured(1, "Read my next event");
+        check(p.has("mic:true") && p.count("pi:") == 1, "recognizer did not hand microphone to WebRTC");
+        s.piDelta(p.turn(0), "Your next event is tomorrow.");
+        s.piFinished(p.turn(0));
+        check(p.has("speech:null:Your next event is tomorrow."), "first response not spoken");
+    }
+
+    private static void captureFailureAndConnectionTimeout() {
+        FakePort p = new FakePort(); p.capture = true;
+        SubscriptionVoiceLifecycle s = new SubscriptionVoiceLifecycle(p);
+        s.wake(0); s.connected(1, 100);
+        s.initialCaptureUnavailable(1);
+        check(p.has("mic:true") && p.count("pi:") == 0, "failed STT invented a request or blocked live capture");
+        s.initialCaptured(1, "late partial");
+        check(p.count("pi:") == 0, "late recognizer result executed after fallback");
+        s.close(); s.wake(1000);
+        s.initialCaptured(2, "Work while voice connects");
+        s.tick(46_000);
+        check(s.state() == SubscriptionVoiceLifecycle.State.CLOSED && p.count("pi:") == 1,
+            "connection timeout was disabled by an active Pi turn");
+        check(p.has("failure:Voice connection timed out"), "connection timeout not reported");
+        s.piFinished(p.turn(0));
+        s.connected(2, 50_000);
+        check(s.state() == SubscriptionVoiceLifecycle.State.CLOSED && p.count("speech:") == 0,
+            "late callbacks resurrected disconnected voice");
+    }
+
+    private static void speechCannotCancelPiAndRequestsQueue() {
         FakePort p = new FakePort();
         SubscriptionVoiceLifecycle s = new SubscriptionVoiceLifecycle(p);
         s.wake(0); s.connected(1, 100);
-        s.delegated(1, "a", "Please inspect the screen");
-        String turn = p.lastPi().split(":")[1];
-        s.inputInterrupted(1, 200);
-        check(p.has("cancel:" + turn), "barge-in didn't stop main");
-        s.piDelta(turn, "old");
-        s.piFinished(turn);
-        check(p.count("speech:") == 0, "stale Pi output spoke");
-        s.delegated(1, "b", "Do another task");
-        check(p.count("pi:") == 2, "new delegation not dispatched");
+        s.delegated(1, "a", "Perform a long task");
+        s.speechStarted(1, 200);
+        s.inputInterrupted(1, 201);
+        s.transcriptActivity(1, "And check the calendar", 300);
+        check(s.state() == SubscriptionVoiceLifecycle.State.WAITING_PI, "raw speech detached Pi result delivery");
+        s.delegated(1, "b", "Also check the calendar");
+        check(p.count("pi:") == 2, "new complete request was lost");
+        s.piDelta(p.turn(1), "Second result."); s.piFinished(p.turn(1));
+        s.piDelta(p.turn(0), "First result."); s.piFinished(p.turn(0));
+        check(p.count("speech:") == 0, "speech output started while VAD said user was speaking");
+        s.speechStopped(1, 1000);
+        check(p.has("speech:a:First result."), "earlier task's result was discarded");
+        s.playbackFinished(1, 2000);
+        check(p.has("speech:b:Second result."), "queued result was lost or used wrong delegation ID");
+        s.playbackFinished(1, 3000);
+        s.tick(3_600_000);
+        check(s.state() == SubscriptionVoiceLifecycle.State.LISTENING, "task completion closed voice");
+    }
+
+    private static void disconnectOnlyDetachesVoice() {
+        FakePort p = new FakePort();
+        SubscriptionVoiceLifecycle s = new SubscriptionVoiceLifecycle(p);
+        s.wake(0); s.connected(1, 100);
+        s.delegated(1, "a", "Keep working");
+        String turn = p.turn(0);
         s.disconnected(1);
-        check(s.state() == SubscriptionVoiceLifecycle.State.CLOSED, "transport failure not closed");
-        check(p.count("cancel:") == 2, "active main turn not cancelled on failure");
-        s.connected(1, 900);
-        check(s.state() == SubscriptionVoiceLifecycle.State.CLOSED, "late ready resurrected closed service");
-        s.announce("interrupted", "Speaking while user interrupts", true, 1000);
-        s.connected(2, 1050);
-        s.inputInterrupted(2, 1100);
-        check(p.count("interrupt-speech") == 1, "speech playback was not interrupted");
-        check(p.has("failed:interrupted"), "interrupted announcement must report its ID");
-        s.speechStarted(2, 1100);
-        s.tick(5100);
-        check(s.state() == SubscriptionVoiceLifecycle.State.LISTENING,
-              "long utterance must not hit three-second idle deadline");
-        s.speechStopped(2, 5150);
-        check(s.state() == SubscriptionVoiceLifecycle.State.LISTENING, "interruption did not resume listening");
-        s.tick(13149);
-        check(s.state() == SubscriptionVoiceLifecycle.State.LISTENING, "post-speech grace expired early");
-        s.tick(13150);
-        check(s.state() == SubscriptionVoiceLifecycle.State.CLOSED, "interruption idle failed to close");
+        check(s.state() == SubscriptionVoiceLifecycle.State.CLOSED && p.count("close:") == 1,
+            "network failure didn't release voice resources");
+        // Port deliberately has no cancel-Pi operation. Teardown cannot abort the task.
+        s.wake(200); s.connected(2, 300);
+        s.piDelta(turn, "Old result"); s.piFinished(turn);
+        check(p.count("speech:") == 0, "old task result leaked into reopened voice session");
+    }
+
+    private static void announcementsAndBargeIn() {
+        FakePort p = new FakePort();
+        SubscriptionVoiceLifecycle s = new SubscriptionVoiceLifecycle(p);
+        check(!s.announce("empty", " ", true, 0), "empty speech accepted");
+        s.announce("hello", "Hello user", true, 0); s.connected(1, 100);
+        check(p.count("capture:") == 0, "announcement started initial speech recognizer");
+        s.announce("bye", "Goodbye", false, 101);
+        s.playbackFinished(1, 200); s.playbackFinished(1, 300);
+        check(s.state() == SubscriptionVoiceLifecycle.State.CLOSED, "no-listen announcement stayed open");
+        s.announce("interrupted", "Reminder", true, 400); s.connected(2, 500);
+        s.transcriptActivity(2, "Stop", 600);
+        check(p.has("failed:interrupted") && p.count("interrupt-speech") == 1,
+            "barge-in failed to interrupt playback");
+        s.tick(3_600_000);
+        check(s.state() == SubscriptionVoiceLifecycle.State.LISTENING, "pause after barge-in closed microphone");
     }
 
     private static void outputOnlyAnnouncement() {
         FakePort p = new FakePort();
         SubscriptionVoiceLifecycle s = new SubscriptionVoiceLifecycle(p);
-        check(s.announce("speak", "Only speak, do not listen", false, 0), "speech-only request refused");
+        s.announce("speak", "Only speak, do not listen", false, 0);
         check(p.has("connect:1:false"), "output-only session requested microphone");
-        check(!s.announce("listen", "Ask a question", true, 50),
-            "cannot silently authorize microphone in an output-only session");
+        check(!s.announce("listen", "Ask a question", true, 50), "output-only session silently authorized mic");
         s.connected(1, 100);
-        check(p.has("speech:null:Only speak, do not listen"), "speech-only output not queued");
+        check(!p.has("mic:true"), "output-only announcement enabled microphone");
         s.playbackFinished(1, 130);
-        check(s.state() == SubscriptionVoiceLifecycle.State.CLOSED, "output-only session stayed open");
-        check(!p.has("failed:speak"), "completed announcement incorrectly failed");
-        s.announce("lost", "Report on cancellation", false, 250);
-        s.disconnected(2);
-        check(p.has("failed:lost"), "lost announcement failed to report delivery failure");
-    }
-
-    private static void liveTranscriptWithoutVadEvents() {
-        FakePort p = new FakePort();
-        SubscriptionVoiceLifecycle s = new SubscriptionVoiceLifecycle(p);
-        s.wake(0);
-        s.connected(1, 100);
-        s.tick(3100);
-        check(s.state() == SubscriptionVoiceLifecycle.State.LISTENING,
-            "initial delayed transcript must not expire at three seconds");
-        s.transcriptActivity(1, "open", 3500);
-        s.transcriptActivity(1, " the browser", 8000);
-        s.tick(15999);
-        check(s.state() == SubscriptionVoiceLifecycle.State.LISTENING,
-            "streamed live transcript expired before post-speech grace");
-        s.tick(16000);
-        check(s.state() == SubscriptionVoiceLifecycle.State.CLOSED,
-            "last transcript fragment must not keep microphone open indefinitely");
-        FakePort longSpeechPort = new FakePort();
-        SubscriptionVoiceLifecycle longSpeech = new SubscriptionVoiceLifecycle(longSpeechPort);
-        longSpeech.wake(0);
-        longSpeech.connected(1, 100);
-        longSpeech.speechStarted(1, 500);
-        longSpeech.transcriptActivity(1, "continued speech", 1000);
-        longSpeech.tick(9000);
-        check(longSpeech.state() == SubscriptionVoiceLifecycle.State.LISTENING,
-            "transcript must not shorten an active VAD utterance deadline");
-        FakePort q = new FakePort();
-        SubscriptionVoiceLifecycle speaking = new SubscriptionVoiceLifecycle(q);
-        speaking.announce("notice", "Reminder", true, 0);
-        speaking.connected(1, 10);
-        speaking.transcriptActivity(1, "Stop", 100);
-        check(q.has("failed:notice") && q.has("interrupt-speech"),
-            "live transcript did not interrupt the announcement and record failure");
+        check(s.state() == SubscriptionVoiceLifecycle.State.CLOSED && !p.has("failed:speak"),
+            "output-only lifecycle did not finish");
     }
 
     public static void main(String[] args) {
         normalWakeAndPiHandoff();
-        announcementsAndShutdown();
-        interruptionAndDisconnect();
+        firstTranscriptBeforeConnection();
+        connectionBeforeFirstTranscript();
+        captureFailureAndConnectionTimeout();
+        speechCannotCancelPiAndRequestsQueue();
+        disconnectOnlyDetachesVoice();
+        announcementsAndBargeIn();
         outputOnlyAnnouncement();
-        liveTranscriptWithoutVadEvents();
-        System.out.println("Subscription voice lifecycle simulator: 5 scenarios PASSED");
+        System.out.println("Subscription voice lifecycle simulator: 8 scenarios PASSED");
     }
 }

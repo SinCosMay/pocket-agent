@@ -19,8 +19,8 @@ android {
         applicationId = "dev.pocket.agent"
         minSdk = 31
         targetSdk = 36
-        versionCode = 8
-        versionName = "0.1.8-display-cleanup.1"
+        versionCode = 9
+        versionName = "0.1.9-voice-continuity.1"
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
         buildConfigField("boolean", "DEVELOPMENT_TOOLS", "false")
     }

@@ -556,6 +556,7 @@ public final class MainActivity extends Activity implements AgentService.Observe
             toast(checked ? "Subscription voice enabled for the next wake" : "Legacy voice enabled for the next wake");
         });
         panel.addView(subscriptionVoice);
+        panel.addView(text("Subscription voice uses the phone speaker. The first request uses Android's default speech recognition while voice connects. Listening stays open until Stop voice; tasks continue in chat. Stop response cancels the current response, and Stop all ends the runtime."));
         try {
             JSONObject voiceAccount = credentials.getVoiceCodex();
             panel.addView(text(voiceAccount.optString("accountId").isEmpty()

@@ -9,6 +9,8 @@ import android.content.SharedPreferences;
 import android.content.pm.PackageManager;
 import android.os.Build;
 import android.os.SystemClock;
+import android.media.AudioDeviceInfo;
+import android.media.AudioManager;
 import android.util.Base64;
 import androidx.test.ext.junit.runners.AndroidJUnit4;
 import androidx.test.platform.app.InstrumentationRegistry;
@@ -130,5 +132,34 @@ public final class SubscriptionVoiceActivationDeviceTest {
         // A historical R8/JNI_OnLoad SIGABRT would abort this emulator test process.
         PeerConnectionFactory.initialize(PeerConnectionFactory.InitializationOptions
                 .builder(context()).createInitializationOptions());
+    }
+
+    @Test public void subscriptionVoiceSelectsSpeakerAndRestoresAudioMode() {
+        Context ctx = context();
+        assertEquals(PackageManager.PERMISSION_GRANTED,
+            ctx.checkSelfPermission(Manifest.permission.MODIFY_AUDIO_SETTINGS));
+        AudioManager audio = ctx.getSystemService(AudioManager.class);
+        org.junit.Assume.assumeTrue("No other call may own audio during this test",
+            audio.getMode() == AudioManager.MODE_NORMAL);
+        SubscriptionVoiceAudioRoute route = new SubscriptionVoiceAudioRoute(ctx);
+        try {
+            boolean[] selected = {false};
+            InstrumentationRegistry.getInstrumentation().runOnMainSync(() -> selected[0] = route.start());
+            assertTrue("Built-in phone speaker must be available", selected[0]);
+            long deadline = SystemClock.elapsedRealtime() + 2000;
+            while (SystemClock.elapsedRealtime() < deadline) {
+                AudioDeviceInfo device = audio.getCommunicationDevice();
+                if (device != null && device.getType() == AudioDeviceInfo.TYPE_BUILTIN_SPEAKER) break;
+                SystemClock.sleep(50);
+            }
+            assertNotNull(audio.getCommunicationDevice());
+            assertEquals(AudioDeviceInfo.TYPE_BUILTIN_SPEAKER, audio.getCommunicationDevice().getType());
+        } finally {
+            InstrumentationRegistry.getInstrumentation().runOnMainSync(route::close);
+        }
+        long deadline = SystemClock.elapsedRealtime() + 2000;
+        while (audio.getMode() != AudioManager.MODE_NORMAL && SystemClock.elapsedRealtime() < deadline)
+            SystemClock.sleep(50);
+        assertEquals(AudioManager.MODE_NORMAL, audio.getMode());
     }
 }
