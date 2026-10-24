@@ -136,6 +136,8 @@ public final class SubscriptionVoiceService extends Service implements AgentServ
             @Override public boolean startInitialCapture(long epoch) {
                 try { return startInitialCaptureForWake(epoch); }
                 catch (RuntimeException unavailable) {
+                    Log.w("PocketSubscriptionVoice", "Android recognition startup unavailable ("
+                        + unavailable.getClass().getSimpleName() + ")");
                     stopInitialCapture();
                     showInitialCaptureFallback();
                     return false;
