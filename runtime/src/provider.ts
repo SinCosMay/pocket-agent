@@ -19,6 +19,7 @@ export interface ProviderCredentials extends CodexCredentialInput {
   endpoint?: string;
   model?: string;
   authMode?: string;
+  modelSource?: 'manual' | 'catalog';
   reasoningEffortModel?: string;
   reasoningEfforts?: string[];
 }
@@ -242,11 +243,13 @@ export function makeStream(config: ProviderConfig, credentials: ProviderCredenti
         : Array.isArray(credentials.reasoningEfforts)
           ? credentials.reasoningEfforts.filter(value => REASONING_EFFORT_SET.has(value))
           : [];
-      const reasoningVerified = hasCatalogReasoning
-        ? advertisedReasoning.includes(requestedReasoning)
-        : credentials.reasoningEffortModel === model.id && advertisedReasoning.includes(requestedReasoning);
-      const reasoning = account && requestedReasoning !== DEFAULT_REASONING_EFFORT && !reasoningVerified
-        ? DEFAULT_REASONING_EFFORT : requestedReasoning;
+      const manualModel = credentials.modelSource === 'manual' && credentials.model === model.id;
+      const modelLevels = !manualModel && (hasCatalogReasoning || credentials.reasoningEffortModel === model.id)
+        ? advertisedReasoning : [];
+      const reasoning = modelLevels.length && !modelLevels.includes(requestedReasoning)
+        ? modelLevels.includes(DEFAULT_REASONING_EFFORT) ? DEFAULT_REASONING_EFFORT : modelLevels[0]
+        : !manualModel && !modelLevels.length && (account || credentials.modelSource === 'catalog')
+          ? DEFAULT_REASONING_EFFORT : requestedReasoning;
       const shared = {...options,apiKey,transport:'sse' as const,maxRetries:0,timeoutMs:120000,reasoning};
       const budget = {attempts:0};
       // Credential refresh is deliberately outside this retry scope.

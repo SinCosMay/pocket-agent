@@ -160,7 +160,7 @@ public class CodexAuthDeviceTest {
             System.out.println("CODEX_AUTH_RESULT="+new JSONObject().put("case","rotationCompareAndSaveRejectsStaleAndSignedOut").put("synthetic",true).put("rotationSaved",true).put("staleRejected",true).put("signedOutRefreshRejected",true));
         } finally { first.save(saved); }
     }
-    @Test public void reasoningPreferenceDistinguishesVerifiedLowFromForcedLow() throws Exception {
+    @Test public void reasoningPreferenceRemembersExplicitSelections() throws Exception {
         String[] verified=new String[]{"low","medium","high"};
         assertEquals("Verified Codex low must become the global preference","low",
                 MainActivity.reasoningPreferenceAfterSelection("codex-account","gpt-6-luna","low","high",
@@ -168,7 +168,7 @@ public class CodexAuthDeviceTest {
         assertEquals("Persisted verified Codex low must become the global preference","low",
                 MainActivity.reasoningPreferenceAfterSelection("codex-account","gpt-6-luna","low","high",
                         null,"gpt-6-luna",verified));
-        assertEquals("Unverified forced low must preserve the prior preference","high",
+        assertEquals("Explicit manual low must become the preference","low",
                 MainActivity.reasoningPreferenceAfterSelection("codex-account","gpt-6-luna","low","high",
                         null,"",new String[0]));
         assertEquals("Compatible provider selection must become the global preference","high",
@@ -192,6 +192,50 @@ public class CodexAuthDeviceTest {
             assertEquals("Codex without model proof must stay at low",CredentialStore.DEFAULT_REASONING_EFFORT,clamped.optString("reasoningEffort"));
             assertEquals("Forced Codex low must not erase the global preference","high",clamped.optString("preferredReasoningEffort"));
             assertFalse("Unverified Codex model must not gain reasoning proof",clamped.has("reasoningEffortModel"));
+        } finally { credentials.save(saved); }
+    }
+
+    @Test public void reasoningChoicesFollowManualOrCatalogSelection() {
+        String[] catalog={"medium","high"};
+        assertArrayEquals(new String[]{"minimal","low","medium","high","xhigh","max"},
+                MainActivity.reasoningChoices(true,catalog,"listed","listed",catalog));
+        assertArrayEquals(catalog,MainActivity.reasoningChoices(false,catalog,"listed","",new String[0]));
+        assertArrayEquals(catalog,MainActivity.reasoningChoices(false,null,"listed","listed",catalog));
+        assertArrayEquals(new String[]{"low"},MainActivity.reasoningChoices(false,new String[0],"listed","listed",catalog));
+        assertArrayEquals(new String[]{"low"},MainActivity.reasoningChoices(false,null,"other","listed",catalog));
+    }
+    @Test public void manualReasoningSurvivesReopenAndRefreshWhileCatalogRemainsRestricted() throws Exception {
+        Assume.assumeTrue("Synthetic account tests require an emulator",CredentialStore.isEmulator());
+        CredentialStore credentials=new CredentialStore(context());JSONObject saved=credentials.get();
+        try {
+            credentials.save(account("manual-refresh","manual"));
+            assertEquals("low",credentials.get().getString("reasoningEffort"));
+            credentials.save(new JSONObject().put("authMode","codex-account").put("model","gpt-6-luna")
+                    .put("modelSource","manual").put("reasoningEffort","max"));
+            JSONObject reopened=new CredentialStore(context()).get();
+            assertEquals("manual",reopened.getString("modelSource"));
+            assertEquals("max",reopened.getString("reasoningEffort"));
+            assertFalse(reopened.has("reasoningEfforts"));
+            JSONObject rotated=credentials.updateCodex(account("manual-refresh-next","manual-next")
+                    .put("oldRefreshToken","manual-refresh"));
+            assertEquals("manual",rotated.getString("modelSource"));
+            assertEquals("max",rotated.getString("reasoningEffort"));
+
+            JSONObject catalog=new JSONObject().put("authMode","codex-account").put("model","gpt-6-luna")
+                    .put("modelSource","catalog").put("reasoningEffort","medium")
+                    .put("reasoningEffortModel","gpt-6-luna").put("reasoningEfforts",new JSONArray().put("medium").put("high"));
+            credentials.save(catalog);
+            assertEquals("catalog",new CredentialStore(context()).get().getString("modelSource"));
+            for(String effort:new String[]{"low","max"}) {
+                try { credentials.save(new JSONObject(catalog.toString()).put("reasoningEffort",effort));
+                    fail("Catalog accepted unsupported effort: "+effort);
+                } catch(IllegalArgumentException expected) { /* Catalog levels remain authoritative. */ }
+            }
+            // Editing the same model ID manually must clear its old catalog restriction.
+            credentials.save(new JSONObject().put("authMode","codex-account").put("model","gpt-6-luna")
+                    .put("modelSource","manual").put("reasoningEffort","max"));
+            assertEquals("max",new CredentialStore(context()).get().getString("reasoningEffort"));
+            assertFalse(credentials.get().has("reasoningEfforts"));
         } finally { credentials.save(saved); }
     }
 

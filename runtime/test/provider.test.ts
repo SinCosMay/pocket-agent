@@ -456,3 +456,26 @@ test('fixed OpenCode timeout remains active while the SSE response body is stall
    (AbortSignal as any).timeout=originalTimeout;
  }
 });
+
+
+test('manual Codex model efforts reach the wire and catalog selections remain constrained',async()=>{
+ for(const [source,selectedModel,levels,configured,expected] of [
+   ['manual','gpt-6-luna',undefined,'high','high'],
+   ['manual','gpt-6-luna',undefined,'max','max'],
+   ['manual','gpt-6-luna',['low'],'medium','medium'],
+   ['manual','other-model',undefined,'high','low'],
+   ['catalog','gpt-6-luna',['low','medium'],'high','low'],
+   ['catalog','gpt-6-luna',['medium','high'],'low','medium'],
+   ['catalog','gpt-6-luna',undefined,'high','low'],
+ ] as const) {
+   const credentials={...accountCredential(),model:'gpt-6-luna',modelSource:source,
+     reasoningEffortModel:'gpt-6-luna',reasoningEfforts:levels?[...levels]:undefined};
+   const config:any={...accountConfig,reasoningEffort:configured};let wire:any;
+   const stream=makeStream(config,credentials,'main');
+   const agent=new Agent({streamFn:(model,context,options)=>stream(model,context,{...options,fetch:async(_input,init)=>{
+     wire=requestBody(init);return codexResponse([]);
+   }}),initialState:{model:modelFor(config,credentials,selectedModel),tools:[]}});
+   await agent.prompt('Selection source probe');
+   assert.equal(wire.reasoning?.effort,expected,JSON.stringify({source,selectedModel,levels,configured}));
+ }
+});
