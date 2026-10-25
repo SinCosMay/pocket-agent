@@ -530,6 +530,36 @@ test('queued workers persist archive identities before session creation and cann
  const denied=await memoryTools(incomplete,queued).find(t=>t.name==='history_search').execute('read',{query:'Private'});
  assert.deepEqual(denied.details.messages,[]);
 });
+test('checkpoint redaction preserves archive identities for direct and chunked lookup while hiding message secrets',async()=>{
+ class ArchiveBridge extends Bridge {
+  pending='';chunks=0;
+  override call(method:string,json:string):string {
+   const args=JSON.parse(json);
+   if(method==='store.save.begin'){this.pending='';return JSON.stringify({ok:true,result:true});}
+   if(method==='store.save.chunk'){this.pending+=args.chunk;this.chunks++;return JSON.stringify({ok:true,result:true});}
+   if(method==='store.save.commit'){this.state=JSON.parse(this.pending);return JSON.stringify({ok:true,result:true});}
+   if(method==='history.search')return JSON.stringify({ok:true,result:{messages:Object.values(this.state.workerHistoryOwners??{}).includes(args.owner)?[{id:1,text:'Own archived receipt'}]:[]}});
+   return super.call(method,json);
+  }
+ }
+ const bridge=new ArchiveBridge();
+ bridge.credentials={authMode:'scripted',mcpServers:[{id:'version',name:'Version',url:'https://example.test/mcp',enabled:false,authMode:'headers',headers:[{name:'X-Version',value:'4'}]}]};
+ const runtime=new PocketRuntime(bridge);
+ const started=runtime.startTasks([{kind:'spawn',agent:'researcher',label:'Archive reader',prompt:'Read capabilities'}],{initiatedBy:'user'});
+ const id=started.starts[0].conversationId;await until(()=>runtime.state().tasks[0]?.status==='completed');
+ const owner=runtime.historyOwner(id),mainThread=runtime.state().mainThreadId;
+ assert.ok(owner.includes('4'),'UUID v4 supplies the short header collision');
+ assert.equal(bridge.state.workerHistoryOwners[id],owner);assert.equal(bridge.state.mainThreadId,mainThread);
+ const direct=await memoryTools(runtime,id).find(t=>t.name==='history_search').execute('direct',{query:'receipt'});
+ assert.equal(direct.details.messages[0].text,'Own archived receipt');
+ runtime.main.agent.state.messages.push({role:'user',timestamp:Date.now(),content:'z'.repeat(1600000)+' secret=4'} as any);
+ assert.equal(runtime.save(),true);assert.ok(bridge.chunks>0);
+ assert.equal(bridge.state.workerHistoryOwners[id],owner);assert.equal(bridge.state.mainThreadId,mainThread);
+ assert.ok(bridge.state.mainMessages.at(-1).content.endsWith('secret=[redacted]'));
+ const restored=new PocketRuntime(bridge);assert.equal(restored.historyOwner(id),owner);
+ const chunked=await memoryTools(restored,id).find(t=>t.name==='history_search').execute('chunked',{query:'receipt'});
+ assert.equal(chunked.details.messages[0].text,'Own archived receipt');
+});
 
 test('fresh-main startup intent discards persisted main work before automatic resume',()=>{
  const bridge=new Bridge();
