@@ -37,7 +37,9 @@ public final class StateStore extends SQLiteOpenHelper {
             catch(IllegalArgumentException|IllegalStateException malformed) {
                 // A corrupt runtime checkpoint must not prevent opening the rendered UI and events.
                 // Keep its original row untouched so it remains available for recovery.
-                android.util.Log.w("PocketHistory","Legacy checkpoint could not be indexed; original checkpoint retained");
+                // Exception messages can contain private checkpoint data; log only its failure classification.
+                Throwable cause=malformed.getCause()==null?malformed:malformed.getCause();
+                android.util.Log.w("PocketHistory","Legacy checkpoint could not be indexed ("+cause.getClass().getSimpleName()+"); original checkpoint retained");
                 return;
             }
             ConversationHistory.archive(db,archive);
