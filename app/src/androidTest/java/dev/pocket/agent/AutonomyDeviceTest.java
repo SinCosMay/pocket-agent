@@ -49,6 +49,23 @@ public final class AutonomyDeviceTest {
             AutonomyScheduler.arm(context);
         }
     }
+    @Test public void startupFailuresBackOffPersistentlyAndPauseAfterThreeAttempts() throws Exception {
+        Context base=InstrumentationRegistry.getInstrumentation().getTargetContext();
+        Context isolated=new android.content.ContextWrapper(base) {
+            @Override public android.content.SharedPreferences getSharedPreferences(String name,int mode){return base.getSharedPreferences(name+"-autonomy-test",mode);}
+        };
+        android.content.SharedPreferences policy=isolated.getSharedPreferences("autonomy-policy",0);policy.edit().clear().commit();
+        try {
+            AutonomyStore.startupFailed(isolated);
+            assertTrue(AutonomyStore.enabled(isolated));assertEquals(1,policy.getInt("startupFailures",0));
+            assertTrue(policy.getLong("backoffUntil",0)>System.currentTimeMillis());
+            AutonomyStore.startupFailed(isolated);AutonomyStore.startupFailed(isolated);
+            assertFalse(AutonomyStore.enabled(isolated));assertEquals(3,policy.getInt("startupFailures",0));
+            AutonomyStore.setEnabled(isolated,true);
+            assertTrue(AutonomyStore.enabled(isolated));assertFalse(policy.contains("backoffUntil"));assertFalse(policy.contains("lastFailure"));
+            AutonomyStore.startupFailed(isolated);AutonomyStore.startupHealthy(isolated);assertFalse(policy.contains("startupFailures"));
+        } finally {policy.edit().clear().commit();}
+    }
     @Test public void serviceAndBackgroundWorkShareOneRuntimeOwner() throws Exception {
         Context context=InstrumentationRegistry.getInstrumentation().getTargetContext();
         RuntimeOwner first=RuntimeOwner.acquire(context),second=RuntimeOwner.acquire(context);

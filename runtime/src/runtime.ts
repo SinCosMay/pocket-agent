@@ -472,7 +472,7 @@ export class PocketRuntime {
         if(!['schedule','wakeup','task','watch'].includes(cmd.tool))throw Error('Unsupported automation control');
         this.autonomy.execute(cmd.tool,cmd.args,'main');
       } else if(cmd.action==='autonomy_tick') {
-        this.tickAutonomy();
+        this.autonomy.tick();
       } else if(cmd.action==='stop_autonomy') {
         for(const c of this.runtime.listConversations().filter(c=>c.agent.name==='autonomy-worker'&&c.currentGeneration))void this.runtime.cancelSubagent(c.conversationId).catch(this.reportError);
       } else if(cmd.action==='prepare_shutdown') {

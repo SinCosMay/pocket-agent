@@ -131,3 +131,10 @@ test('worker-capacity contention backs off without repeated model starts',()=>{
   engine.execute('task',{action:'run_now',id:task.id});engine.tick();engine.tick();assert.equal(attempts,1);
   now+=60000;engine.tick();assert.equal(attempts,2);assert.equal(host.root.runs.length,1);
 });
+
+test('native tick reports durable-store failure to its worker instead of acknowledging success',()=>{
+  const host=new Host(),runtime=new PocketRuntime(host as any),task=createTask(runtime.autonomy);
+  runtime.autonomy.execute('task',{action:'run_now',id:task.id});host.failSave=true;
+  const response=JSON.parse(runtime.dispatch(JSON.stringify({action:'autonomy_tick'})));
+  assert.equal(response.ok,false);assert.match(response.error,/disk full/);assert.equal(host.root.runs[0].status,'queued');
+});

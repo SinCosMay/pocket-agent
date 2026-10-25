@@ -54,8 +54,27 @@ final class AutonomyStore extends SQLiteOpenHelper {
     }
     static boolean enabled(Context context) {return context.getSharedPreferences("autonomy-policy",0).getBoolean("enabled",true);}
     static void setEnabled(Context context,boolean enabled) {
-        if(!context.getSharedPreferences("autonomy-policy",0).edit().putBoolean("enabled",enabled).commit())throw new IllegalStateException("Could not save automation setting");
+        synchronized(LOCK) {
+            android.content.SharedPreferences.Editor edit=context.getSharedPreferences("autonomy-policy",0).edit().putBoolean("enabled",enabled);
+            if(enabled)edit.remove("startupFailures").remove("backoffUntil").remove("lastFailure");
+            if(!edit.commit())throw new IllegalStateException("Could not save automation setting");
+        }
         AutonomyScheduler.arm(context);
+    }
+    static void startupFailed(Context context) {
+        synchronized(LOCK) {
+            if(!enabled(context))return;
+            android.content.SharedPreferences policy=context.getSharedPreferences("autonomy-policy",0);
+            int failures=Math.min(3,policy.getInt("startupFailures",0)+1);
+            long retry=System.currentTimeMillis()+60_000L*(1L<<(failures-1));
+            android.content.SharedPreferences.Editor edit=policy.edit().putInt("startupFailures",failures).putLong("backoffUntil",retry)
+                .putString("lastFailure",failures>=3?"Background startup failed repeatedly. Review the app and enable automation to retry.":"Background startup failed. The next attempt will be delayed.");
+            if(failures>=3)edit.putBoolean("enabled",false);
+            if(!edit.commit())throw new IllegalStateException("Could not persist background backoff");
+        }
+    }
+    static void startupHealthy(Context context) {
+        context.getSharedPreferences("autonomy-policy",0).edit().remove("startupFailures").remove("backoffUntil").remove("lastFailure").commit();
     }
     JSONArray events() throws Exception {
         synchronized(LOCK) {
@@ -80,7 +99,8 @@ final class AutonomyStore extends SQLiteOpenHelper {
     long nextDue() throws Exception {
         if(!enabled(context))return Long.MAX_VALUE;
         synchronized(LOCK) {
-            if(events().length()>0)return System.currentTimeMillis();
+            long backoff=context.getSharedPreferences("autonomy-policy",0).getLong("backoffUntil",0);
+            if(events().length()>0)return Math.max(System.currentTimeMillis(),backoff);
             JSONObject root=load();long next=Long.MAX_VALUE;
             for(String key:new String[]{"schedules","wakeups"}) {
                 JSONArray items=root.getJSONArray(key);
@@ -93,7 +113,7 @@ final class AutonomyStore extends SQLiteOpenHelper {
                 if(status.equals("running")||status.equals("dispatching")){active=true;next=Math.min(next,run.optLong("startedAt",run.optLong("createdAt"))+9*60_000L);}
             }
             if(!active)next=Math.min(next,queuedDue);
-            return next;
+            return next==Long.MAX_VALUE?next:Math.max(next,backoff);
         }
     }
     static boolean activeTask(JSONObject root,String id) throws Exception {
@@ -108,7 +128,8 @@ final class AutonomyStore extends SQLiteOpenHelper {
         NotificationManager notifications=context.getSystemService(NotificationManager.class);
         return Json.obj("enabled",enabled(context),"timing","inexact_android_workmanager","connected",network!=null&&network.hasCapability(NetworkCapabilities.NET_CAPABILITY_INTERNET),
             "notificationsEnabled",notifications!=null&&notifications.areNotificationsEnabled(),"notificationAccess",PhoneNotifications.connected!=null,
-            "batteryRestricted",power!=null&&!power.isIgnoringBatteryOptimizations(context.getPackageName()),"maxRunDurationMs",8*60_000,"phoneMustBeOnline",true);
+            "batteryRestricted",power!=null&&!power.isIgnoringBatteryOptimizations(context.getPackageName()),"maxRunDurationMs",8*60_000,"phoneMustBeOnline",true,
+            "lastFailure",context.getSharedPreferences("autonomy-policy",0).getString("lastFailure",""),"retryAfter",context.getSharedPreferences("autonomy-policy",0).getLong("backoffUntil",0));
     }
     JSONObject notifyResult(JSONObject entry) throws Exception {
         NotificationManager manager=context.getSystemService(NotificationManager.class);

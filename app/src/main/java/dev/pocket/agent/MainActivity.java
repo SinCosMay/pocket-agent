@@ -379,6 +379,7 @@ public final class MainActivity extends Activity implements AgentService.Observe
         enabled.setOnCheckedChangeListener((button,checked)->{AutonomyStore.setEnabled(this,checked);if(checked)AutonomyScheduler.run(this);else command(json("action","stop_autonomy"));});panel.addView(enabled);
         panel.addView(text("Android may delay background runs. Runs use the phone's network and provider connection. Stop all pauses future automation. Quiet hours: 10 PM–8 AM on this phone."));
         try(AutonomyStore automation=new AutonomyStore(this)) {
+            String startupIssue=automation.status().optString("lastFailure");if(!startupIssue.isEmpty())panel.addView(text(startupIssue));
             JSONObject saved=automation.load();
             JSONArray decisions=saved.getJSONArray("decisions");
             panel.addView(text("Needs your input"));boolean pending=false;

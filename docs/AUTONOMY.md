@@ -52,7 +52,9 @@ worker, so rearming a timer does not cancel ongoing execution. Execution leases
 the same `RuntimeHost` as `AgentService`; a replacement waits for the old isolate
 to close. There is no background `startForegroundService` bypass and no exact-alarm
 permission. Each WorkManager invocation is bounded to eight minutes. Android 16
-job quotas and OEM restrictions still apply.
+job quotas and OEM restrictions still apply. Native startup/dispatch failures back off
+across process restarts; three consecutive failures pause automation until the
+user reviews the issue and enables it again in Activity.
 
 Each run uses a dedicated `autonomy-worker` conversation, without a main-chat
 model turn or nested delegation. Its context comes from the saved task checkpoint
