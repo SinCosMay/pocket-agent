@@ -12,6 +12,56 @@ import static org.junit.Assert.*;
 
 @RunWith(AndroidJUnit4.class)
 public class ConversationHistoryDeviceTest {
+    private JSONObject checkpoint(String text,long timestamp) throws Exception {
+        return new JSONObject().put("mainThreadId","33333333-3333-4333-8333-333333333333")
+            .put("mainMessages",new JSONArray().put(new JSONObject().put("role","user")
+                .put("timestamp",timestamp).put("content",text)));
+    }
+    @Test public void versionOneMigrationPreservesAndArchivesExistingCheckpoint() throws Exception {
+        Context context=InstrumentationRegistry.getInstrumentation().getTargetContext();
+        String name="history-migration-instrumentation.db";context.deleteDatabase(name);
+        JSONObject old=checkpoint("Legacy obsidian warranty receipt.",201);old.remove("mainThreadId");
+        try {
+            try(android.database.sqlite.SQLiteOpenHelper legacy=new android.database.sqlite.SQLiteOpenHelper(context,name,null,1) {
+                @Override public void onCreate(android.database.sqlite.SQLiteDatabase db) {
+                    db.execSQL("CREATE TABLE snapshot (id INTEGER PRIMARY KEY CHECK(id=1), json TEXT NOT NULL)");
+                    db.execSQL("CREATE TABLE runtime_state (id INTEGER PRIMARY KEY CHECK(id=1), json TEXT NOT NULL)");
+                    db.execSQL("CREATE TABLE events (id INTEGER PRIMARY KEY AUTOINCREMENT, at INTEGER NOT NULL, json TEXT NOT NULL)");
+                }
+                @Override public void onUpgrade(android.database.sqlite.SQLiteDatabase db,int from,int to) {throw new AssertionError();}
+            }) {
+                legacy.getWritableDatabase().execSQL("INSERT INTO runtime_state VALUES(1,?)",new Object[]{old.toString()});
+                legacy.getWritableDatabase().execSQL("INSERT INTO snapshot VALUES(1,?)",new Object[]{"{\"mainTurns\":7}"});
+                legacy.getWritableDatabase().execSQL("INSERT INTO events(at,json) VALUES(1,?)",new Object[]{"{\"type\":\"ready\"}"});
+            }
+            try(StateStore migrated=new StateStore(context,name)) {
+                assertEquals(2,migrated.getReadableDatabase().getVersion());
+                assertEquals(old.toString(),migrated.loadDurable().toString());
+                assertEquals(7,migrated.load().getInt("mainTurns"));
+                assertEquals(1,migrated.recentEvents().length());
+                migrated.saveDurable(migrated.loadDurable());
+                JSONArray hits=migrated.searchHistory("obsidian",10);
+                assertEquals(1,hits.length());
+                assertEquals("00000000-0000-4000-8000-000000000000",hits.getJSONObject(0).getString("threadId"));
+            }
+        } finally {context.deleteDatabase(name);}
+    }
+    @Test public void failedCheckpointRollsBackArchiveAndSearchIndex() throws Exception {
+        Context context=InstrumentationRegistry.getInstrumentation().getTargetContext();
+        String name="history-rollback-instrumentation.db";context.deleteDatabase(name);
+        try(StateStore state=new StateStore(context,name)) {
+            JSONObject original=checkpoint("Committed quartz receipt.",301);state.saveDurable(original);
+            state.getWritableDatabase().execSQL("CREATE TRIGGER reject_checkpoint BEFORE INSERT ON runtime_state BEGIN SELECT RAISE(ABORT,'synthetic checkpoint failure'); END");
+            try {state.saveDurable(checkpoint("Uncommitted zircon receipt.",302));fail("Failed checkpoint was accepted");}
+            catch(RuntimeException expected) {}
+            assertEquals(original.toString(),state.loadDurable().toString());
+            assertEquals(1,state.searchHistory("",10).length());
+            assertEquals(0,state.searchHistory("zircon",10).length());
+            state.getWritableDatabase().execSQL("DROP TRIGGER reject_checkpoint");
+            state.saveDurable(checkpoint("Uncommitted zircon receipt.",302));
+            assertEquals(1,state.searchHistory("zircon",10).length());
+        } finally {context.deleteDatabase(name);}
+    }
     @Test public void mainAndWorkerHistorySurviveResetByteCheckpointAndReopen() throws Exception {
         Context context=InstrumentationRegistry.getInstrumentation().getTargetContext();
         String name="history-instrumentation.db";context.deleteDatabase(name);

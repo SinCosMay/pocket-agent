@@ -83,3 +83,15 @@ test('saved memory data does not override tool grants for the read-only research
   assert.ok(block.includes('confirmed'));
   assert.match(recallBlock(r,'main','motherboard'),/The motherboard warranty claim was accepted/);
 });
+test('offline history fixture traverses Pi search and full-message tools',async()=>{
+  const b=new MemoryBridge(),r=new PocketRuntime(b);
+  r.dispatch(JSON.stringify({action:'send',text:'history fixture search motherboard'}));
+  await idle(r);
+  assert.ok(r.main.messages.some((m:any)=>m.role==='toolResult'&&m.toolName==='history_search'));
+  assert.match(JSON.stringify(r.main.messages.at(-1)),/warranty claim was accepted/);
+  r.dispatch(JSON.stringify({action:'send',text:'history fixture read 7'}));
+  await idle(r);
+  assert.ok(r.main.messages.some((m:any)=>m.role==='toolResult'&&m.toolName==='history_read'));
+  assert.match(JSON.stringify(r.main.messages.at(-1)),/warranty claim was accepted/);
+  assert.equal(r.state().lastError,null);
+});

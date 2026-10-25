@@ -1,0 +1,48 @@
+name: History device validation APKs
+on:
+  workflow_call:
+permissions:
+  contents: read
+concurrency:
+  group: history-device-${{ github.ref }}
+  cancel-in-progress: true
+jobs:
+  build:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 25
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-node@v5
+        with:
+          node-version: '22.22.2'
+          cache: npm
+          cache-dependency-path: runtime/package-lock.json
+      - name: Build and check history runtime
+        working-directory: runtime
+        run: |
+          npm ci
+          node --import tsx --test --test-concurrency=1 test/memory.test.ts test/runtime.test.ts
+          npm run build
+      - uses: actions/setup-java@v5
+        with:
+          distribution: temurin
+          java-version: '17'
+      - uses: android-actions/setup-android@v4
+      - run: sdkmanager 'platforms;android-36' 'build-tools;36.0.0' 'ndk;27.2.12479018'
+      - uses: gradle/actions/setup-gradle@v5
+      - name: Build isolated phone test APK pair
+        run: ./gradlew --no-daemon -PisolatedDeviceValidation :app:assembleDebug :app:assembleDebugAndroidTest
+      - name: Record provenance
+        run: |
+          mkdir -p artifacts
+          cp app/build/outputs/apk/debug/app-arm64-v8a-debug.apk artifacts/Pocket-Agent-history-arm64.apk
+          cp app/build/outputs/apk/androidTest/debug/*.apk artifacts/Pocket-Agent-history-tests.apk
+          git rev-parse HEAD > artifacts/source-commit.txt
+          cp app/src/main/assets/runtime-manifest.json artifacts/runtime-manifest.json
+          (cd artifacts && sha256sum *.apk > SHA256SUMS.txt)
+      - uses: actions/upload-artifact@v6
+        with:
+          name: pocket-agent-history-device
+          path: artifacts/
+          retention-days: 14
+          if-no-files-found: error
