@@ -35,11 +35,10 @@ public class ConversationHistoryDeviceTest {
                 legacy.getWritableDatabase().execSQL("INSERT INTO events(at,json) VALUES(1,?)",new Object[]{"{\"type\":\"ready\"}"});
             }
             try(StateStore migrated=new StateStore(context,name)) {
-                assertEquals(2,migrated.getReadableDatabase().getVersion());
+                assertEquals(3,migrated.getReadableDatabase().getVersion());
                 assertEquals(old.toString(),migrated.loadDurable().toString());
                 assertEquals(7,migrated.load().getInt("mainTurns"));
                 assertEquals(1,migrated.recentEvents().length());
-                migrated.saveDurable(migrated.loadDurable());
                 JSONArray hits=migrated.searchHistory("obsidian",10);
                 assertEquals(1,hits.length());
                 assertEquals("00000000-0000-4000-8000-000000000000",hits.getJSONObject(0).getString("threadId"));
@@ -53,7 +52,7 @@ public class ConversationHistoryDeviceTest {
             JSONObject original=checkpoint("Committed quartz receipt.",301);state.saveDurable(original);
             state.getWritableDatabase().execSQL("CREATE TRIGGER reject_checkpoint BEFORE INSERT ON runtime_state BEGIN SELECT RAISE(ABORT,'synthetic checkpoint failure'); END");
             try {state.saveDurable(checkpoint("Uncommitted zircon receipt.",302));fail("Failed checkpoint was accepted");}
-            catch(RuntimeException expected) {}
+            catch(IllegalStateException expected) {assertEquals("Unable to persist durable state",expected.getMessage());}
             assertEquals(original.toString(),state.loadDurable().toString());
             assertEquals(1,state.searchHistory("",10).length());
             assertEquals(0,state.searchHistory("zircon",10).length());
@@ -92,6 +91,8 @@ public class ConversationHistoryDeviceTest {
             assertTrue(state.readHistory(id,"worker-1").getString("text").contains("downloads"));
             assertEquals(0,state.readHistory(id,"worker-2").length());
             assertEquals(4,state.searchHistory("",10).length());
+            assertEquals(0,state.searchHistory("the",10).length());
+            assertEquals(0,state.searchHistory("!!!",10).length());
             assertEquals("Fresh basalt thread.",state.loadDurable().getJSONArray("mainMessages").getJSONObject(0).getString("content"));
         }
         try(StateStore reopened=new StateStore(context,name)) {
@@ -99,6 +100,64 @@ public class ConversationHistoryDeviceTest {
             assertEquals(1,found.length());
             assertEquals("main",found.getJSONObject(0).getString("owner"));
             assertEquals(4,reopened.searchHistory("basalt",10).length());
+        } finally {context.deleteDatabase(name);}
+    }
+    @Test public void longEscapedMessagesPageWithoutLossAndByteSavesSkipUnrelatedPayloads() throws Exception {
+        Context context=InstrumentationRegistry.getInstrumentation().getTargetContext();
+        String name="history-page-instrumentation.db";context.deleteDatabase(name);
+        String text="start\u0000"+"\u0001😀".repeat(18000);
+        JSONObject saved=checkpoint(text,401).put("unrelated",new JSONObject().put("large","x".repeat(1600000)));
+        try(StateStore state=new StateStore(context,name)) {
+            state.saveDurableBytes(saved.toString().getBytes(StandardCharsets.UTF_8));
+            long id=state.searchHistory("",10).getJSONObject(0).getLong("id");
+            StringBuilder joined=new StringBuilder();int offset=0;
+            while(true) {
+                JSONObject page=state.readHistory(id,"main",offset,4000);
+                assertTrue("Escaped page must leave room in the tool envelope",page.toString().length()<31000);
+                joined.append(page.getString("text"));
+                if(page.isNull("nextOffset"))break;
+                assertTrue(page.getInt("nextOffset")>offset);offset=page.getInt("nextOffset");
+            }
+            assertEquals(text.trim(),joined.toString());
+            assertEquals(1600000,state.loadDurable().getJSONObject("unrelated").getString("large").length());
+        } finally {context.deleteDatabase(name);}
+    }
+    @Test public void shutdownNeutralizationDoesNotDependOnArchiveHealth() throws Exception {
+        Context context=InstrumentationRegistry.getInstrumentation().getTargetContext();
+        String name="history-shutdown-instrumentation.db";context.deleteDatabase(name);
+        try(StateStore state=new StateStore(context,name)) {
+            JSONObject saved=checkpoint("Preserve the topaz transcript.",501).put("busy",true)
+                .put("inbox",new JSONArray().put(new JSONObject().put("type","user").put("text","pending")));
+            state.saveDurable(saved);
+            state.getWritableDatabase().execSQL("CREATE TRIGGER reject_archive BEFORE INSERT ON conversation_history BEGIN SELECT RAISE(ABORT,'synthetic archive failure'); END");
+            state.markDurableInterrupted();
+            JSONObject neutralized=state.loadDurable();
+            assertFalse(neutralized.getBoolean("busy"));assertTrue(neutralized.getBoolean("mainPaused"));
+            assertEquals(0,neutralized.getJSONArray("inbox").length());
+            assertEquals(saved.getJSONArray("mainMessages").toString(),neutralized.getJSONArray("mainMessages").toString());
+            assertEquals(1,state.searchHistory("topaz",10).length());
+        } finally {context.deleteDatabase(name);}
+    }
+    @Test public void archiveCursorSkipsOldWritesAndInvalidatesAfterTranscriptTrimming() throws Exception {
+        Context context=InstrumentationRegistry.getInstrumentation().getTargetContext();
+        String name="history-progress-instrumentation.db";context.deleteDatabase(name);
+        try(StateStore state=new StateStore(context,name)) {
+            JSONObject saved=checkpoint("First emerald receipt.",601);state.saveDurable(saved);
+            state.getWritableDatabase().execSQL("CREATE TABLE archive_attempts(n INTEGER)");
+            state.getWritableDatabase().execSQL("INSERT INTO archive_attempts VALUES(0)");
+            state.getWritableDatabase().execSQL("CREATE TRIGGER count_archive BEFORE INSERT ON conversation_history BEGIN UPDATE archive_attempts SET n=n+1; END");
+            state.saveDurable(saved);
+            try(android.database.Cursor count=state.getReadableDatabase().rawQuery("SELECT n FROM archive_attempts",null)){assertTrue(count.moveToFirst());assertEquals(0,count.getInt(0));}
+            saved.getJSONArray("mainMessages").put(new JSONObject().put("role","assistant").put("timestamp",602).put("content","Second emerald receipt."));
+            state.saveDurable(saved);
+            try(android.database.Cursor count=state.getReadableDatabase().rawQuery("SELECT n FROM archive_attempts",null)){assertTrue(count.moveToFirst());assertEquals(1,count.getInt(0));}
+            saved.getJSONArray("mainMessages").remove(0);state.saveDurable(saved);
+            assertEquals(2,state.searchHistory("emerald",10).length());
+            saved.put("workerMessages",new JSONObject().put("abc",new JSONArray().put(new JSONObject().put("role","assistant").put("timestamp",603).put("content","Private garnet receipt."))))
+                .put("workerHistoryOwners",new JSONObject().put("abc","abc@first"));
+            state.saveDurable(saved);
+            assertEquals(1,state.searchHistory("garnet",10,"abc@first").length());
+            assertEquals(0,state.searchHistory("garnet",10,"abc@second").length());
         } finally {context.deleteDatabase(name);}
     }
 }

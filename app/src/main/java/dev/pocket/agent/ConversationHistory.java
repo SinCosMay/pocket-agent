@@ -3,6 +3,10 @@ package dev.pocket.agent;
 import android.content.ContentValues;
 import android.database.Cursor;
 import android.database.sqlite.SQLiteDatabase;
+import android.util.JsonReader;
+import android.util.JsonToken;
+import java.io.ByteArrayInputStream;
+import java.io.InputStreamReader;
 import java.nio.charset.StandardCharsets;
 import java.security.MessageDigest;
 import java.util.ArrayList;
@@ -26,6 +30,79 @@ final class ConversationHistory {
         db.execSQL("CREATE INDEX conversation_history_thread ON conversation_history(thread_id,timestamp)");
         db.execSQL("CREATE INDEX conversation_history_recent ON conversation_history(timestamp DESC)");
         db.execSQL("CREATE VIRTUAL TABLE conversation_history_fts USING fts4(text, tokenize=unicode61)");
+        createProgress(db);
+    }
+    static void createProgress(SQLiteDatabase db) {
+        db.execSQL("CREATE TABLE conversation_history_progress (thread_id TEXT PRIMARY KEY, position INTEGER NOT NULL, fingerprint TEXT NOT NULL)");
+    }
+    /** Extract only archive fields without decoding a second copy of the whole checkpoint tree. */
+    static JSONObject archivePayload(byte[] bytes) {
+        try(JsonReader reader=new JsonReader(new InputStreamReader(new ByteArrayInputStream(bytes),StandardCharsets.UTF_8))) {
+            JSONObject result=new JSONObject();reader.beginObject();
+            while(reader.hasNext()) {
+                String name=reader.nextName();
+                switch(name) {
+                    case "mainThreadId":result.put(name,string(reader));break;
+                    case "mainMessages":result.put(name,messages(reader));break;
+                    case "workerMessages": {
+                        JSONObject workers=new JSONObject();reader.beginObject();
+                        while(reader.hasNext()){String worker=reader.nextName();workers.put(worker,messages(reader));}
+                        reader.endObject();result.put(name,workers);break;
+                    }
+                    case "workerHistoryOwners": {
+                        JSONObject owners=new JSONObject();reader.beginObject();
+                        while(reader.hasNext()){String worker=reader.nextName();owners.put(worker,string(reader));}
+                        reader.endObject();result.put(name,owners);break;
+                    }
+                    default:reader.skipValue();
+                }
+            }
+            reader.endObject();
+            if(reader.peek()!=JsonToken.END_DOCUMENT)throw new IllegalArgumentException("Trailing checkpoint data");
+            return result;
+        } catch(java.io.IOException|org.json.JSONException invalid) {throw new IllegalArgumentException("Invalid archive payload",invalid);}
+    }
+    private static String string(JsonReader reader) throws java.io.IOException {
+        if(reader.peek()==JsonToken.STRING||reader.peek()==JsonToken.NUMBER)return reader.nextString();
+        reader.skipValue();return "";
+    }
+    private static JSONArray messages(JsonReader reader) throws java.io.IOException,org.json.JSONException {
+        JSONArray result=new JSONArray();reader.beginArray();
+        while(reader.hasNext()) {
+            if(reader.peek()!=JsonToken.BEGIN_OBJECT){reader.skipValue();result.put(JSONObject.NULL);continue;}
+            JSONObject message=new JSONObject();reader.beginObject();
+            while(reader.hasNext()) {
+                String name=reader.nextName();
+                switch(name) {
+                    case "role":message.put(name,string(reader));break;
+                    case "timestamp": {
+                        String raw=string(reader);long timestamp=0;
+                        try{timestamp=Long.parseLong(raw);}catch(NumberFormatException ignored){}
+                        message.put(name,timestamp);break;
+                    }
+                    case "content": {
+                        if(reader.peek()==JsonToken.STRING)message.put(name,reader.nextString());
+                        else if(reader.peek()==JsonToken.BEGIN_ARRAY) {
+                            JSONArray blocks=new JSONArray();reader.beginArray();
+                            while(reader.hasNext()) {
+                                if(reader.peek()!=JsonToken.BEGIN_OBJECT){reader.skipValue();continue;}
+                                JSONObject block=new JSONObject();reader.beginObject();
+                                while(reader.hasNext()) {
+                                    String key=reader.nextName();
+                                    if(key.equals("type")||key.equals("text"))block.put(key,string(reader));else reader.skipValue();
+                                }
+                                reader.endObject();blocks.put(block);
+                            }
+                            reader.endArray();message.put(name,blocks);
+                        } else reader.skipValue();
+                        break;
+                    }
+                    default:reader.skipValue();
+                }
+            }
+            reader.endObject();result.put(message);
+        }
+        reader.endArray();return result;
     }
 
     private static String messageText(JSONObject message) {
@@ -54,23 +131,52 @@ final class ConversationHistory {
 
     private static void append(SQLiteDatabase db,String thread,String owner,JSONArray messages) {
         if(messages==null||thread.isEmpty()||thread.length()>180)return;
-        for(int i=0;i<messages.length();i++) {
+        int start=0;
+        try(Cursor progress=db.rawQuery("SELECT position,fingerprint FROM conversation_history_progress WHERE thread_id=?",new String[]{thread})) {
+            if(progress.moveToFirst()) {
+                int position=progress.getInt(0);
+                // Live transcripts append immutable messages; trimming or a changed tail invalidates this cursor.
+                if(position>0&&position<=messages.length()&&progress.getString(1).equals(messageFingerprint(thread,messages.optJSONObject(position-1))))start=position;
+            }
+        }
+        for(int i=start;i<messages.length();i++) {
             JSONObject message=messages.optJSONObject(i);if(message==null)continue;
             String role=message.optString("role");
             if(!role.equals("user")&&!role.equals("assistant"))continue;
-            String content=messageText(message).trim();if(content.isEmpty())continue;
+            String content=archiveText(message);if(content.isEmpty())continue;
             // No tool calls, screenshots, or raw provider request bodies in long-lived history.
-            if(content.length()>100_000)content=content.substring(0,100_000)+" [archived excerpt]";
             long timestamp=message.optLong("timestamp",0);
             ContentValues values=new ContentValues();
             values.put("thread_id",thread);values.put("owner",owner);values.put("role",role);
             values.put("timestamp",timestamp);values.put("text",content);
             values.put("event_key",fingerprint(thread,role,timestamp,content));
             long id=db.insertWithOnConflict("conversation_history",null,values,SQLiteDatabase.CONFLICT_IGNORE);
-            if(id<0)continue;
+            if(id<0) {
+                // CONFLICT_IGNORE also hides some SQLite failures. Only an existing key is a duplicate.
+                try(Cursor existing=db.rawQuery("SELECT id FROM conversation_history WHERE event_key=?",new String[]{values.getAsString("event_key")})) {
+                    if(existing.moveToFirst())continue;
+                }
+                throw new IllegalStateException("Conversation archive persistence failed");
+            }
             ContentValues indexed=new ContentValues();indexed.put("docid",id);indexed.put("text",content);
             db.insertOrThrow("conversation_history_fts",null,indexed);
         }
+        if(messages.length()>0) {
+            ContentValues progress=new ContentValues();progress.put("thread_id",thread);progress.put("position",messages.length());
+            progress.put("fingerprint",messageFingerprint(thread,messages.optJSONObject(messages.length()-1)));
+            if(db.insertWithOnConflict("conversation_history_progress",null,progress,SQLiteDatabase.CONFLICT_REPLACE)<0)
+                throw new IllegalStateException("Archive progress persistence failed");
+        }
+    }
+    private static String archiveText(JSONObject message) {
+        String text=messageText(message).trim();
+        if(text.length()<=100000)return text;
+        int end=Character.isHighSurrogate(text.charAt(99999))?99999:100000;
+        return text.substring(0,end)+" [archived excerpt]";
+    }
+    private static String messageFingerprint(String thread,JSONObject message) {
+        if(message==null)return "null";
+        return fingerprint(thread,message.optString("role"),message.optLong("timestamp",0),archiveText(message));
     }
 
     static void archive(SQLiteDatabase db,JSONObject checkpoint) {
@@ -82,7 +188,10 @@ final class ConversationHistory {
         java.util.Iterator<String> workers=workerMessages.keys();
         while(workers.hasNext()) {
             String worker=workers.next();
-            append(db,"worker:"+worker,worker,workerMessages.optJSONArray(worker));
+            JSONObject identities=checkpoint.optJSONObject("workerHistoryOwners");
+            String identity=identities==null?worker:identities.optString(worker,worker);
+            if(identity.isEmpty()||identity.equals("main")||identity.length()>160)throw new IllegalArgumentException("Invalid worker archive identity");
+            append(db,"worker:"+identity,identity,workerMessages.optJSONArray(worker));
         }
     }
 
@@ -102,6 +211,7 @@ final class ConversationHistory {
         if(query==null||query.length()>300||limit<1||limit>50||requester==null||requester.isEmpty()||requester.length()>160)
             throw new IllegalArgumentException("Invalid history search");
         String expression=match(query);
+        if(expression.isEmpty()&&!query.trim().isEmpty())return new JSONArray();
         boolean main="main".equals(requester);
         String scope=main?"":"h.owner IN ('main',?)";
         String base="SELECT h.id,h.thread_id,h.owner,h.role,h.timestamp,substr(h.text,1,1800) FROM conversation_history h";
@@ -123,17 +233,25 @@ final class ConversationHistory {
     }
 
     static JSONObject read(SQLiteDatabase db,long id,String requester) {
+        return read(db,id,requester,0,100100);
+    }
+    static JSONObject read(SQLiteDatabase db,long id,String requester,int offset,int limit) {
         if(id<=0||requester==null||requester.isEmpty()||requester.length()>160)
             throw new IllegalArgumentException("Invalid history reference");
+        if(offset<0||offset>100100||limit<1||limit>100100)throw new IllegalArgumentException("Invalid history page");
         boolean main="main".equals(requester);
         String sql="SELECT id,thread_id,owner,role,timestamp,text FROM conversation_history WHERE id=?"+
             (main?"":" AND owner IN ('main',?)");
         String[] args=main?new String[]{String.valueOf(id)}:new String[]{String.valueOf(id),requester};
         try(Cursor cursor=db.rawQuery(sql,args)) {
             if(!cursor.moveToFirst())return new JSONObject();
+            String text=cursor.getString(5);int total=text.codePointCount(0,text.length());
+            int start=text.offsetByCodePoints(0,Math.min(offset,total));
+            int end=text.offsetByCodePoints(start,Math.min(limit,Math.max(0,total-offset)));
             try {return new JSONObject().put("id",cursor.getLong(0)).put("threadId",cursor.getString(1))
                 .put("owner",cursor.getString(2)).put("role",cursor.getString(3))
-                .put("timestamp",cursor.getLong(4)).put("text",cursor.getString(5));}
+                .put("timestamp",cursor.getLong(4)).put("text",text.substring(start,end)).put("offset",offset)
+                .put("totalCharacters",total).put("nextOffset",offset+limit<total?offset+limit:JSONObject.NULL);}
             catch(org.json.JSONException impossible) {throw new IllegalStateException(impossible);}
         }
     }

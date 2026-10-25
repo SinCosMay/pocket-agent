@@ -210,7 +210,7 @@ public final class ShellDisplayService extends IDisplayShell.Stub {
     }
     @Override public synchronized boolean repairAccessibility(String componentName,boolean restoreMissing) {
         android.content.ComponentName component=android.content.ComponentName.unflattenFromString(componentName);
-        if(component==null||!"dev.pocket.agent".equals(component.getPackageName())
+        if(component==null||!BuildConfig.APPLICATION_ID.equals(component.getPackageName())
             ||!"dev.pocket.agent.AgentAccessibility".equals(component.getClassName()))
             throw new SecurityException("Only Pocket Agent accessibility may be repaired");
         if(!"1".equals(execOutput("/system/bin/settings","get","secure","accessibility_enabled").trim()))return false;

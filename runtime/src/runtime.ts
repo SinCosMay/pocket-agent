@@ -66,6 +66,7 @@ export class PocketRuntime {
   private observerSession?:MobileSession;
   private mainSystemPrompt=DEFAULT_MAIN_PROMPT;
   private mainThreadId:string;
+  private readonly workerHistoryOwners=new Map<string,string>();
   private readonly credentialHistory=new Set<any>();
   private catalogPending?:Promise<CatalogModel[]>;
   private discoveringModels=false;
@@ -120,6 +121,9 @@ export class PocketRuntime {
       if(typeof proof?.model==='string'&&proof.model.length<=160&&levels.length)this.workerReasoningProofs.set(id,{model:proof.model,levels});
     }
     for(const stored of saved.workers??[]) {
+      // Retained legacy workers keep their old scope; every new worker gets a unique archive identity.
+      const oldOwner=saved.workerHistoryOwners?.[stored.conversationId];
+      this.workerHistoryOwners.set(stored.conversationId,typeof oldOwner==='string'&&oldOwner.length<=160&&oldOwner!== 'main'?oldOwner:stored.conversationId);
       const snapshot:any=savedProviderMatches?stored:{...stored,requestedConfig:{...(stored.requestedConfig??{})}};
       if(!savedProviderMatches){delete snapshot.requestedConfig.model;delete snapshot.requestedConfig.thinking;}
       try {
@@ -200,6 +204,7 @@ export class PocketRuntime {
     } catch(error) {this.reportError(`MCP setup failed: ${String((error as any)?.message??error)}`);return [];}
   }
   private createSession(owner:string,parent?:any,messages:any[]=[]):MobileSession {
+    if(owner!=='main'&&!this.workerHistoryOwners.has(owner))this.workerHistoryOwners.set(owner,owner+'@'+randomUUID());
     const systemPrompt=(parent?.definition?.systemPrompt??(owner==='main'?this.mainSystemPrompt:WORKER_PROMPT))+'\n'+MEMORY_GUIDANCE;
     const restored=owner==='main'&&messages[0]?.role==='system'?[{...messages[0],content:systemPrompt},...messages.slice(1)]:messages;
     const selectedModel=parent?.requestedConfig?.model;
@@ -244,7 +249,13 @@ export class PocketRuntime {
     const initial=owner==='main'?this.mainSystemPrompt:(this.registry.agents.get('researcher') && session.agent.state.systemPrompt.startsWith('Read-only bounded worker')?'Read-only bounded worker. Report evidence and uncertainty.':WORKER_PROMPT);
     const messages=session.agent.state.messages;
     if(messages[0]?.role!=='system')throw Error('Memory injection requires a system transcript');
-    session.agent.state.messages=[{...messages[0],content:initial+'\n'+MEMORY_GUIDANCE+recallBlock(this,owner,query)},...messages.slice(1)];
+    session.agent.state.messages=[{...messages[0],content:initial+'\n'+MEMORY_GUIDANCE+recallBlock(this,owner,query,session.agent.state.tools.map((tool:any)=>tool.name))},...messages.slice(1)];
+  }
+  historyOwner(owner:string):string {
+    if(owner==='main')return owner;
+    const identity=this.workerHistoryOwners.get(owner);
+    if(!identity)throw new Error('Unknown history owner');
+    return identity;
   }
   dropPriorImages(owner:string):void {(owner==='main'?this.main:this.sessions.get(owner))?.dropPriorImages();}
   async ensureDisplay(owner:string,signal?:AbortSignal):Promise<any> {
@@ -512,10 +523,10 @@ export class PocketRuntime {
         if(this.busy||this.pumping||this.deliveryTransaction||this.observing||this.runtime.listConversations().some(c=>c.currentGeneration||c.isStopping))throw new Error('Stop active work before starting a new main thread');
         this.deliveryTransaction=true;
         try {
+          // Archive before changing delivery receipts or the inbox, so failure leaves all work intact.
+          if(!this.save())throw new Error('Unable to archive the previous main thread');
           this.suppressCompletedMainDeliveries();
           this.inbox=[];
-          // Persist the old transcript before its live session is replaced.
-          if(!this.save())throw new Error('Unable to archive the previous main thread');
           this.main.dispose();
           this.mainThreadId=randomUUID();
           this.main=this.createSession('main');
@@ -561,7 +572,7 @@ export class PocketRuntime {
   }
   cleanupRemoved():void {
     const retained=new Set(this.runtime.listConversations().map(c=>c.conversationId));
-    for(const [id,session] of this.sessions)if(!retained.has(id as any)){this.releaseScreen(id);session.dispose();this.sessions.delete(id);this.workerReasoningProofs.delete(id);}
+    for(const [id,session] of this.sessions)if(!retained.has(id as any)){this.releaseScreen(id);session.dispose();this.sessions.delete(id);this.workerReasoningProofs.delete(id);this.workerHistoryOwners.delete(id);}
     this.delivered=new Set([...this.delivered].filter(key=>retained.has(JSON.parse(key)[0])));
   }
   private async stopAll():Promise<boolean> {
@@ -645,7 +656,7 @@ export class PocketRuntime {
     try {
       const workerMessages:any={};
       for(const [id,s] of this.sessions)workerMessages[id]=stripImages(s.messages);
-      let state:any={version:1,mainThreadId:this.mainThreadId,config:this.config,providerRevision:this.credentials.providerRevision,busy:this.busy,lastError:this.lastError,mainPaused:this.mainPaused,totalStarts:this.totalStarts,mainSystemPrompt:this.mainSystemPrompt,mainMessages:stripImages(this.main.messages),workers:this.runtime.listConversations(),workerMessages,workerReasoningProofs:Object.fromEntries(this.workerReasoningProofs),inbox:this.inbox,delivered:[...this.delivered],mainTurns:this.mainTurns,observationPending:this.observationPending};
+      let state:any={version:1,mainThreadId:this.mainThreadId,workerHistoryOwners:Object.fromEntries(this.workerHistoryOwners),config:this.config,providerRevision:this.credentials.providerRevision,busy:this.busy,lastError:this.lastError,mainPaused:this.mainPaused,totalStarts:this.totalStarts,mainSystemPrompt:this.mainSystemPrompt,mainMessages:stripImages(this.main.messages),workers:this.runtime.listConversations(),workerMessages,workerReasoningProofs:Object.fromEntries(this.workerReasoningProofs),inbox:this.inbox,delivered:[...this.delivered],mainTurns:this.mainTurns,observationPending:this.observationPending};
       let serialized=this.redactJson(state);
       if(utf8Bytes(serialized)>MAX_DURABLE_CHECKPOINT_BYTES) {
         const compactWorkers:any={};

@@ -13,7 +13,7 @@ import org.json.JSONObject;
 /** App-private durable snapshots; credentials have a separate Keystore-backed store. */
 public final class StateStore extends SQLiteOpenHelper {
     public StateStore(Context context) { this(context,"agent-state.db"); }
-    StateStore(Context context,String name) { super(context,name,null,2); }
+    StateStore(Context context,String name) { super(context,name,null,3); }
     @Override public void onCreate(SQLiteDatabase db) {
         db.execSQL("CREATE TABLE snapshot (id INTEGER PRIMARY KEY CHECK(id=1), json TEXT NOT NULL)");
         db.execSQL("CREATE TABLE runtime_state (id INTEGER PRIMARY KEY CHECK(id=1), json TEXT NOT NULL)");
@@ -21,8 +21,17 @@ public final class StateStore extends SQLiteOpenHelper {
         ConversationHistory.create(db);
     }
     @Override public void onUpgrade(SQLiteDatabase db, int from, int to) {
-        if(from==1&&to==2) { ConversationHistory.create(db);return; }
+        if(from==1&&to==3) {
+            ConversationHistory.create(db);
+            archiveLegacy(db);
+            return;
+        }
+        if(from==2&&to==3) {ConversationHistory.createProgress(db);archiveLegacy(db);return;}
         throw new IllegalStateException("Unsupported state migration");
+    }
+    private void archiveLegacy(SQLiteDatabase db) {
+        try {String raw=loadDurableRaw(db);if(raw!=null)ConversationHistory.archive(db,new JSONObject(raw));}
+        catch(org.json.JSONException invalid) {throw new IllegalStateException("Invalid legacy runtime state",invalid);}
     }
     public synchronized JSONObject load() {
         try (Cursor cursor = getReadableDatabase().rawQuery("SELECT json FROM snapshot WHERE id=1", null)) {
@@ -36,7 +45,10 @@ public final class StateStore extends SQLiteOpenHelper {
             throw new IllegalStateException("Snapshot persistence failed");
     }
     private String loadDurableRaw() {
-        SQLiteDatabase db=getReadableDatabase();String type;int length;
+        return loadDurableRaw(getReadableDatabase());
+    }
+    private String loadDurableRaw(SQLiteDatabase db) {
+        String type;int length;
         try(Cursor meta=db.rawQuery("SELECT typeof(json), length(json) FROM runtime_state WHERE id=1",null)) {
             if(!meta.moveToFirst())return null;
             type=meta.getString(0);length=meta.getInt(1);
@@ -73,8 +85,7 @@ public final class StateStore extends SQLiteOpenHelper {
     }
     public synchronized void saveDurableBytes(byte[] utf8Json) {
         if(utf8Json==null||utf8Json.length==0)throw new IllegalArgumentException("Durable state bytes are empty");
-        try {persistDurable(new JSONObject(new String(utf8Json,StandardCharsets.UTF_8)),utf8Json);}
-        catch(org.json.JSONException invalid) {throw new IllegalArgumentException("Invalid durable state",invalid);}
+        persistDurable(ConversationHistory.archivePayload(utf8Json),utf8Json);
     }
     private void persistDurable(JSONObject state,Object encoded) {
         SQLiteDatabase db=getWritableDatabase();db.beginTransaction();
@@ -98,13 +109,20 @@ public final class StateStore extends SQLiteOpenHelper {
     public synchronized JSONObject readHistory(long id,String requester) {
         return ConversationHistory.read(getReadableDatabase(),id,requester);
     }
+    public synchronized JSONObject readHistory(long id,String requester,int offset,int limit) {
+        if(limit>4000)throw new IllegalArgumentException("History page exceeds tool budget");
+        return ConversationHistory.read(getReadableDatabase(),id,requester,offset,limit);
+    }
     public synchronized void markDurableInterrupted() {
         try {
             JSONObject state=loadDurable();
             JSONArray inbox=state.optJSONArray("inbox");
             if(!state.optBoolean("busy")&&(inbox==null||inbox.length()==0))return;
             state.put("inbox",new JSONArray()).put("busy",false).put("mainPaused",true);
-            saveDurableBytes(state.toString().getBytes(StandardCharsets.UTF_8));
+            // Shutdown neutralization must remain possible even when the archive is unavailable.
+            ContentValues values=new ContentValues();values.put("id",1);values.put("json",state.toString());
+            if(getWritableDatabase().insertWithOnConflict("runtime_state",null,values,SQLiteDatabase.CONFLICT_REPLACE)<0)
+                throw new IllegalStateException("Unable to neutralize durable state");
         } catch(Exception failure) {
             if(getWritableDatabase().delete("runtime_state","id=1",null)<0)
                 throw new IllegalStateException("Could not neutralize interrupted durable runtime state",failure);

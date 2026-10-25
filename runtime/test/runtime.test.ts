@@ -459,6 +459,42 @@ test('main history identity survives restart and rotates only on a fresh main th
  assert.equal(bridge.state.mainThreadId,restored.state().mainThreadId);
 });
 
+test('a rejected main reset preserves the queued inbox, receipts, and history identity',async()=>{
+ class FailingBridge extends Bridge {
+  fail=false;
+  override call(method:string,json:string):string {
+   if(this.fail&&method.startsWith('store.save'))throw new Error('synthetic archive failure');
+   return super.call(method,json);
+  }
+ }
+ const bridge=new FailingBridge(),runtime=new PocketRuntime(bridge),internal=runtime as any;
+ command(runtime,{action:'send',text:'delegate delay=20'});
+ await until(()=>runtime.state().tasks.length>0&&!runtime.busy);internal.mainPaused=true;
+ await until(()=>runtime.state().tasks[0]?.status==='completed',8000);
+ const id=runtime.state().tasks[0].conversationId;
+ internal.inbox.push({type:'user',text:'queued before reset'});
+ const before={inbox:structuredClone(internal.inbox),delivered:[...internal.delivered],thread:runtime.state().mainThreadId,
+  receipt:runtime.runtime.conversation(id).generations.at(-1)!.receipts.model};
+ bridge.fail=true;
+ assert.equal(JSON.parse(runtime.dispatch(JSON.stringify({action:'new_main'}))).ok,false);
+ assert.deepEqual(internal.inbox,before.inbox);assert.deepEqual([...internal.delivered],before.delivered);
+ assert.equal(runtime.state().mainThreadId,before.thread);
+ assert.equal(runtime.runtime.conversation(id).generations.at(-1)!.receipts.model,before.receipt);
+ bridge.fail=false;command(runtime,{action:'new_main'});
+});
+test('archive identities survive restore but are never reused with a short worker ID',async()=>{
+ const bridge=new Bridge(),runtime=new PocketRuntime(bridge);
+ const started=runtime.startTasks([{kind:'spawn',agent:'researcher',label:'Read capabilities',prompt:'Read capabilities'}],{initiatedBy:'user'});
+ const id=started.starts[0].conversationId;
+ await until(()=>runtime.state().tasks[0]?.status==='completed');
+ const owner=runtime.historyOwner(id);assert.notEqual(owner,id);runtime.save();
+ const restored=new PocketRuntime(bridge);assert.equal(restored.historyOwner(id),owner);
+ await restored.runtime.removeConversations([id]);restored.cleanupRemoved();restored.save();
+ const next=new PocketRuntime(bridge);
+ const replacement=(next as any).createSession(id);
+ assert.notEqual(next.historyOwner(id),owner);assert.notEqual(next.historyOwner(id),id);replacement.dispose();
+});
+
 test('fresh-main startup intent discards persisted main work before automatic resume',()=>{
  const bridge=new Bridge();
  bridge.state={freshMainRequested:true,mainSystemPrompt:'Persisted custom prompt',mainMessages:[{role:'user',content:[{type:'text',text:'old main request'}],timestamp:1}],inbox:[{type:'user',text:'old queued request'}],mainTurns:9,mainPaused:true,busy:true,lastError:'old failure',observationPending:['old observation']};

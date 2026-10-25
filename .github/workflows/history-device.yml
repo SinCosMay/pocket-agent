@@ -17,7 +17,9 @@ jobs:
           node-version: '22.22.2'
           cache: npm
           cache-dependency-path: runtime/package-lock.json
-      - name: Build and check history runtime
+      # This artifact intentionally checks the history and shared-runtime suites only.
+      # The embedded Android compatibility gate is exercised locally on the USB phone.
+      - name: Build and check focused history/runtime suites
         working-directory: runtime
         run: |
           npm ci
