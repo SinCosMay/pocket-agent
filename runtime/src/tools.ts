@@ -172,6 +172,8 @@ export function nativeTools(host:any,owner:string,grant?:readonly string[]):any[
     parameters:Type.Unsafe(s.inputSchema),
     execute:async(_id:string,args:any,signal?:AbortSignal)=>{
       if(signal?.aborted) throw new Error('Cancelled before native dispatch');
+      host.authorizePhone?.(owner,s.name,args);
+      if(s.name==='phone_batch')for(const call of args.calls??[])host.authorizePhone?.(owner,call.name,call.args);
       // Batch entries must also stay inside this conversation's grant.
       if(s.name==='phone_batch' && args.calls?.some((x:any)=>!schemas.some(t=>t.name===x.name) || (grant && !grant.includes(x.name)))) throw new Error('Batch tool exceeds tool grant');
       if(s.name==='phone_screen'){

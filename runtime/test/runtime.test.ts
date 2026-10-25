@@ -1,3 +1,4 @@
+import {emptyAutonomy} from '../src/autonomy.js';
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import {PocketRuntime,NativeBridge,DEFAULT_MAIN_PROMPT} from '../src/runtime.js';
@@ -14,7 +15,9 @@ class Bridge implements NativeBridge {
   if(method==='store.load')result=this.state;
   if(method==='store.save'){this.state=structuredClone(args.state);result={saved:true};}
   if(method==='tool'){this.tools.push(args);result={available:true,operation_prefix:'20741-0123456789abcdef',owner:args.owner};}
-  return JSON.stringify({ok:true,result});
+  if(method==='autonomy.load')result=emptyAutonomy();
+    if(method==='autonomy.status')result={enabled:false};
+    return JSON.stringify({ok:true,result});
  }
  emit(json:string):void {this.events.push(JSON.parse(json));}
 }
@@ -354,25 +357,28 @@ test('fixture never retries unknown mutations or stale errors without a pre-disp
  }
 });
 
-test('custom main system prompt persists through turns, restart and provider reconfiguration',async()=>{
+test('personal instructions supplement the core and persist through turns, restart and provider reconfiguration',async()=>{
  const bridge=new Bridge(),runtime=new PocketRuntime(bridge);
  const custom='You are the custom main Pocket Agent. Keep replies concise and verified.';
- command(runtime,{action:'set_system_prompt',text:custom});
- assert.equal(runtime.state().mainSystemPrompt,custom);
+ command(runtime,{action:'set_personal_instructions',text:custom});
+ assert.equal(runtime.state().personalInstructions,custom);
  assert.match(runtime.main.agent.state.systemPrompt,/custom main Pocket Agent/);
  command(runtime,{action:'send',text:'hello custom prompt'});
  await until(()=>!runtime.state().active);
  assert.match(String((runtime.main.messages[0] as any).content),/custom main Pocket Agent/,'memory injection must preserve the custom main prompt');
  bridge.credentials={authMode:'scripted',model:'scripted'};
  command(runtime,{action:'configure'});
- assert.equal(runtime.state().mainSystemPrompt,custom);
+ assert.equal(runtime.state().personalInstructions,custom);
  assert.match(runtime.main.agent.state.systemPrompt,/custom main Pocket Agent/,'provider rebuild must reuse the custom prompt');
  const restored=new PocketRuntime(bridge);
- assert.equal(restored.state().mainSystemPrompt,custom,'durable state restores the custom prompt');
+ assert.equal(restored.state().personalInstructions,custom,'durable state restores the custom prompt');
  assert.match(restored.main.agent.state.systemPrompt,/custom main Pocket Agent/);
- command(restored,{action:'set_system_prompt',reset:true});
- assert.equal(restored.state().mainSystemPrompt,DEFAULT_MAIN_PROMPT);
- assert.equal(bridge.state.mainSystemPrompt,DEFAULT_MAIN_PROMPT,'reset persists the built-in default');
+ command(restored,{action:'set_personal_instructions',reset:true});
+ assert.equal(restored.state().personalInstructions,'');
+ assert.ok(restored.main.agent.state.systemPrompt.startsWith(DEFAULT_MAIN_PROMPT));
+ assert.equal('mainSystemPrompt' in restored.state(),false);
+ assert.equal('defaultMainSystemPrompt' in restored.state(),false);
+ assert.equal(bridge.state.personalInstructions,'','reset clears only personal preferences');
 });
 
 test('reasoning effort survives restart and provider reconfiguration while invalid stored values fall back to low',()=>{
@@ -415,8 +421,8 @@ test('retained workers persist model-bound reasoning proof, keep it on same-prov
 test('paused main with retained inbox can still apply provider and prompt settings',()=>{
  const bridge=new Bridge(),runtime=new PocketRuntime(bridge),internal=runtime as any;
  internal.mainPaused=true;internal.inbox=[{type:'user',text:'retained while context is full'}];
- command(runtime,{action:'configure',systemPrompt:'Prompt updated while paused'});
- assert.equal(runtime.state().mainSystemPrompt,'Prompt updated while paused');
+ command(runtime,{action:'configure',personalInstructions:'Prompt updated while paused'});
+ assert.equal(runtime.state().personalInstructions,'Prompt updated while paused');
  assert.equal(runtime.state().mainPaused,true);assert.equal(internal.inbox.length,1,'settings must not discard paused queued work');
 });
 
@@ -451,7 +457,7 @@ test('fresh-main startup intent discards persisted main work before automatic re
  bridge.state={freshMainRequested:true,mainSystemPrompt:'Persisted custom prompt',mainMessages:[{role:'user',content:[{type:'text',text:'old main request'}],timestamp:1}],inbox:[{type:'user',text:'old queued request'}],mainTurns:9,mainPaused:true,busy:true,lastError:'old failure',observationPending:['old observation']};
  const runtime=new PocketRuntime(bridge),state=runtime.state();
  assert.deepEqual(state.messages,[]);assert.equal(state.mainTurns,0);assert.equal(state.mainPaused,false);assert.equal(state.mainInterrupted,false);assert.equal(state.lastError,null);
- assert.equal(state.mainSystemPrompt,'Persisted custom prompt');assert.deepEqual((runtime as any).inbox,[]);assert.deepEqual((runtime as any).observationPending,[]);
+ assert.equal(state.personalInstructions,'Persisted custom prompt');assert.deepEqual((runtime as any).inbox,[]);assert.deepEqual((runtime as any).observationPending,[]);
  assert.equal(bridge.state.freshMainRequested,undefined,'startup intent is consumed by the first durable checkpoint');
  assert.deepEqual(bridge.state.mainMessages.filter((m:any)=>m.role==='user'||m.role==='assistant'),[]);
 });

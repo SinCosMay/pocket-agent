@@ -21,7 +21,14 @@ public final class StateStore extends SQLiteOpenHelper {
     @Override public void onUpgrade(SQLiteDatabase db, int from, int to) { throw new IllegalStateException("Unsupported state migration"); }
     public synchronized JSONObject load() {
         try (Cursor cursor = getReadableDatabase().rawQuery("SELECT json FROM snapshot WHERE id=1", null)) {
-            if (cursor.moveToFirst()) return new JSONObject(cursor.getString(0));
+            if (cursor.moveToFirst()) {
+                JSONObject snapshot=new JSONObject(cursor.getString(0));
+                if(!snapshot.has("personalInstructions")) {
+                    String legacy=snapshot.optString("mainSystemPrompt");
+                    snapshot.put("personalInstructions",legacy.startsWith("You are the user's persistent phone assistant.")?"":legacy);
+                }
+                snapshot.remove("mainSystemPrompt");snapshot.remove("defaultMainSystemPrompt");return snapshot;
+            }
         } catch (org.json.JSONException e) { throw new IllegalStateException("Invalid saved state", e); }
         return new JSONObject();
     }
@@ -108,13 +115,14 @@ public final class StateStore extends SQLiteOpenHelper {
         } catch (org.json.JSONException e) { throw new IllegalStateException(e); }
         return result;
     }
-    public synchronized void saveMainSystemPrompt(String prompt) {
+    public synchronized void savePersonalInstructions(String prompt) {
         JSONObject durable = loadDurable(), snapshot = load();
         try {
-            if (prompt == null || prompt.trim().isEmpty()) durable.remove("mainSystemPrompt");
-            else durable.put("mainSystemPrompt", prompt.trim());
+            durable.remove("mainSystemPrompt");
+            durable.put("personalInstructions", prompt == null ? "" : prompt.trim());
             saveDurable(durable);
-            snapshot.put("mainSystemPrompt", prompt == null ? "" : prompt.trim());
+            snapshot.remove("mainSystemPrompt"); snapshot.remove("defaultMainSystemPrompt");
+            snapshot.put("personalInstructions", prompt == null ? "" : prompt.trim());
             save(snapshot);
         } catch (org.json.JSONException e) { throw new IllegalStateException(e); }
     }
