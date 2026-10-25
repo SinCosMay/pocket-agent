@@ -12,13 +12,18 @@ import org.json.JSONObject;
 
 /** App-private durable snapshots; credentials have a separate Keystore-backed store. */
 public final class StateStore extends SQLiteOpenHelper {
-    public StateStore(Context context) { super(context, "agent-state.db", null, 1); }
+    public StateStore(Context context) { this(context,"agent-state.db"); }
+    StateStore(Context context,String name) { super(context,name,null,2); }
     @Override public void onCreate(SQLiteDatabase db) {
         db.execSQL("CREATE TABLE snapshot (id INTEGER PRIMARY KEY CHECK(id=1), json TEXT NOT NULL)");
         db.execSQL("CREATE TABLE runtime_state (id INTEGER PRIMARY KEY CHECK(id=1), json TEXT NOT NULL)");
         db.execSQL("CREATE TABLE events (id INTEGER PRIMARY KEY AUTOINCREMENT, at INTEGER NOT NULL, json TEXT NOT NULL)");
+        ConversationHistory.create(db);
     }
-    @Override public void onUpgrade(SQLiteDatabase db, int from, int to) { throw new IllegalStateException("Unsupported state migration"); }
+    @Override public void onUpgrade(SQLiteDatabase db, int from, int to) {
+        if(from==1&&to==2) { ConversationHistory.create(db);return; }
+        throw new IllegalStateException("Unsupported state migration");
+    }
     public synchronized JSONObject load() {
         try (Cursor cursor = getReadableDatabase().rawQuery("SELECT json FROM snapshot WHERE id=1", null)) {
             if (cursor.moveToFirst()) return new JSONObject(cursor.getString(0));
@@ -64,15 +69,34 @@ public final class StateStore extends SQLiteOpenHelper {
         } catch (org.json.JSONException e) { throw new IllegalStateException("Invalid saved runtime state", e); }
     }
     public synchronized void saveDurable(JSONObject state) {
-        ContentValues values = new ContentValues(); values.put("id", 1); values.put("json", state.toString());
-        if(getWritableDatabase().insertWithOnConflict("runtime_state", null, values, SQLiteDatabase.CONFLICT_REPLACE)==-1)
-            throw new IllegalStateException("Runtime state persistence failed");
+        persistDurable(state,state.toString());
     }
     public synchronized void saveDurableBytes(byte[] utf8Json) {
         if(utf8Json==null||utf8Json.length==0)throw new IllegalArgumentException("Durable state bytes are empty");
-        ContentValues values=new ContentValues();values.put("id",1);values.put("json",utf8Json);
-        if(getWritableDatabase().insertWithOnConflict("runtime_state",null,values,SQLiteDatabase.CONFLICT_REPLACE)<0)
-            throw new IllegalStateException("Unable to persist durable state");
+        try {persistDurable(new JSONObject(new String(utf8Json,StandardCharsets.UTF_8)),utf8Json);}
+        catch(org.json.JSONException invalid) {throw new IllegalArgumentException("Invalid durable state",invalid);}
+    }
+    private void persistDurable(JSONObject state,Object encoded) {
+        SQLiteDatabase db=getWritableDatabase();db.beginTransaction();
+        try {
+            // The archive and checkpoint commit together, even when the live conversation resets.
+            ConversationHistory.archive(db,state);
+            ContentValues values=new ContentValues();values.put("id",1);
+            if(encoded instanceof byte[])values.put("json",(byte[])encoded);
+            else values.put("json",(String)encoded);
+            if(db.insertWithOnConflict("runtime_state",null,values,SQLiteDatabase.CONFLICT_REPLACE)<0)
+                throw new IllegalStateException("Unable to persist durable state");
+            db.setTransactionSuccessful();
+        } finally {db.endTransaction();}
+    }
+    public synchronized JSONArray searchHistory(String query,int limit) {
+        return searchHistory(query,limit,"main");
+    }
+    public synchronized JSONArray searchHistory(String query,int limit,String requester) {
+        return ConversationHistory.search(getReadableDatabase(),query,limit,requester);
+    }
+    public synchronized JSONObject readHistory(long id,String requester) {
+        return ConversationHistory.read(getReadableDatabase(),id,requester);
     }
     public synchronized void markDurableInterrupted() {
         try {

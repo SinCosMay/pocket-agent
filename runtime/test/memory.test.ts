@@ -7,12 +7,15 @@ import {delay} from '../src/scripted.js';
 class MemoryBridge {
   state:any={};calls:any[]=[];events:any[]=[];
   records:any[]=[{id:1,scope:'global',category:'preference',content:'Use existing GitHub branches.',confirmed:true,updatedAt:12,source:'agent'}];
+  history:any[]=[{threadId:'old-main',owner:'main',role:'assistant',timestamp:10,text:'The motherboard warranty claim was accepted.'}];
   call(method:string,json:string):string {
     const args=JSON.parse(json);
     let result:any={};
     if(method==='credentials.get')result={authMode:'scripted'};
     if(method==='store.load')result=this.state;
     if(method==='store.save')this.state=structuredClone(args.state);
+    if(method==='history.search')result={messages:this.history.filter(x=>String(x.text).toLowerCase().includes(String(args.query).toLowerCase()))};
+    if(method==='history.read')result={message:{id:args.id,...this.history[0]}};
     if(method==='memory') {
       this.calls.push(args);
       if(args.request.action==='save')result={saved:true,id:2};
@@ -36,7 +39,7 @@ test('main and worker memory tools honor grants and local/global write defaults'
   const b=new MemoryBridge();
   const host={call:(method:string,args:any)=>JSON.parse(b.call(method,JSON.stringify(args))).result};
   const main=memoryTools(host,'main');
-  assert.deepEqual(main.map(t=>t.name),['memory_search','memory_profile','memory_save','memory_forget']);
+  assert.deepEqual(main.map(t=>t.name),['memory_search','memory_profile','memory_save','memory_forget','history_search','history_read']);
   await main.find(t=>t.name==='memory_save').execute('a',{key:'pref:git',content:'Use existing branches.',category:'preference',confirmed:true});
   assert.equal(b.calls.at(-1).request.scope,'global');
   const worker=memoryTools(host,'worker-1');
@@ -44,6 +47,10 @@ test('main and worker memory tools honor grants and local/global write defaults'
   assert.equal(b.calls.at(-1).request.scope,'thread');
   assert.equal(b.calls.at(-1).owner,'worker-1');
   assert.deepEqual(memoryTools(host,'worker-1',['memory_search','memory_profile']).map(t=>t.name),['memory_search','memory_profile']);
+  const archived=await main.find(t=>t.name==='history_search').execute('h',{query:'motherboard'});
+  assert.match(unwrap(archived).messages[0].text,/warranty claim/);
+  const full=await main.find(t=>t.name==='history_read').execute('read',{id:7});
+  assert.equal(unwrap(full).message.id,7);
   const memory=await worker.find(t=>t.name==='memory_search').execute('c',{query:'GitHub'});
   assert.equal(unwrap(memory).memories[0].id,1);
 });
@@ -70,6 +77,9 @@ test('saved memory data does not override tool grants for the read-only research
   assert.ok(researcher.tools!.includes('memory_profile'));
   assert.ok(!researcher.tools!.includes('memory_save'));
   assert.ok(!researcher.tools!.includes('memory_forget'));
+  assert.ok(researcher.tools!.includes('history_search'));
+  assert.ok(researcher.tools!.includes('history_read'));
   const block=recallBlock(r,'main','GitHub');
   assert.ok(block.includes('confirmed'));
+  assert.match(recallBlock(r,'main','motherboard'),/The motherboard warranty claim was accepted/);
 });

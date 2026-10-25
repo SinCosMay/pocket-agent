@@ -446,6 +446,19 @@ test('new main thread clears old main delivery but retains a resumable worker',a
  assert.equal(rejected.ok,false);assert.match(rejected.error,/Stop active work/);
 });
 
+
+test('main history identity survives restart and rotates only on a fresh main thread',()=>{
+ const bridge=new Bridge(),first=new PocketRuntime(bridge);
+ const original=first.state().mainThreadId;
+ assert.match(original,/^[a-f0-9-]{36}$/);
+ assert.equal(bridge.state.mainThreadId,original);
+ const restored=new PocketRuntime(bridge);
+ assert.equal(restored.state().mainThreadId,original);
+ command(restored,{action:'new_main'});
+ assert.notEqual(restored.state().mainThreadId,original);
+ assert.equal(bridge.state.mainThreadId,restored.state().mainThreadId);
+});
+
 test('fresh-main startup intent discards persisted main work before automatic resume',()=>{
  const bridge=new Bridge();
  bridge.state={freshMainRequested:true,mainSystemPrompt:'Persisted custom prompt',mainMessages:[{role:'user',content:[{type:'text',text:'old main request'}],timestamp:1}],inbox:[{type:'user',text:'old queued request'}],mainTurns:9,mainPaused:true,busy:true,lastError:'old failure',observationPending:['old observation']};

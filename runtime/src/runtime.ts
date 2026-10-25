@@ -1,3 +1,4 @@
+import { randomUUID } from 'node:crypto';
 import { AgentRegistry } from '../vendor/pi9/agents.js';
 import { SubagentRuntime } from '../vendor/pi9/runtime.js';
 import { completedGeneration,errorGeneration,interruptedGeneration,generationKey } from '../vendor/pi9/conversation.js';
@@ -64,6 +65,7 @@ export class PocketRuntime {
   private observing=false;
   private observerSession?:MobileSession;
   private mainSystemPrompt=DEFAULT_MAIN_PROMPT;
+  private mainThreadId:string;
   private readonly credentialHistory=new Set<any>();
   private catalogPending?:Promise<CatalogModel[]>;
   private discoveringModels=false;
@@ -84,12 +86,15 @@ export class PocketRuntime {
     this.mcp=new McpToolRegistry(this.redact,mcpConnector);
     const phoneTools=[...nativeTools(this,'placeholder').map(x=>x.name),...MEMORY_TOOL_NAMES,'speak_to_user'];
     this.registry.agents.set('phone-operator',{name:'phone-operator',description:'Performs bounded Android workflows and verifies native outcomes.',source:'project',systemPrompt:WORKER_PROMPT,tools:[...phoneTools,'subagent']});
-    this.registry.agents.set('researcher',{name:'researcher',description:'Reads phone capabilities and app data with no screen mutations.',source:'project',systemPrompt:'Read-only bounded worker. Report evidence and uncertainty.',tools:['phone_capabilities','phone_apps','phone_contacts','phone_calendars','phone_calendar_events','phone_notifications','phone_notification_read','phone_operation','memory_search','memory_profile','speak_to_user','subagent']});
+    this.registry.agents.set('researcher',{name:'researcher',description:'Reads phone capabilities and app data with no screen mutations.',source:'project',systemPrompt:'Read-only bounded worker. Report evidence and uncertainty.',tools:['phone_capabilities','phone_apps','phone_contacts','phone_calendars','phone_calendar_events','phone_notifications','phone_notification_read','phone_operation','memory_search','memory_profile','history_search','history_read','speak_to_user','subagent']});
     this.reloadCredentials();
     void this.refreshMcpTools();
     this.runtime=new SubagentRuntime(this.registry,limits.maxExecuting,this.execute as any,limits.maxConversations);
     const saved=this.call('store.load',{}) ?? {};
     const freshMainRequested=saved.freshMainRequested===true;
+    this.mainThreadId=!freshMainRequested&&typeof saved.mainThreadId==='string'&&/^[a-f0-9-]{36}$/.test(saved.mainThreadId)
+      ?saved.mainThreadId:!freshMainRequested&&Array.isArray(saved.mainMessages)&&saved.mainMessages.length>0
+      ?'00000000-0000-4000-8000-000000000000':randomUUID();
     if(typeof saved.mainSystemPrompt==='string' && saved.mainSystemPrompt.trim() && saved.mainSystemPrompt.length<=50_000)
       this.mainSystemPrompt=saved.mainSystemPrompt;
     this.config={...this.config,...saved.config};
@@ -509,7 +514,10 @@ export class PocketRuntime {
         try {
           this.suppressCompletedMainDeliveries();
           this.inbox=[];
+          // Persist the old transcript before its live session is replaced.
+          if(!this.save())throw new Error('Unable to archive the previous main thread');
           this.main.dispose();
+          this.mainThreadId=randomUUID();
           this.main=this.createSession('main');
           this.mainPaused=false;
           this.mainInterrupted=false;
@@ -637,7 +645,7 @@ export class PocketRuntime {
     try {
       const workerMessages:any={};
       for(const [id,s] of this.sessions)workerMessages[id]=stripImages(s.messages);
-      let state:any={version:1,config:this.config,providerRevision:this.credentials.providerRevision,busy:this.busy,lastError:this.lastError,mainPaused:this.mainPaused,totalStarts:this.totalStarts,mainSystemPrompt:this.mainSystemPrompt,mainMessages:stripImages(this.main.messages),workers:this.runtime.listConversations(),workerMessages,workerReasoningProofs:Object.fromEntries(this.workerReasoningProofs),inbox:this.inbox,delivered:[...this.delivered],mainTurns:this.mainTurns,observationPending:this.observationPending};
+      let state:any={version:1,mainThreadId:this.mainThreadId,config:this.config,providerRevision:this.credentials.providerRevision,busy:this.busy,lastError:this.lastError,mainPaused:this.mainPaused,totalStarts:this.totalStarts,mainSystemPrompt:this.mainSystemPrompt,mainMessages:stripImages(this.main.messages),workers:this.runtime.listConversations(),workerMessages,workerReasoningProofs:Object.fromEntries(this.workerReasoningProofs),inbox:this.inbox,delivered:[...this.delivered],mainTurns:this.mainTurns,observationPending:this.observationPending};
       let serialized=this.redactJson(state);
       if(utf8Bytes(serialized)>MAX_DURABLE_CHECKPOINT_BYTES) {
         const compactWorkers:any={};
@@ -669,7 +677,7 @@ export class PocketRuntime {
     const otherActive=this.discoveringModels||hasPendingCodexRefresh(this.credentials)||this.observing||this.busy||tasks.some(t=>t.currentGeneration||t.isStopping)||(!this.mainPaused&&this.inbox.length>0)||Boolean(this.pendingSave);
     const cleanupOnly=this.releaseRetries.size>0&&!otherActive;
     const cleanupWakeMs=cleanupOnly?Math.min(...[...this.releaseRetries.values()].map(retry=>Math.max(1,(retry.dueAt??Date.now()+200)-Date.now()))):0;
-    return {messages:textMessages(this.main.messages,this.sanitize),tasks,busy:this.busy,lastError:this.lastError,active:this.releaseRetries.size>0||otherActive,cleanupOnly,cleanupWakeMs,mainPaused:this.mainPaused,mainInterrupted:this.mainInterrupted,provider:{...this.config},mainTurns:this.mainTurns,mainSystemPrompt:this.mainSystemPrompt,defaultMainSystemPrompt:DEFAULT_MAIN_PROMPT,
+    return {messages:textMessages(this.main.messages,this.sanitize),mainThreadId:this.mainThreadId,tasks,busy:this.busy,lastError:this.lastError,active:this.releaseRetries.size>0||otherActive,cleanupOnly,cleanupWakeMs,mainPaused:this.mainPaused,mainInterrupted:this.mainInterrupted,provider:{...this.config},mainTurns:this.mainTurns,mainSystemPrompt:this.mainSystemPrompt,defaultMainSystemPrompt:DEFAULT_MAIN_PROMPT,
       workerMessages:Object.fromEntries([...this.sessions].map(([id,s])=>[id,textMessages(s.messages,this.sanitize)]))};
   }
   publish():void {
