@@ -164,16 +164,19 @@ public class CodexAuthDeviceTest {
         String[] verified=new String[]{"low","medium","high"};
         assertEquals("Verified Codex low must become the global preference","low",
                 MainActivity.reasoningPreferenceAfterSelection("codex-account","gpt-6-luna","low","high",
-                        verified,"",new String[0]));
+                        verified,"",new String[0],false));
         assertEquals("Persisted verified Codex low must become the global preference","low",
                 MainActivity.reasoningPreferenceAfterSelection("codex-account","gpt-6-luna","low","high",
-                        null,"gpt-6-luna",verified));
+                        null,"gpt-6-luna",verified,false));
         assertEquals("Explicit manual low must become the preference","low",
                 MainActivity.reasoningPreferenceAfterSelection("codex-account","gpt-6-luna","low","high",
-                        null,"",new String[0]));
+                        null,"",new String[0],true));
         assertEquals("Compatible provider selection must become the global preference","high",
                 MainActivity.reasoningPreferenceAfterSelection("openai","gpt-5","high","low",
-                        null,"",new String[0]));
+                        null,"",new String[0],false));
+        assertEquals("Saving an unchanged low fallback must preserve the prior preference","high",
+                MainActivity.reasoningPreferenceAfterSelection("codex-account","gpt-6-luna","low","high",
+                        null,"",new String[0],false));
         Assume.assumeTrue("Synthetic account tests require an emulator",CredentialStore.isEmulator());
         CredentialStore credentials=new CredentialStore(context());JSONObject saved=credentials.get();
         try {
@@ -237,6 +240,33 @@ public class CodexAuthDeviceTest {
             assertEquals("max",new CredentialStore(context()).get().getString("reasoningEffort"));
             assertFalse(credentials.get().has("reasoningEfforts"));
         } finally { credentials.save(saved); }
+    }
+
+    @Test public void catalogProofCannotCrossEndpointOrCredentialChanges() throws Exception {
+        CredentialStore credentials=new CredentialStore(context());JSONObject saved=credentials.get();
+        try {
+            JSONObject base=new JSONObject().put("authMode","openai").put("endpoint","https://a.example.test/v1")
+                    .put("apiKey","synthetic-key-a").put("model","shared-model").put("modelSource","manual").put("reasoningEffort","low");
+            JSONObject catalog=new JSONObject(base.toString()).put("modelSource","catalog").put("reasoningEffort","high")
+                    .put("reasoningEffortModel","shared-model").put("reasoningEfforts",new JSONArray().put("medium").put("high"));
+            for(String field:new String[]{"endpoint","apiKey"}) {
+                credentials.save(base);credentials.save(catalog);
+                JSONObject changed=new JSONObject(catalog.toString()).put(field,
+                        field.equals("endpoint")?"https://b.example.test/v1":"synthetic-key-b");
+                for(boolean explicitProof:new boolean[]{true,false}) {
+                    JSONObject attempt=new JSONObject(changed.toString());
+                    if(!explicitProof){attempt.remove("reasoningEffortModel");attempt.remove("reasoningEfforts");}
+                    try {credentials.save(attempt);fail("Stale catalog proof crossed "+field);}
+                    catch(IllegalArgumentException expected) { /* A new connection requires fresh metadata. */ }
+                }
+                changed.put("modelSource","manual").put("reasoningEffort","low");
+                credentials.save(changed);
+                JSONObject reopened=new CredentialStore(context()).get();
+                assertEquals("manual",reopened.getString("modelSource"));
+                assertEquals("low",reopened.getString("reasoningEffort"));
+                assertFalse(reopened.has("reasoningEfforts"));
+            }
+        } finally {credentials.save(saved);}
     }
 
 }

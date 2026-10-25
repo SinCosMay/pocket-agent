@@ -219,7 +219,7 @@ function fixedCodexFetch(fetcher: typeof fetch, budget: {attempts:number}, deadl
   }) as typeof fetch;
 }
 
-export function makeStream(config: ProviderConfig, credentials: ProviderCredentials = {}, owner: any, reasoningOverride?: ReasoningEffort, supportedReasoning?: readonly ReasoningEffort[]): StreamFn {
+export function makeStream(config: ProviderConfig, credentials: ProviderCredentials = {}, owner: any, reasoningOverride?: ReasoningEffort, supportedReasoning?: readonly ReasoningEffort[], modelSource = credentials.modelSource): StreamFn {
   if (config.mode === 'scripted') return scriptedStream(owner);
   return async(_model, context, options)=>{
     let model: ProviderModel | undefined;
@@ -243,12 +243,12 @@ export function makeStream(config: ProviderConfig, credentials: ProviderCredenti
         : Array.isArray(credentials.reasoningEfforts)
           ? credentials.reasoningEfforts.filter(value => REASONING_EFFORT_SET.has(value))
           : [];
-      const manualModel = credentials.modelSource === 'manual' && credentials.model === model.id;
+      const manualModel = modelSource === 'manual' && credentials.model === model.id;
       const modelLevels = !manualModel && (hasCatalogReasoning || credentials.reasoningEffortModel === model.id)
         ? advertisedReasoning : [];
       const reasoning = modelLevels.length && !modelLevels.includes(requestedReasoning)
         ? modelLevels.includes(DEFAULT_REASONING_EFFORT) ? DEFAULT_REASONING_EFFORT : modelLevels[0]
-        : !manualModel && !modelLevels.length && (account || credentials.modelSource === 'catalog')
+        : !manualModel && !modelLevels.length && (account || modelSource === 'catalog')
           ? DEFAULT_REASONING_EFFORT : requestedReasoning;
       const shared = {...options,apiKey,transport:'sse' as const,maxRetries:0,timeoutMs:120000,reasoning};
       const budget = {attempts:0};

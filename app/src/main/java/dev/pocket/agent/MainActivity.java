@@ -50,6 +50,7 @@ public final class MainActivity extends Activity implements AgentService.Observe
     private String deferredUserMessage;
     private Spinner modelPicker;
     private Spinner reasoningPicker;
+    private String renderedReasoningEffort = CredentialStore.DEFAULT_REASONING_EFFORT;
     private String modelRequestId;
     private String mcpRequestId;
     private String[] modelIds = {};
@@ -332,9 +333,11 @@ public final class MainActivity extends Activity implements AgentService.Observe
     }
     static String reasoningPreferenceAfterSelection(String mode, String selectedModel,
             String selectedEffort, String preferred, String[] advertised,
-            String verifiedModel, String[] verifiedLevels) {
+            String verifiedModel, String[] verifiedLevels, boolean explicitManualChoice) {
         if (mode.equals("openai") || mode.equals("codex")) return selectedEffort;
-        if (mode.equals(CredentialStore.CODEX_ACCOUNT)) return selectedEffort;
+        if (mode.equals(CredentialStore.CODEX_ACCOUNT)
+                && (explicitManualChoice || containsReasoningEffort(advertised, selectedEffort)
+                || hasPersistedReasoningProof(selectedModel, selectedEffort, verifiedModel, verifiedLevels))) return selectedEffort;
         return preferred;
     }
     static String[] reasoningChoices(boolean manualModel, String[] advertised,
@@ -365,6 +368,7 @@ public final class MainActivity extends Activity implements AgentService.Observe
         picker.setTag(values);
         picker.setAdapter(new ArrayAdapter<>(this, android.R.layout.simple_spinner_dropdown_item, labels));
         picker.setSelection(Math.max(0, selection));
+        renderedReasoningEffort = values[Math.max(0, selection)];
     }
     private void settings() {
         CredentialStore credentials = new CredentialStore(this); final JSONObject saved;
@@ -404,6 +408,7 @@ public final class MainActivity extends Activity implements AgentService.Observe
         final String[] modelSource = {savedModelSource};
         final boolean[] savedProofApplies = {true};
         final boolean[] changingModel = {false};
+        final boolean[] manualModelEdited = {false};
         populateReasoningPicker(reasoning, model.getText().toString(), savedActiveReasoning,
                 modelSource[0].equals("manual"), savedReasoningModel, savedReasoningLevels);
         panel.addView(reasoning);
@@ -419,11 +424,14 @@ public final class MainActivity extends Activity implements AgentService.Observe
                     String currentModel = model.getText().toString().trim();
                     preferredReasoning[0] = reasoningPreferenceAfterSelection(selectedMode, currentModel,
                             selectedReasoningEffort(reasoning), preferredReasoning[0],
-                            modelReasoningEfforts.get(currentModel), savedReasoningModel, savedReasoningLevels);
+                            modelReasoningEfforts.get(currentModel), savedReasoningModel, savedReasoningLevels,
+                            modelSource[0].equals("manual") && (manualModelEdited[0]
+                                    || !selectedReasoningEffort(reasoning).equals(renderedReasoningEffort)));
                     changingModel[0] = true;
                     model.setText(modelIds[position]);
                     changingModel[0] = false;
                     modelSource[0] = "catalog";
+                    manualModelEdited[0] = false;
                     String pickerPreference = selectedMode.equals(CredentialStore.CODEX_ACCOUNT)
                             ? selectedReasoningEffort(reasoning) : preferredReasoning[0];
                     populateReasoningPicker(reasoning, modelIds[position], pickerPreference,
@@ -508,6 +516,7 @@ public final class MainActivity extends Activity implements AgentService.Observe
             changingModel[0] = true;
             savedProofApplies[0] = sameProvider;
             modelSource[0] = sameProvider ? savedModelSource : "manual";
+            manualModelEdited[0] = false;
             if (sameProvider) {
                 if (!account) endpoint.setText(saved.optString("endpoint", endpoint.getText().toString()));
                 model.setText(saved.optString("model", model.getText().toString()));
@@ -518,7 +527,7 @@ public final class MainActivity extends Activity implements AgentService.Observe
             else if (selectedMode.equals("openai")) { endpoint.setText("https://api.openai.com/v1"); model.setText("gpt-4.1-mini"); }
             else { endpoint.setText("https://api.openai.com/v1"); model.setText("scripted"); }
             changingModel[0] = false;
-            String pickerPreference = sameProvider ? savedActiveReasoning : CredentialStore.DEFAULT_REASONING_EFFORT;
+            String pickerPreference = sameProvider ? savedActiveReasoning : preferredReasoning[0];
             populateReasoningPicker(reasoning, model.getText().toString(), pickerPreference,
                     modelSource[0].equals("manual"), sameProvider ? savedReasoningModel : "",
                     sameProvider ? savedReasoningLevels : new String[0]);
@@ -531,8 +540,12 @@ public final class MainActivity extends Activity implements AgentService.Observe
                     String currentModel = model.getText().toString().trim();
                     preferredReasoning[0] = reasoningPreferenceAfterSelection(previousMode, currentModel,
                             selectedReasoningEffort(reasoning), preferredReasoning[0],
-                            modelReasoningEfforts.get(currentModel), savedReasoningModel, savedReasoningLevels);
+                            modelReasoningEfforts.get(currentModel), savedReasoningModel, savedReasoningLevels,
+                            modelSource[0].equals("manual") && (manualModelEdited[0]
+                                    || !selectedReasoningEffort(reasoning).equals(renderedReasoningEffort)));
+                    changingModel[0] = true;
                     secret.setText("");
+                    changingModel[0] = false;
                     modelRequestId = null;
                     modelIds = new String[0];
                     modelReasoningEfforts.clear();
@@ -554,11 +567,33 @@ public final class MainActivity extends Activity implements AgentService.Observe
                 if (changingModel[0]) return;
                 String effort = selectedReasoningEffort(reasoning);
                 modelSource[0] = "manual";
+                manualModelEdited[0] = true;
                 picker.setSelection(0);
                 populateReasoningPicker(reasoning, value.toString().trim(), effort,
                         true, "", new String[0]);
             }
         });
+        TextWatcher connectionChanges = new TextWatcher() {
+            @Override public void beforeTextChanged(CharSequence value, int start, int count, int after) { }
+            @Override public void onTextChanged(CharSequence value, int start, int before, int count) { }
+            @Override public void afterTextChanged(Editable value) {
+                if (changingModel[0]) return;
+                // Catalog metadata belongs to the saved connection, including its credential.
+                savedProofApplies[0] = false;
+                modelSource[0] = "manual";
+                manualModelEdited[0] = false;
+                modelRequestId = null;
+                modelIds = new String[0];
+                modelReasoningEfforts.clear();
+                modelDefaultReasoningEfforts.clear();
+                picker.setAdapter(new ArrayAdapter<>(MainActivity.this, android.R.layout.simple_spinner_dropdown_item,
+                        new String[]{"Manual model ID · save connection to discover models"}));
+                populateReasoningPicker(reasoning, model.getText().toString().trim(),
+                        CredentialStore.DEFAULT_REASONING_EFFORT, true, "", new String[0]);
+            }
+        };
+        endpoint.addTextChangedListener(connectionChanges);
+        secret.addTextChangedListener(connectionChanges);
         if (BuildConfig.DEVELOPMENT_TOOLS) panel.addView(button("Development MCP and ngrok", () ->
             startActivity(new Intent().setClassName(this, "dev.pocket.agent.DevToolsActivity"))));
         panel.addView(button("Accessibility settings", () -> startActivity(new Intent(Settings.ACTION_ACCESSIBILITY_SETTINGS))));
@@ -735,7 +770,9 @@ public final class MainActivity extends Activity implements AgentService.Observe
                             : advertised != null ? advertised : persistedModelProof ? savedReasoningLevels : null;
                     preferredReasoning[0] = reasoningPreferenceAfterSelection(selectedMode, selectedModel,
                             selectedEffort, preferredReasoning[0], advertised,
-                            savedReasoningModel, savedReasoningLevels);
+                            savedReasoningModel, savedReasoningLevels,
+                            modelSource[0].equals("manual") && (manualModelEdited[0]
+                                    || !selectedEffort.equals(renderedReasoningEffort)));
                     JSONObject config = json("authMode", selectedMode, "model", selectedModel, "modelSource", modelSource[0], "reasoningEffort", selectedEffort,
                             "preferredReasoningEffort", preferredReasoning[0]);
                     config.put("reasoningEffortModel", modelSource[0].equals("catalog") ? selectedModel : "");

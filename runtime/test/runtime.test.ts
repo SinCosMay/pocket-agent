@@ -732,3 +732,29 @@ test('list_models delivers a large Codex catalog with reasoning metadata and omi
    assert.ok(JSON.stringify(event).length<500);
  } finally {globalThis.fetch=originalFetch;}
 });
+
+
+test('explicit same-ID catalog workers keep their reasoning restriction through configure and restart',async()=>{
+ const originalFetch=globalThis.fetch;
+ const bridge=new Bridge();bridge.credentials={authMode:'openai',endpoint:'https://provider.example.test/v1',apiKey:'worker-source-key',
+   model:'shared-model',modelSource:'manual',reasoningEffort:'max',providerRevision:'worker-source-provider'};
+ const efforts:string[]=[];
+ globalThis.fetch=(async(input,init)=>{
+   if(String(input).endsWith('/models'))return Response.json({data:[{id:'shared-model',supported_reasoning_levels:['low','high']}]});
+   efforts.push(JSON.parse(String(init?.body)).reasoning.effort);
+   const event={type:'response.completed',response:{id:'source-response',status:'completed',output:[],usage:{input_tokens:1,output_tokens:0,total_tokens:1,input_tokens_details:{cached_tokens:0}}}};
+   return new Response('event: response.completed\ndata: '+JSON.stringify(event)+'\n\n',{headers:{'content-type':'text/event-stream'}});
+ }) as typeof fetch;
+ try {
+   const runtime=new PocketRuntime(bridge);await runtime.refreshModels();
+   const handle=runtime.startTasks([{kind:'spawn',agent:'researcher',label:'Catalog source',prompt:'Read state',model:'shared-model',thinking:'max'}],{initiatedBy:'user'});
+   assert.equal(handle.starts[0].ok,true);await handle.completion;
+   await until(()=>runtime.state().tasks[0]?.status==='completed');
+   const id=runtime.state().tasks[0].conversationId;
+   command(runtime,{action:'configure'});
+   await runtime.sessions.get(id)!.prompt('After settings save');
+   const restored=new PocketRuntime(bridge);
+   await restored.sessions.get(id)!.prompt('After restart');
+   assert.deepEqual(efforts,['low','low','low']);
+ } finally {globalThis.fetch=originalFetch;}
+});

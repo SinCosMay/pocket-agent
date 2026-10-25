@@ -128,19 +128,20 @@ public final class CredentialStore {
                 allowed.put("model", model(settings.optString("model")));
             }
             String selectedModel = allowed.getString("model");
+            boolean sameProvider = sameProviderIdentity(current, allowed);
             String source = settings.optString("modelSource");
             if (!settings.has("modelSource") && !newAccountCredential
-                    && mode.equals(current.optString("authMode")) && selectedModel.equals(current.optString("model")))
+                    && sameProvider && selectedModel.equals(current.optString("model")))
                 source = current.optString("modelSource");
             if (source.equals("manual") || source.equals("catalog")) allowed.put("modelSource", source);
             boolean manualModel = source.equals("manual");
             boolean proofSpecified = settings.has("reasoningEffortModel") || settings.has("reasoningEfforts");
             JSONArray supported = newAccountCredential || manualModel ? new JSONArray()
                     : reasoningEfforts(settings.optJSONArray("reasoningEfforts"));
-            boolean validProof = !newAccountCredential && !manualModel
+            boolean validProof = sameProvider && !newAccountCredential && !manualModel
                     && selectedModel.equals(settings.optString("reasoningEffortModel")) && supported.length() > 0;
             if (!proofSpecified && !newAccountCredential && !manualModel
-                    && mode.equals(current.optString("authMode"))
+                    && sameProvider
                     && selectedModel.equals(current.optString("reasoningEffortModel"))) {
                 supported = reasoningEfforts(current.optJSONArray("reasoningEfforts"));
                 validProof = supported.length() > 0;
