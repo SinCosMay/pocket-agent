@@ -49,6 +49,8 @@ Android can restrict or terminate the user-started service. Interrupted work is 
 
 ## Development
 
+For the latest test build from `main`, open the [**Development prerelease**](https://github.com/ru-aish/pocket-agent/releases/tag/development) and expand **Assets**. Download **`Pocket-Agent-development-arm64.apk`** for an ARM64 phone, `Pocket-Agent-development-x86_64.apk` for an emulator, or `Pocket-Agent-development-universal.apk` if unsure. The [Scheduled development APK workflow](https://github.com/ru-aish/pocket-agent/actions/workflows/development-apk.yml) checks every three hours and only builds when `main` differs from the last successfully published development build. See [development build downloads and schedule](docs/DEVELOPMENT_APK.md#downloads-and-schedule) for details.
+
 **Compile and sign APKs only in GitHub Actions.** The workflow builds release/test APKs, runs runtime tests and lint, and packages hashes and provenance. Emulator/device execution is a separate local step; use an explicit emulator serial, as described in the validation documentation.
 
 - [Voice assistant: Deepgram, Android role, lifecycle, and latency](docs/VOICE.md)

@@ -1,0 +1,171 @@
+name: Scheduled development APK
+
+on:
+  schedule:
+    # Every three hours, away from the busiest minute of the hour (UTC).
+    - cron: '17 */3 * * *'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: scheduled-development-apk
+  cancel-in-progress: false
+
+jobs:
+  check:
+    if: github.ref == 'refs/heads/main'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    outputs:
+      source_sha: ${{ steps.source.outputs.source_sha }}
+      should_build: ${{ steps.source.outputs.should_build }}
+      release_exists: ${{ steps.source.outputs.release_exists }}
+    steps:
+      - name: Compare main with the last published development APK
+        id: source
+        uses: actions/github-script@v8
+        with:
+          script: |
+            const repo = context.repo;
+            const { data: main } = await github.rest.git.getRef({ ...repo, ref: 'heads/main' });
+            const sha = main.object.sha;
+            let release;
+            try {
+              ({ data: release } = await github.rest.repos.getReleaseByTag({ ...repo, tag: 'development' }));
+            } catch (error) {
+              if (error.status !== 404) throw error;
+              // An interrupted first publication may have left a draft release.
+              for await (const page of github.paginate.iterator(github.rest.repos.listReleases, { ...repo, per_page: 100 })) {
+                release = page.data.find(item => item.tag_name === 'development');
+                if (release) break;
+              }
+            }
+            const required = [
+              'Pocket-Agent-development-arm64.apk',
+              'Pocket-Agent-development-x86_64.apk',
+              'Pocket-Agent-development-universal.apk',
+              'SHA256SUMS.txt', 'source-commit.txt', 'development-signature.txt', 'runtime-manifest.json'
+            ];
+            const complete = release && !release.draft && required.every(name =>
+              release.assets.some(asset => asset.name === name && asset.state === 'uploaded' && asset.size > 0));
+            const unchanged = complete && (release.body || '').includes(`<!-- development-source:${sha} -->`);
+            core.setOutput('source_sha', sha);
+            core.setOutput('should_build', String(!unchanged));
+            core.setOutput('release_exists', String(Boolean(release)));
+            await core.summary.addRaw(unchanged
+              ? `main is unchanged at ${sha}; no APK built.\n`
+              : `Building development APKs from main at ${sha}.\n`).write();
+
+  build:
+    needs: check
+    if: needs.check.outputs.should_build == 'true'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 35
+    permissions:
+      contents: write
+    env:
+      SOURCE_SHA: ${{ needs.check.outputs.source_sha }}
+      APK_KEYSTORE: /tmp/pocket-agent-development-signing.jks
+      APK_STORE_PASSWORD: ${{ secrets.APK_STORE_PASSWORD }}
+      APK_KEY_PASSWORD: ${{ secrets.APK_KEY_PASSWORD }}
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          # Pin the checked commit even if main advances while this run is queued.
+          ref: ${{ needs.check.outputs.source_sha }}
+      - uses: actions/setup-node@v5
+        with:
+          node-version: '22.22.2'
+          cache: npm
+          cache-dependency-path: runtime/package-lock.json
+      - name: Build and test trimmed runtime
+        working-directory: runtime
+        run: npm ci && npm test && npm run build
+      - uses: actions/setup-java@v5
+        with:
+          distribution: temurin
+          java-version: '17'
+      - uses: android-actions/setup-android@v4
+      - run: sdkmanager 'platforms;android-36' 'build-tools;36.0.0' 'ndk;27.2.12479018'
+      - name: Restore private signing material
+        env:
+          KEYSTORE_BASE64: ${{ secrets.APK_KEYSTORE_BASE64 }}
+        run: |
+          python3 - <<'PY'
+          import base64, os
+          from pathlib import Path
+          path = Path(os.environ['APK_KEYSTORE'])
+          path.write_bytes(base64.b64decode(os.environ['KEYSTORE_BASE64'], validate=True))
+          path.chmod(0o600)
+          PY
+      - uses: gradle/actions/setup-gradle@v5
+      - name: Build signed development APKs and lint
+        run: ./gradlew --no-daemon :app:assembleDevelopment :app:lintDevelopment
+      - name: Collect and verify development APKs
+        run: |
+          mkdir -p artifacts
+          cp app/build/outputs/apk/development/app-arm64-v8a-development.apk artifacts/Pocket-Agent-development-arm64.apk
+          cp app/build/outputs/apk/development/app-x86_64-development.apk artifacts/Pocket-Agent-development-x86_64.apk
+          cp app/build/outputs/apk/development/app-universal-development.apk artifacts/Pocket-Agent-development-universal.apk
+          for apk in artifacts/*.apk; do
+            "$ANDROID_HOME/build-tools/36.0.0/apksigner" verify --verbose --print-certs "$apk"
+          done > artifacts/development-signature.txt
+          python3 - <<'PY'
+          from zipfile import ZipFile
+          for name in ['arm64', 'universal']:
+              with ZipFile(f'artifacts/Pocket-Agent-development-{name}.apk') as archive:
+                  assert 'lib/arm64-v8a/libngrok_java.so' in archive.namelist(), name
+          PY
+          test "$(git rev-parse HEAD)" = "$SOURCE_SHA"
+          git rev-parse HEAD > artifacts/source-commit.txt
+          cp app/src/main/assets/runtime-manifest.json artifacts/runtime-manifest.json
+          (cd artifacts && sha256sum *.apk > SHA256SUMS.txt && sha256sum -c SHA256SUMS.txt)
+      - uses: actions/upload-artifact@v6
+        with:
+          name: pocket-agent-development
+          path: artifacts/
+          retention-days: 30
+          if-no-files-found: error
+      - name: Publish rolling Development prerelease
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RELEASE_EXISTS: ${{ needs.check.outputs.release_exists }}
+        run: |
+          if [ "$RELEASE_EXISTS" != true ]; then
+            gh release create development --target "$SOURCE_SHA" --title 'Development (latest main)' --draft --prerelease --latest=false
+          fi
+          gh release upload development artifacts/* --clobber
+          git tag --force development "$SOURCE_SHA"
+          git push --force origin refs/tags/development
+          python3 - <<'PY'
+          import os
+          from pathlib import Path
+          repo = os.environ['GITHUB_REPOSITORY']
+          sha = os.environ['SOURCE_SHA']
+          run = f"https://github.com/{repo}/actions/runs/{os.environ['GITHUB_RUN_ID']}"
+          Path('development-notes.md').write_text(f'''Automated development build from `main`, checked every three hours.
+
+          - **ARM64 phone:** download `Pocket-Agent-development-arm64.apk` below.
+          - **x86_64 emulator:** download `Pocket-Agent-development-x86_64.apk`.
+          - **Universal APK:** download `Pocket-Agent-development-universal.apk` if unsure.
+
+          Source: [{sha}](https://github.com/{repo}/commit/{sha})
+          Build: [Actions run]({run})
+
+          Signed with the existing distribution key; installs over the release app and keeps its data.
+          Runtime tests, development lint, APK signatures and ARM64 ngrok packaging are checked.
+          Automated development snapshot; emulator/device validation is separate.
+          This rolling prerelease is replaced after main changes; it is not the stable release.
+
+          <!-- development-source:{sha} -->
+          ''')
+          PY
+          # Record the source only after every asset and the rolling tag are updated.
+          # Failed builds/publications therefore retry on the next scheduled run.
+          gh release edit development --title 'Development (latest main)' --notes-file development-notes.md --draft=false --prerelease --latest=false
+          echo "Download: https://github.com/$GITHUB_REPOSITORY/releases/tag/development" >> "$GITHUB_STEP_SUMMARY"
+      - name: Remove signing material
+        if: always()
+        run: rm -f "$APK_KEYSTORE"
