@@ -67,25 +67,25 @@ jobs:
           emulator-options: -no-window -gpu swiftshader_indirect -no-snapshot -noaudio -no-boot-anim
           script: |
             set -e
-            ./gradlew --no-daemon :app:connectedReleaseAndroidTest -Pandroid.testInstrumentationRunnerArguments.class=dev.pocket.agent.VoicePipelineDeviceTest
-            ./gradlew --no-daemon :app:connectedReleaseAndroidTest -Pandroid.testInstrumentationRunnerArguments.class=dev.pocket.agent.VoiceAssistantDeviceTest
-            ./gradlew --no-daemon :app:connectedReleaseAndroidTest -Pandroid.testInstrumentationRunnerArguments.class=dev.pocket.agent.LifecycleDeviceTest#mainThreadPromptAndDebugControlsWorkOnDevice
-            ./gradlew --no-daemon :app:connectedReleaseAndroidTest -Pandroid.testInstrumentationRunnerArguments.class=dev.pocket.agent.AutonomyDeviceTest
-            adb install -r fixture/build/outputs/apk/debug/fixture-debug.apk
-            ./gradlew --no-daemon :app:connectedReleaseAndroidTest -Pandroid.testInstrumentationRunnerArguments.class=dev.pocket.agent.RuntimeDeviceTest#physicalDisplayCanLaunchObserveAndActWithoutVirtualLease
+            mkdir -p artifacts/emulator-direct
+            trap 'adb logcat -d -v threadtime > artifacts/emulator-direct/final-logcat.txt || true' EXIT
+            cp app/build/outputs/apk/release/app-x86_64-release.apk artifacts/emulator-direct/Pocket-Agent-x86_64.apk
+            cp app/build/outputs/apk/androidTest/release/*.apk artifacts/emulator-direct/Pocket-Agent-tests.apk
+            cp fixture/build/outputs/apk/debug/*.apk artifacts/emulator-direct/Pocket-Agent-fixture.apk
+            python3 scripts/emulator_test.py --serial "$(adb get-serialno)" --artifacts artifacts/emulator-direct --fresh --diagnostics --class AutonomyDeviceTest --class VoicePipelineDeviceTest --class VoiceAssistantDeviceTest --case 'LifecycleDeviceTest#mainThreadPromptAndDebugControlsWorkOnDevice' --case 'RuntimeDeviceTest#physicalDisplayCanLaunchObserveAndActWithoutVirtualLease'
             adb uninstall dev.pocket.agent || true
             adb uninstall dev.pocket.agent.test || true
             # PhoneTargetDeviceTest exercises the same hidden WindowManager IME policy used by
             # the privileged Shizuku shell UserService. Enable non-SDK access only on this
             # disposable emulator so instrumentation can reach that platform API too.
             adb shell settings put global hidden_api_policy 1
-            ./gradlew --no-daemon -PvoiceEmulatorTest :app:connectedDebugAndroidTest -Pandroid.testInstrumentationRunnerArguments.class=dev.pocket.agent.PhoneTargetDeviceTest
-            ./gradlew --no-daemon -PvoiceEmulatorTest :app:connectedDebugAndroidTest -Pandroid.testInstrumentationRunnerArguments.class=dev.pocket.agent.CrashResilienceDeviceTest
+            timeout 300 ./gradlew --no-daemon -PvoiceEmulatorTest :app:connectedDebugAndroidTest -Pandroid.testInstrumentationRunnerArguments.class=dev.pocket.agent.PhoneTargetDeviceTest
+            timeout 300 ./gradlew --no-daemon -PvoiceEmulatorTest :app:connectedDebugAndroidTest -Pandroid.testInstrumentationRunnerArguments.class=dev.pocket.agent.CrashResilienceDeviceTest
             adb shell settings delete global hidden_api_policy
-            ./gradlew --no-daemon :android-platform:connectedDebugAndroidTest -Pandroid.testInstrumentationRunnerArguments.class=dev.pocket.android.NativeAndroidApisTest#unavailableTraversalChildFailsClosed
+            timeout 300 ./gradlew --no-daemon :android-platform:connectedDebugAndroidTest -Pandroid.testInstrumentationRunnerArguments.class=dev.pocket.android.NativeAndroidApisTest#unavailableTraversalChildFailsClosed
             adb uninstall dev.pocket.agent || true
             adb uninstall dev.pocket.agent.test || true
-            ./gradlew --no-daemon -PdevEmulatorTest :app:connectedDevelopmentAndroidTest -Pandroid.testInstrumentationRunnerArguments.class=dev.pocket.agent.DevBridgeDeviceTest
+            timeout 300 ./gradlew --no-daemon -PdevEmulatorTest :app:connectedDevelopmentAndroidTest -Pandroid.testInstrumentationRunnerArguments.class=dev.pocket.agent.DevBridgeDeviceTest
       - name: Upload emulator test report
         if: always()
         uses: actions/upload-artifact@v6
@@ -94,6 +94,8 @@ jobs:
           path: |
             app/build/outputs/androidTest-results/connected/
             android-platform/build/outputs/androidTest-results/connected/
+            artifacts/emulator-direct/*.txt
+            artifacts/emulator-direct/emulator-results.json
           if-no-files-found: ignore
       - name: Collect provenance and signed APKs
         run: |

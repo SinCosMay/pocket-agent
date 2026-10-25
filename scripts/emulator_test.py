@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """Validate exact Actions APKs only on an explicitly selected emulator."""
-import argparse, hashlib, json, subprocess, time
+import argparse, hashlib, json, re, subprocess, time
 from pathlib import Path
 
 def run(*args, timeout=240, check=True):
@@ -9,7 +9,7 @@ def run(*args, timeout=240, check=True):
     return result
 
 def main():
-    p=argparse.ArgumentParser();p.add_argument('--serial',required=True);p.add_argument('--artifacts',type=Path,required=True);p.add_argument('--live',action='store_true');p.add_argument('--codex-account',action='store_true',help='Opt in to direct Luna account inference using existing local Codex auth on emulator-5580');p.add_argument('--account-auth-tests',action='store_true',help='Include synthetic native account import, storage, rotation and sign-out tests');p.add_argument('--fresh',action='store_true');p.add_argument('--case',action='append',default=[]);a=p.parse_args()
+    p=argparse.ArgumentParser();p.add_argument('--serial',required=True);p.add_argument('--artifacts',type=Path,required=True);p.add_argument('--live',action='store_true');p.add_argument('--codex-account',action='store_true',help='Opt in to direct Luna account inference using existing local Codex auth on emulator-5580');p.add_argument('--account-auth-tests',action='store_true',help='Include synthetic native account import, storage, rotation and sign-out tests');p.add_argument('--fresh',action='store_true');p.add_argument('--case',action='append',default=[]);p.add_argument('--diagnostics',action='store_true',help='Capture full logcat on a disposable CI emulator');p.add_argument('--class',dest='test_classes',action='append',default=[],help='Run an entire named DeviceTest class on the selected emulator');a=p.parse_args()
     if a.codex_account:
         if a.serial!='emulator-5580':raise SystemExit('Direct account provisioning is restricted to emulator-5580')
         a.live=True
@@ -35,13 +35,20 @@ def main():
     cases.extend([('VoiceAssistantDeviceTest','assistantIsProtectedAndDiscoverable'),('VoiceAssistantDeviceTest','microphoneServiceIsPrivateAndForegroundTyped'),('VoicePipelineDeviceTest','fluxOnlyDispatchesConfirmedNonemptyTurns'),('VoicePipelineDeviceTest','fluxBargeInOnlyOnConfirmedSpeechStart'),('VoicePipelineDeviceTest','emptyConfirmedTurnReleasesSpeechStateWithoutDispatch'),('VoicePipelineDeviceTest','streamedReplyDoesNotSplitWordsAndDrainsTrailingText')])
     if a.account_auth_tests:cases.extend([('CodexAuthDeviceTest','importEncryptAndSignOut'),('CodexAuthDeviceTest','rotationCompareAndSaveRejectsStaleAndSignedOut')])
     if a.live:cases.append(('LiveProviderDeviceTest','liveCodexDelegationAndFixture'))
-    if a.case:cases=[case for case in cases if '#'.join(case) in a.case]
+    cases.extend([('LifecycleDeviceTest','mainThreadPromptAndDebugControlsWorkOnDevice')])
+    if a.case or a.test_classes:cases=[case for case in cases if '#'.join(case) in a.case]
+    selected_classes=[]
+    for cls in a.test_classes:
+        if not re.fullmatch(r'[A-Za-z][A-Za-z0-9_]*DeviceTest',cls):raise SystemExit('Use a short DeviceTest class name')
+        if cls=='LiveProviderDeviceTest' and not a.live:raise SystemExit('Live provider tests require --live')
+        selected_classes.append((cls,None))
+    cases=selected_classes+cases
     if not cases:raise SystemExit('No matching device test case')
     (a.artifacts/'emulator-results.json').write_text(json.dumps(report,indent=2)+'\n')
     for cls,method in cases:
         adb('shell','am','force-stop','dev.pocket.agent.fixture');
         if method=='verifyProcessDeath':adb('shell','am','force-stop','dev.pocket.agent')
-        args=['shell','am','instrument','-w','-r','-e','class',f'dev.pocket.agent.{cls}#{method}']
+        args=['shell','am','instrument','-w','-r','-e','class',f'dev.pocket.agent.{cls}'+(f'#{method}' if method else '')]
         if cls=='LiveProviderDeviceTest':
             provision='provision_codex_account.py' if a.codex_account else 'provision_emulator.py'
             run('python3',str(Path(__file__).with_name(provision)),'--serial',a.serial)
@@ -49,7 +56,18 @@ def main():
         adb('logcat','-c')
         result=None
         try:result=adb(*args,'dev.pocket.agent.test/androidx.test.runner.AndroidJUnitRunner',timeout=240)
+        except Exception as error:
+            log=a.artifacts/f'{cls}-{method or "all"}-failure.txt';log.write_text(str(error))
+            report['cases'].append({'class':cls,'method':method,'passed':False,'log':log.name})
+            (a.artifacts/'emulator-results.json').write_text(json.dumps(report,indent=2)+'\n')
+            raise
         finally:
+            try:
+                if a.diagnostics:
+                    diagnostic=adb('logcat','-d','-v','threadtime',check=False,timeout=20)
+                    (a.artifacts/f'{cls}-{method or "all"}-logcat.txt').write_text(diagnostic.stdout+diagnostic.stderr)
+            except Exception as error:print(f'Logcat capture failed: {error}',flush=True)
+
             if cls=='LiveProviderDeviceTest':
                 adb('shell','rm','-f','/sdcard/Android/data/dev.pocket.agent/files/provider-test.json',check=False)
                 if a.codex_account and (result is None or 'OK (' not in result.stdout or 'FAILURES!!!' in result.stdout):
