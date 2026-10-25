@@ -530,6 +530,30 @@ test('queued workers persist archive identities before session creation and cann
  const denied=await memoryTools(incomplete,queued).find(t=>t.name==='history_search').execute('read',{query:'Private'});
  assert.deepEqual(denied.details.messages,[]);
 });
+test('malformed archive owner maps cannot restore a recycled legacy worker scope',async()=>{
+ class LegacyArchiveBridge extends Bridge {
+  legacyOwner='';
+  override call(method:string,json:string):string {
+   const args=JSON.parse(json);
+   if(method==='history.search')return JSON.stringify({ok:true,result:{messages:args.owner===this.legacyOwner?[{id:17,text:'Private old worker transcript'}]:[]}});
+   return super.call(method,json);
+  }
+ }
+ const seed=new Bridge(),runtime=new PocketRuntime(seed);
+ const started=runtime.startTasks([{kind:'spawn',agent:'researcher',label:'Retained worker',prompt:'Read capabilities'}],{initiatedBy:'user'});
+ const id=started.starts[0].conversationId;await until(()=>runtime.state().tasks[0]?.status==='completed');
+ runtime.save();const checkpoint=structuredClone(seed.state);checkpoint.mainPaused=true;
+ for(const invalid of [null,false,0,'',[],7,'legacy',{}]) {
+  const bridge=new LegacyArchiveBridge();bridge.legacyOwner=id;
+  bridge.state={...structuredClone(checkpoint),workerHistoryOwners:invalid};
+  const restored=new PocketRuntime(bridge);
+  assert.notEqual(restored.historyOwner(id),id,`Malformed map ${JSON.stringify(invalid)} must fail closed`);
+  const denied=await memoryTools(restored,id).find(t=>t.name==='history_search').execute('read',{query:'Private'});
+  assert.deepEqual(denied.details.messages,[]);
+ }
+ const legacy=new LegacyArchiveBridge();legacy.state=structuredClone(checkpoint);delete legacy.state.workerHistoryOwners;
+ assert.equal(new PocketRuntime(legacy).historyOwner(id),id,'Only checkpoints predating the owner map keep the legacy scope');
+});
 test('checkpoint redaction preserves archive identities for direct and chunked lookup while hiding message secrets',async()=>{
  class ArchiveBridge extends Bridge {
   pending='';chunks=0;
@@ -549,14 +573,20 @@ test('checkpoint redaction preserves archive identities for direct and chunked l
  const id=started.starts[0].conversationId;await until(()=>runtime.state().tasks[0]?.status==='completed');
  const owner=runtime.historyOwner(id),mainThread=runtime.state().mainThreadId;
  assert.ok(owner.includes('4'),'UUID v4 supplies the short header collision');
+ bridge.credentials={...bridge.credentials,mcpServers:[...bridge.credentials.mcpServers,
+  {id:'worker-id',name:'Worker ID',url:'https://example.test/mcp',enabled:false,authMode:'headers',headers:[{name:'X-Worker',value:id}]}]};
+ command(runtime,{action:'mcp_reload'});runtime.save();
  assert.equal(bridge.state.workerHistoryOwners[id],owner);assert.equal(bridge.state.mainThreadId,mainThread);
+ assert.equal(bridge.state.workers[0].conversationId,id);
  const direct=await memoryTools(runtime,id).find(t=>t.name==='history_search').execute('direct',{query:'receipt'});
  assert.equal(direct.details.messages[0].text,'Own archived receipt');
- runtime.main.agent.state.messages.push({role:'user',timestamp:Date.now(),content:'z'.repeat(1600000)+' secret=4'} as any);
+ runtime.main.agent.state.messages.push({role:'user',timestamp:Date.now(),content:'z'.repeat(1600000)+` worker=${id} secret=4`} as any);
  assert.equal(runtime.save(),true);assert.ok(bridge.chunks>0);
  assert.equal(bridge.state.workerHistoryOwners[id],owner);assert.equal(bridge.state.mainThreadId,mainThread);
- assert.ok(bridge.state.mainMessages.at(-1).content.endsWith('secret=[redacted]'));
+ assert.equal(bridge.state.workers[0].conversationId,id);
+ assert.ok(bridge.state.mainMessages.at(-1).content.endsWith('worker=[redacted] secret=[redacted]'));
  const restored=new PocketRuntime(bridge);assert.equal(restored.historyOwner(id),owner);
+ assert.equal(restored.state().tasks[0].conversationId,id);
  const chunked=await memoryTools(restored,id).find(t=>t.name==='history_search').execute('chunked',{query:'receipt'});
  assert.equal(chunked.details.messages[0].text,'Own archived receipt');
 });
