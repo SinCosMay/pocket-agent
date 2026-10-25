@@ -18,7 +18,7 @@ jobs:
           cache: npm
           cache-dependency-path: runtime/package-lock.json
       # This artifact intentionally checks the history and shared-runtime suites only.
-      # The embedded Android compatibility gate is exercised locally on the USB phone.
+      # Android SQLite and the embedded compatibility gate run in focused instrumentation below.
       - name: Build and check focused history/runtime suites
         working-directory: runtime
         run: |
@@ -42,6 +42,28 @@ jobs:
           git rev-parse HEAD > artifacts/source-commit.txt
           cp app/src/main/assets/runtime-manifest.json artifacts/runtime-manifest.json
           (cd artifacts && sha256sum *.apk > SHA256SUMS.txt)
+      - name: Enable emulator hardware acceleration
+        run: sudo chmod 666 /dev/kvm
+      - name: Validate history on Android while keeping USB testing separate
+        uses: reactivecircus/android-emulator-runner@v2
+        with:
+          api-level: 35
+          arch: x86_64
+          target: google_apis
+          emulator-options: -no-window -gpu swiftshader_indirect -no-snapshot -noaudio -no-boot-anim
+          script: |
+            adb install -r app/build/outputs/apk/debug/app-x86_64-debug.apk
+            adb install -r artifacts/Pocket-Agent-history-tests.apk
+            adb shell am instrument -w -r -e class dev.pocket.agent.ConversationHistoryDeviceTest,dev.pocket.agent.ConversationHistoryLoopDeviceTest dev.pocket.agent.historyvalidation.test/androidx.test.runner.AndroidJUnitRunner > artifacts/android-history-results.txt
+            cat artifacts/android-history-results.txt
+            grep -q 'OK (' artifacts/android-history-results.txt && ! grep -q 'FAILURES!!!' artifacts/android-history-results.txt
+      - name: Preserve instrumentation failures
+        if: failure()
+        uses: actions/upload-artifact@v6
+        with:
+          name: history-device-failure-evidence
+          path: artifacts/android-history-results.txt
+          if-no-files-found: ignore
       - uses: actions/upload-artifact@v6
         with:
           name: pocket-agent-history-device

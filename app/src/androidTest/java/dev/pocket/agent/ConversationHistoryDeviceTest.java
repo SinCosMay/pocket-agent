@@ -17,6 +17,23 @@ public class ConversationHistoryDeviceTest {
             .put("mainMessages",new JSONArray().put(new JSONObject().put("role","user")
                 .put("timestamp",timestamp).put("content",text)));
     }
+    @Test public void versionTwoArchiveGainsProgressWithoutDuplicatingHistory() throws Exception {
+        Context context=InstrumentationRegistry.getInstrumentation().getTargetContext();
+        String name="history-v2-instrumentation.db";context.deleteDatabase(name);
+        try {
+            try(StateStore state=new StateStore(context,name)) {
+                state.saveDurable(checkpoint("Legacy sapphire receipt.",199));
+                state.getWritableDatabase().execSQL("DROP TABLE conversation_history_progress");
+                state.getWritableDatabase().setVersion(2);
+            }
+            try(StateStore migrated=new StateStore(context,name)) {
+                assertEquals(3,migrated.getReadableDatabase().getVersion());
+                assertEquals(1,migrated.searchHistory("sapphire",10).length());
+                migrated.saveDurable(migrated.loadDurable());
+                assertEquals(1,migrated.searchHistory("sapphire",10).length());
+            }
+        } finally {context.deleteDatabase(name);}
+    }
     @Test public void versionOneMigrationPreservesAndArchivesExistingCheckpoint() throws Exception {
         Context context=InstrumentationRegistry.getInstrumentation().getTargetContext();
         String name="history-migration-instrumentation.db";context.deleteDatabase(name);
