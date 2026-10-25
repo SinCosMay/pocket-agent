@@ -30,8 +30,21 @@ public final class StateStore extends SQLiteOpenHelper {
         throw new IllegalStateException("Unsupported state migration");
     }
     private void archiveLegacy(SQLiteDatabase db) {
-        try {String raw=loadDurableRaw(db);if(raw!=null)ConversationHistory.archive(db,new JSONObject(raw));}
-        catch(org.json.JSONException invalid) {throw new IllegalStateException("Invalid legacy runtime state",invalid);}
+        final JSONObject archive;
+        try {
+            String raw=loadDurableRaw(db);if(raw==null)return;
+            try {archive=ConversationHistory.archivePayload(new java.io.StringReader(raw));}
+            catch(IllegalArgumentException|IllegalStateException malformed) {
+                // A corrupt runtime checkpoint must not prevent opening the rendered UI and events.
+                // Keep its original row untouched so it remains available for recovery.
+                android.util.Log.w("PocketHistory","Legacy checkpoint could not be indexed; original checkpoint retained");
+                return;
+            }
+            ConversationHistory.archive(db,archive);
+        } catch(RuntimeException failure) {
+            // SQLiteOpenHelper rolls back the complete migration, including its version, on write failure.
+            throw new IllegalStateException("Legacy history migration failed; original database retained",failure);
+        }
     }
     public synchronized JSONObject load() {
         try (Cursor cursor = getReadableDatabase().rawQuery("SELECT json FROM snapshot WHERE id=1", null)) {

@@ -37,7 +37,10 @@ final class ConversationHistory {
     }
     /** Extract only archive fields without decoding a second copy of the whole checkpoint tree. */
     static JSONObject archivePayload(byte[] bytes) {
-        try(JsonReader reader=new JsonReader(new InputStreamReader(new ByteArrayInputStream(bytes),StandardCharsets.UTF_8))) {
+        return archivePayload(new InputStreamReader(new ByteArrayInputStream(bytes),StandardCharsets.UTF_8));
+    }
+    static JSONObject archivePayload(java.io.Reader input) {
+        try(JsonReader reader=new JsonReader(input)) {
             JSONObject result=new JSONObject();reader.beginObject();
             while(reader.hasNext()) {
                 String name=reader.nextName();
@@ -50,6 +53,7 @@ final class ConversationHistory {
                         reader.endObject();result.put(name,workers);break;
                     }
                     case "workerHistoryOwners": {
+                        if(reader.peek()!=JsonToken.BEGIN_OBJECT){reader.skipValue();result.put(name,JSONObject.NULL);break;}
                         JSONObject owners=new JSONObject();reader.beginObject();
                         while(reader.hasNext()){String worker=reader.nextName();owners.put(worker,string(reader));}
                         reader.endObject();result.put(name,owners);break;
@@ -189,8 +193,10 @@ final class ConversationHistory {
         while(workers.hasNext()) {
             String worker=workers.next();
             JSONObject identities=checkpoint.optJSONObject("workerHistoryOwners");
-            String identity=identities==null?worker:identities.optString(worker,worker);
-            if(identity.isEmpty()||identity.equals("main")||identity.length()>160)throw new IllegalArgumentException("Invalid worker archive identity");
+            String identity=!checkpoint.has("workerHistoryOwners")?worker:identities==null?"":identities.optString(worker,"");
+            // Preserve malformed legacy text for main without assigning it to a possibly recycled worker ID.
+            if(identity.isEmpty()||identity.equals("main")||identity.length()>160)
+                identity="quarantine:"+fingerprint(worker,"invalid-owner",0,identity);
             append(db,"worker:"+identity,identity,workerMessages.optJSONArray(worker));
         }
     }

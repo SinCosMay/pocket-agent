@@ -62,6 +62,70 @@ public class ConversationHistoryDeviceTest {
             }
         } finally {context.deleteDatabase(name);}
     }
+    @Test public void malformedWorkerScopesAreQuarantinedWithoutBlockingCheckpoints() throws Exception {
+        Context context=InstrumentationRegistry.getInstrumentation().getTargetContext();
+        String name="history-quarantine-instrumentation.db";context.deleteDatabase(name);
+        JSONObject saved=checkpoint("Valid agate main transcript.",207)
+            .put("workerMessages",new JSONObject().put("abc",new JSONArray().put(new JSONObject()
+                .put("role","assistant").put("timestamp",208).put("content","Private beryl transcript."))))
+            .put("workerHistoryOwners",new JSONObject().put("abc","main"));
+        try(StateStore state=new StateStore(context,name)) {
+            state.saveDurable(saved);
+            assertEquals(saved.toString(),state.loadDurable().toString());
+            assertEquals(1,state.searchHistory("agate",10).length());
+            JSONArray quarantined=state.searchHistory("beryl",10);
+            assertEquals(1,quarantined.length());assertTrue(quarantined.getJSONObject(0).getString("owner").startsWith("quarantine:"));
+            assertEquals(0,state.searchHistory("beryl",10,"abc").length());
+            assertEquals(0,state.readHistory(quarantined.getJSONObject(0).getLong("id"),"abc").length());
+        } finally {context.deleteDatabase(name);}
+    }
+    @Test public void corruptLegacyCheckpointDoesNotBlockUiDatabaseMigration() throws Exception {
+        Context context=InstrumentationRegistry.getInstrumentation().getTargetContext();
+        String name="history-corrupt-migration.db";context.deleteDatabase(name);
+        try {
+            try(StateStore seeded=new StateStore(context,name)) {
+                seeded.save(new JSONObject().put("mainTurns",4));
+                seeded.getWritableDatabase().execSQL("INSERT INTO runtime_state VALUES(1,'not-json')");
+                seeded.getWritableDatabase().execSQL("DROP TABLE conversation_history_progress");
+                seeded.getWritableDatabase().setVersion(2);
+            }
+            try(StateStore migrated=new StateStore(context,name)) {
+                assertEquals(3,migrated.getReadableDatabase().getVersion());assertEquals(4,migrated.load().getInt("mainTurns"));
+                assertEquals(0,migrated.searchHistory("",10).length());
+                try(android.database.Cursor original=migrated.getReadableDatabase().rawQuery("SELECT json FROM runtime_state",null)) {
+                    assertTrue(original.moveToFirst());assertEquals("not-json",original.getString(0));
+                }
+            }
+        } finally {context.deleteDatabase(name);}
+    }
+    @Test public void migrationWriteFailurePreservesLegacyDatabaseAndVersion() throws Exception {
+        Context context=InstrumentationRegistry.getInstrumentation().getTargetContext();
+        String name="history-failed-migration.db";context.deleteDatabase(name);
+        JSONObject saved=checkpoint("Preserve jasper legacy checkpoint.",209);
+        try {
+            try(StateStore seeded=new StateStore(context,name)) {
+                seeded.saveDurable(saved);
+                seeded.getWritableDatabase().execSQL("DROP TABLE conversation_history_progress");
+                seeded.getWritableDatabase().execSQL("CREATE TRIGGER reject_migration BEFORE INSERT ON conversation_history BEGIN SELECT RAISE(ABORT,'synthetic migration failure'); END");
+                seeded.getWritableDatabase().setVersion(2);
+            }
+            try(StateStore migrated=new StateStore(context,name)) {
+                try {migrated.getReadableDatabase();fail("Migration write failure was ignored");}
+                catch(IllegalStateException expected) {
+                    assertEquals("Legacy history migration failed; original database retained",expected.getMessage());
+                    assertTrue(expected.getCause() instanceof android.database.sqlite.SQLiteConstraintException);
+                }
+            }
+            try(android.database.sqlite.SQLiteDatabase original=android.database.sqlite.SQLiteDatabase.openDatabase(
+                context.getDatabasePath(name).getAbsolutePath(),null,android.database.sqlite.SQLiteDatabase.OPEN_READONLY)) {
+                assertEquals(2,original.getVersion());
+                try(android.database.Cursor row=original.rawQuery("SELECT json FROM runtime_state",null)) {
+                    assertTrue(row.moveToFirst());assertEquals(saved.toString(),row.getString(0));
+                }
+                try(android.database.Cursor progress=original.rawQuery("SELECT name FROM sqlite_master WHERE name='conversation_history_progress'",null)) {assertEquals(0,progress.getCount());}
+            }
+        } finally {context.deleteDatabase(name);}
+    }
     @Test public void failedCheckpointRollsBackArchiveAndSearchIndex() throws Exception {
         Context context=InstrumentationRegistry.getInstrumentation().getTargetContext();
         String name="history-rollback-instrumentation.db";context.deleteDatabase(name);

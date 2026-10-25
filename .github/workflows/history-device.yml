@@ -9,7 +9,7 @@ concurrency:
 jobs:
   build:
     runs-on: ubuntu-24.04
-    timeout-minutes: 25
+    timeout-minutes: 35
     steps:
       - uses: actions/checkout@v5
       - uses: actions/setup-node@v5
@@ -57,8 +57,8 @@ jobs:
             adb shell am instrument -w -r -e class dev.pocket.agent.ConversationHistoryDeviceTest,dev.pocket.agent.ConversationHistoryLoopDeviceTest dev.pocket.agent.historyvalidation.test/androidx.test.runner.AndroidJUnitRunner > artifacts/android-history-results.txt
             cat artifacts/android-history-results.txt
             grep -q 'OK (' artifacts/android-history-results.txt && ! grep -q 'FAILURES!!!' artifacts/android-history-results.txt
-      - name: Preserve instrumentation failures
-        if: failure()
+      - name: Preserve instrumentation evidence
+        if: always()
         uses: actions/upload-artifact@v6
         with:
           name: history-device-failure-evidence
