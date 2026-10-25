@@ -114,12 +114,13 @@ final class AutonomyStore extends SQLiteOpenHelper {
         NotificationManager manager=context.getSystemService(NotificationManager.class);
         if(manager==null||!manager.areNotificationsEnabled()||android.os.Build.VERSION.SDK_INT>=33&&context.checkSelfPermission(Manifest.permission.POST_NOTIFICATIONS)!=PackageManager.PERMISSION_GRANTED)return Json.obj("status","blocked","reason","Notification permission disabled; result remains in app activity");
         manager.createNotificationChannel(new NotificationChannel("autonomy-results","Background results",NotificationManager.IMPORTANCE_DEFAULT));
+        manager.createNotificationChannel(new NotificationChannel("autonomy-results-quiet","Background results during quiet hours",NotificationManager.IMPORTANCE_LOW));
         PendingIntent open=PendingIntent.getActivity(context,0,new Intent(context,MainActivity.class).putExtra("openAutonomy",true),PendingIntent.FLAG_UPDATE_CURRENT|PendingIntent.FLAG_IMMUTABLE);
         int hour=java.time.ZonedDateTime.now().getHour();boolean quiet=hour>=22||hour<8;
-        Notification notification=new Notification.Builder(context,"autonomy-results").setSmallIcon(android.R.drawable.ic_dialog_info)
+        Notification notification=new Notification.Builder(context,quiet?"autonomy-results-quiet":"autonomy-results").setSmallIcon(android.R.drawable.ic_dialog_info)
             .setContentTitle(entry.getString("title")).setContentText(entry.getString("message"))
             .setStyle(new Notification.BigTextStyle().bigText(entry.getString("message"))).setContentIntent(open)
-            .setAutoCancel(true).setOnlyAlertOnce(true).setSilent(quiet).build();
+            .setAutoCancel(true).setOnlyAlertOnce(true).build();
         manager.notify("autonomy:"+entry.getString("id"),0,notification);
         return Json.obj("status","posted","quietHours",quiet);
     }

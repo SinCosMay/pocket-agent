@@ -400,7 +400,7 @@ public final class MainActivity extends Activity implements AgentService.Observe
             for(int i=0;i<schedules.length();i++) {
                 JSONObject schedule=schedules.getJSONObject(i);String id=schedule.getString("id");boolean active=schedule.optBoolean("enabled");
                 panel.addView(text(schedule.optString("title")+" · "+(active?"Active":"Paused or finished")+"\nNext: "+schedule.optString("nextRunAt","—")));
-                panel.addView(button(active?"Pause schedule":"Resume schedule",()->command(json("action","automation_control","tool","schedule","args",json("action",active?"pause":"resume","id",id)))));
+                panel.addView(button(active?"Pause schedule":"Resume schedule",()->command(Json.obj("action","automation_control","tool","schedule","args",json("action",active?"pause":"resume","id",id)))));
             }
             panel.addView(text("Run history"));JSONArray runs=saved.getJSONArray("runs");
             if(runs.length()==0)panel.addView(text("No background runs yet"));
@@ -417,7 +417,7 @@ public final class MainActivity extends Activity implements AgentService.Observe
     }
     private void answerDecision(JSONObject decision,boolean approved,String answer) {
         try(AutonomyStore automation=new AutonomyStore(this)) {
-            automation.incoming(json("id","decision:"+decision.getString("id"),"type","decision","decisionId",decision.getString("id"),"approved",approved,"answer",answer));
+            automation.incoming(Json.obj("id","decision:"+decision.getString("id"),"type","decision","decisionId",decision.getString("id"),"approved",approved,"answer",answer));
             toast("Response saved. The task will continue when background work can run.");
         } catch(Exception error){toast("Could not save the response");}
     }
