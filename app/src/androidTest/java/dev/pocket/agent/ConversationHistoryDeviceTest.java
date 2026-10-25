@@ -69,7 +69,7 @@ public class ConversationHistoryDeviceTest {
             JSONObject original=checkpoint("Committed quartz receipt.",301);state.saveDurable(original);
             state.getWritableDatabase().execSQL("CREATE TRIGGER reject_checkpoint BEFORE INSERT ON runtime_state BEGIN SELECT RAISE(ABORT,'synthetic checkpoint failure'); END");
             try {state.saveDurable(checkpoint("Uncommitted zircon receipt.",302));fail("Failed checkpoint was accepted");}
-            catch(IllegalStateException expected) {assertEquals("Unable to persist durable state",expected.getMessage());}
+            catch(android.database.sqlite.SQLiteConstraintException expected) {assertTrue(expected.getMessage().contains("synthetic checkpoint failure"));}
             assertEquals(original.toString(),state.loadDurable().toString());
             assertEquals(1,state.searchHistory("",10).length());
             assertEquals(0,state.searchHistory("zircon",10).length());

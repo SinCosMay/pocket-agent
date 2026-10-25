@@ -5,6 +5,7 @@ import {delay} from '../src/scripted.js';
 import {AssistantMessageEventStream,validateToolArguments} from '@earendil-works/pi-ai';
 import {toolResult,MobileSubagentParams,nativeTools} from '../src/tools.js';
 import {SubagentParams,parseSubagentInvocation} from '../vendor/pi9/schema.js';
+import {memoryTools} from '../src/memory.js';
 
 class Bridge implements NativeBridge {
  state:any={};events:any[]=[];tools:any[]=[];credentials:any={authMode:'scripted'};
@@ -493,6 +494,41 @@ test('archive identities survive restore but are never reused with a short worke
  const next=new PocketRuntime(bridge);
  const replacement=(next as any).createSession(id);
  assert.notEqual(next.historyOwner(id),owner);assert.notEqual(next.historyOwner(id),id);replacement.dispose();
+});
+test('queued workers persist archive identities before session creation and cannot inherit legacy archives',async()=>{
+ class LegacyArchiveBridge extends Bridge {
+  legacyOwner='';historyOwners:string[]=[];
+  override call(method:string,json:string):string {
+   const args=JSON.parse(json);
+   if(method==='history.search') {
+    this.historyOwners.push(args.owner);
+    return JSON.stringify({ok:true,result:{messages:args.owner===this.legacyOwner?[{id:17,text:'Private old worker transcript'}]:[]}});
+   }
+   return super.call(method,json);
+  }
+ }
+ const bridge=new LegacyArchiveBridge(),runtime=new PocketRuntime(bridge,{maxExecuting:1,maxConversations:12});
+ const started=runtime.startTasks([
+  {kind:'spawn',agent:'researcher',label:'Busy worker',prompt:'Read capabilities delay=30000'},
+  {kind:'spawn',agent:'researcher',label:'Queued worker',prompt:'Read capabilities'},
+ ],{initiatedBy:'user'});
+ const queued=started.starts[1].conversationId;
+ assert.ok(!(runtime as any).sessions.has(queued));runtime.save();
+ const checkpoint=structuredClone(bridge.state),owner=checkpoint.workerHistoryOwners[queued];
+ assert.ok(owner);assert.notEqual(owner,queued);
+ await (runtime as any).stopAll();
+ const restoredBridge=new LegacyArchiveBridge();restoredBridge.state=checkpoint;restoredBridge.legacyOwner=queued;
+ const restored=new PocketRuntime(restoredBridge);
+ assert.equal(restored.historyOwner(queued),owner);
+ const result=await memoryTools(restored,queued).find(t=>t.name==='history_search').execute('read',{query:'Private'});
+ assert.deepEqual(result.details.messages,[]);assert.equal(restoredBridge.historyOwners.at(-1),owner);
+ // An incomplete mapping from an earlier archive-aware build fails closed too.
+ delete checkpoint.workerHistoryOwners[queued];
+ const incompleteBridge=new LegacyArchiveBridge();incompleteBridge.state=checkpoint;incompleteBridge.legacyOwner=queued;
+ const incomplete=new PocketRuntime(incompleteBridge);
+ assert.notEqual(incomplete.historyOwner(queued),queued);
+ const denied=await memoryTools(incomplete,queued).find(t=>t.name==='history_search').execute('read',{query:'Private'});
+ assert.deepEqual(denied.details.messages,[]);
 });
 
 test('fresh-main startup intent discards persisted main work before automatic resume',()=>{

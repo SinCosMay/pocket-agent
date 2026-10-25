@@ -123,7 +123,8 @@ export class PocketRuntime {
     for(const stored of saved.workers??[]) {
       // Retained legacy workers keep their old scope; every new worker gets a unique archive identity.
       const oldOwner=saved.workerHistoryOwners?.[stored.conversationId];
-      this.workerHistoryOwners.set(stored.conversationId,typeof oldOwner==='string'&&oldOwner.length<=160&&oldOwner!== 'main'?oldOwner:stored.conversationId);
+      this.workerHistoryOwners.set(stored.conversationId,typeof oldOwner==='string'&&oldOwner.length>0&&oldOwner.length<=160&&oldOwner!=='main'
+        ?oldOwner:saved.workerHistoryOwners?stored.conversationId+'@'+randomUUID():stored.conversationId);
       const snapshot:any=savedProviderMatches?stored:{...stored,requestedConfig:{...(stored.requestedConfig??{})}};
       if(!savedProviderMatches){delete snapshot.requestedConfig.model;delete snapshot.requestedConfig.thinking;}
       try {
@@ -656,7 +657,11 @@ export class PocketRuntime {
     try {
       const workerMessages:any={};
       for(const [id,s] of this.sessions)workerMessages[id]=stripImages(s.messages);
-      let state:any={version:1,mainThreadId:this.mainThreadId,workerHistoryOwners:Object.fromEntries(this.workerHistoryOwners),config:this.config,providerRevision:this.credentials.providerRevision,busy:this.busy,lastError:this.lastError,mainPaused:this.mainPaused,totalStarts:this.totalStarts,mainSystemPrompt:this.mainSystemPrompt,mainMessages:stripImages(this.main.messages),workers:this.runtime.listConversations(),workerMessages,workerReasoningProofs:Object.fromEntries(this.workerReasoningProofs),inbox:this.inbox,delivered:[...this.delivered],mainTurns:this.mainTurns,observationPending:this.observationPending};
+      const workers=this.runtime.listConversations();
+      // Queued workers may not have a session yet, but their first checkpoint must already own a unique archive scope.
+      for(const worker of workers)if(!this.workerHistoryOwners.has(worker.conversationId))
+        this.workerHistoryOwners.set(worker.conversationId,worker.conversationId+'@'+randomUUID());
+      let state:any={version:1,mainThreadId:this.mainThreadId,workerHistoryOwners:Object.fromEntries(this.workerHistoryOwners),config:this.config,providerRevision:this.credentials.providerRevision,busy:this.busy,lastError:this.lastError,mainPaused:this.mainPaused,totalStarts:this.totalStarts,mainSystemPrompt:this.mainSystemPrompt,mainMessages:stripImages(this.main.messages),workers,workerMessages,workerReasoningProofs:Object.fromEntries(this.workerReasoningProofs),inbox:this.inbox,delivered:[...this.delivered],mainTurns:this.mainTurns,observationPending:this.observationPending};
       let serialized=this.redactJson(state);
       if(utf8Bytes(serialized)>MAX_DURABLE_CHECKPOINT_BYTES) {
         const compactWorkers:any={};
