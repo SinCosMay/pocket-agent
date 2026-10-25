@@ -12,6 +12,7 @@ import androidx.test.ext.junit.runners.AndroidJUnit4;
 import androidx.test.platform.app.InstrumentationRegistry;
 import java.io.ByteArrayInputStream;
 import java.nio.charset.StandardCharsets;
+import java.util.concurrent.atomic.AtomicReference;
 import org.json.JSONArray;
 import org.json.JSONObject;
 import org.junit.Assume;
@@ -297,6 +298,25 @@ public class CodexAuthDeviceTest {
     private static String pickedEffort(Spinner reasoning) {
         return ((String[])reasoning.getTag())[reasoning.getSelectedItemPosition()];
     }
+    private interface MainAction { void run() throws Exception; }
+    /** Keeps UI failures on the instrumentation thread so JUnit reports them normally. */
+    private static void runOnMainChecked(MainAction action) throws Exception {
+        AtomicReference<Throwable> failure=new AtomicReference<>();
+        InstrumentationRegistry.getInstrumentation().runOnMainSync(()->{
+            try {action.run();} catch(Throwable error) {failure.set(error);}
+        });
+        Throwable error=failure.get();
+        if(error instanceof Error)throw (Error)error;
+        if(error instanceof Exception)throw (Exception)error;
+        if(error!=null)throw new AssertionError(error);
+    }
+    @Test public void mainThreadAssertionIsReportedOnInstrumentationThread() throws Exception {
+        AssertionError expected=new AssertionError("Synthetic UI assertion");
+        try {
+            runOnMainChecked(()->{throw expected;});
+            fail("UI assertion did not propagate to the test thread");
+        } catch(AssertionError actual) {assertSame(expected,actual);}
+    }
     @Test public void revertingConnectionEditsRestoresCatalogAndPreservesSelectedEffort() throws Exception {
         Assume.assumeTrue("Synthetic credential tests require an emulator",CredentialStore.isEmulator());
         CredentialStore credentials=new CredentialStore(context());JSONObject saved=credentials.get();
@@ -310,11 +330,9 @@ public class CodexAuthDeviceTest {
                     .put("reasoningEffortModel","shared-model").put("reasoningEfforts",new JSONArray().put("medium").put("high")));
             activity=(MainActivity)instrumentation.startActivitySync(new Intent(context(),MainActivity.class).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK));
             MainActivity current=activity;
-            instrumentation.runOnMainSync(()->{
-                try {
-                    java.lang.reflect.Method settings=MainActivity.class.getDeclaredMethod("settings");
-                    settings.setAccessible(true);settings.invoke(current);
-                } catch(ReflectiveOperationException error){throw new AssertionError(error);}
+            runOnMainChecked(()->{
+                java.lang.reflect.Method settings=MainActivity.class.getDeclaredMethod("settings");
+                settings.setAccessible(true);settings.invoke(current);
             });
             instrumentation.waitForIdleSync();
             Spinner models=settingsSpinner(current,"modelPicker"),reasoning=settingsSpinner(current,"reasoningPicker");
@@ -324,22 +342,22 @@ public class CodexAuthDeviceTest {
             assertNotNull(endpoint);assertNotNull(key);
             for(boolean changeKey:new boolean[]{true,false}) {
                 EditText field=changeKey?key:endpoint;
-                instrumentation.runOnMainSync(()->field.setText(changeKey?"temporary-ui-key":"https://b.example.test/v1"));
+                runOnMainChecked(()->field.setText(changeKey?"temporary-ui-key":"https://b.example.test/v1"));
                 instrumentation.waitForIdleSync();
-                instrumentation.runOnMainSync(()->{
+                runOnMainChecked(()->{
                     assertEquals("Connection edits must retain the selected effort","high",pickedEffort(reasoning));
                     assertFalse("Old catalog must be unavailable for a changed connection",models.isEnabled());
                     assertArrayEquals(new String[]{"minimal","low","medium","high","xhigh","max"},(String[])reasoning.getTag());
                     field.setText(changeKey?"":"https://a.example.test/v1");
                 });
                 instrumentation.waitForIdleSync();
-                instrumentation.runOnMainSync(()->{
+                runOnMainChecked(()->{
                     assertEquals("high",pickedEffort(reasoning));
                     assertTrue("Restored connection must recover its catalog",models.isEnabled());
                     assertArrayEquals(new String[]{"medium","high"},(String[])reasoning.getTag());
                 });
             }
-            instrumentation.runOnMainSync(()->{
+            runOnMainChecked(()->{
                 View save=findDialogControl(root,"Save",false);assertNotNull(save);save.performClick();
             });
             JSONObject reopened=new CredentialStore(context()).get();
@@ -348,7 +366,7 @@ public class CodexAuthDeviceTest {
             assertEquals("synthetic-ui-key",reopened.getString("apiKey"));
             assertEquals(new JSONArray().put("medium").put("high").toString(),reopened.getJSONArray("reasoningEfforts").toString());
         } finally {
-            if(activity!=null){MainActivity current=activity;instrumentation.runOnMainSync(current::finish);}
+            if(activity!=null){MainActivity current=activity;runOnMainChecked(current::finish);}
             credentials.save(saved);
         }
     }
