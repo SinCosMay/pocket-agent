@@ -795,13 +795,10 @@ public final class MainActivity extends Activity implements AgentService.Observe
                     String prompt = mainPrompt.getText().toString().trim();
                     if (prompt.length() > 50000) { toast("Personal instructions must be 50000 characters or fewer"); return; }
                     credentials.save(config); invalidateAccountOperations();
-                    if (RuntimeOwner.peekHost()!=null) {
-                        JSONObject configure = json("action", "configure");
-                        if (prompt.isEmpty()) configure.put("personalInstructions", ""); else configure.put("personalInstructions", prompt);
-                        command(configure);
-                    } else {
-                        store.savePersonalInstructions(prompt); state = store.load(); render();
-                    }
+                    // Serialize settings through the runtime owner, including when its previous
+                    // isolate is closing, so a late checkpoint cannot overwrite these preferences.
+                    JSONObject configure=json("action","configure","personalInstructions",prompt);
+                    command(configure);
                     dialog.dismiss(); toast("Settings saved");
                 } catch (Exception error) { toast(error instanceof IllegalArgumentException ? error.getMessage() : "Could not save connection"); }
             });

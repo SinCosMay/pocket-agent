@@ -415,14 +415,14 @@ export class PocketRuntime {
     const result=this.startTasks([{kind:'spawn',agent:'autonomy-worker',label:task.title,prompt}],{initiatedBy:'user'});
     const start=result.starts[0];
     if(!start?.ok)throw Error(start?.error??'Autonomous worker could not start');
-    if(!this.save())throw Error('Worker reservation persistence failed; inspect interrupted work before retry');
+    if(!this.save()){void this.runtime.cancelSubagent(start.conversationId).catch(this.reportError);throw Error('Worker reservation persistence failed; inspect interrupted work before retry');}
     return start.conversationId;
   }
   autonomousWorker(id:string):any {
     const snapshot=this.runtime.listConversations().find(c=>c.conversationId===id);
     if(!snapshot)return;
     const generation=snapshot.generations.at(-1)!;
-    return {active:Boolean(snapshot.currentGeneration)||snapshot.isStopping,status:generation.status.kind==='done'?generation.status.outcome:'running',output:generation.status.kind==='done'?generation.status.output:undefined};
+    return {active:Boolean(snapshot.currentGeneration)||snapshot.isStopping,status:generation.status.kind==='done'?({error:'failed',aborted:'cancelled',skipped:'cancelled'} as any)[generation.status.outcome]??generation.status.outcome:'running',output:generation.status.kind==='done'?generation.status.output:undefined};
   }
   cancelAutonomous(taskId:string):void {
     for(const run of this.autonomy.snapshot().runs.filter((r:any)=>r.taskId===taskId&&r.status==='running'&&r.conversationId))void this.runtime.cancelSubagent(run.conversationId).catch(this.reportError);

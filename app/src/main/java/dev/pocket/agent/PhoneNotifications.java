@@ -10,10 +10,10 @@ public final class PhoneNotifications extends NotificationListenerService {
         String body=String.valueOf(extras.getCharSequence(android.app.Notification.EXTRA_TITLE,""))+"\n"+String.valueOf(extras.getCharSequence(android.app.Notification.EXTRA_TEXT,""));
         if(body.length()>2000)body=body.substring(0,2000);
         try(AutonomyStore store=new AutonomyStore(this)) {
-            org.json.JSONArray watches=store.load().getJSONArray("watches");boolean matches=false;
+            org.json.JSONObject root=store.load();org.json.JSONArray watches=root.getJSONArray("watches");boolean matches=false;
             for(int i=0;i<watches.length();i++) {
                 org.json.JSONObject watch=watches.getJSONObject(i);String contains=watch.optString("contains");
-                if(watch.optBoolean("enabled")&&posted.getPackageName().equals(watch.optString("packageName"))&&(contains.isEmpty()||body.toLowerCase(java.util.Locale.ROOT).contains(contains.toLowerCase(java.util.Locale.ROOT)))){matches=true;break;}
+                if(watch.optBoolean("enabled")&&AutonomyStore.activeTask(root,watch.optString("taskId"))&&posted.getPackageName().equals(watch.optString("packageName"))&&(contains.isEmpty()||body.toLowerCase(java.util.Locale.ROOT).contains(contains.toLowerCase(java.util.Locale.ROOT)))){matches=true;break;}
             }
             if(matches)store.incoming(Json.obj("id","notification:"+posted.getKey()+":"+posted.getPostTime(),"type","notification","packageName",posted.getPackageName(),"text",body));
         } catch(Exception error){android.util.Log.w("PocketAutonomy","Could not queue notification event",error);}

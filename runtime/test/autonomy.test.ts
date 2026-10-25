@@ -117,3 +117,17 @@ test('automated workers have restricted tools, finish in run history, and never 
   while(runtime.autonomy.snapshot().runs[0].status==='running'&&Date.now()<deadline)await new Promise(resolve=>setTimeout(resolve,20));
   assert.equal(runtime.autonomy.snapshot().runs[0].status,'succeeded');assert.equal(runtime.state().mainTurns,0);
 });
+
+test('pausing a task preserves its due wake-up and prevents work until resumed',()=>{
+  const host=new Host();let now=Date.parse('2026-10-25T00:00:00Z');const engine=new AutonomyEngine(host,()=>now),task=createTask(engine);
+  const wake=engine.execute('wakeup',{action:'set',taskId:task.id,at:'2026-10-25T00:01:00Z',reason:'Follow up',prompt:'Check source'});
+  engine.execute('task',{action:'pause',id:task.id});now+=120000;engine.tick();assert.equal(host.starts.length,0);
+  assert.equal(engine.execute('wakeup',{action:'get',id:wake.id}).enabled,true);
+  engine.execute('task',{action:'resume',id:task.id});engine.tick();assert.equal(host.starts.length,1);
+});
+test('worker-capacity contention backs off without repeated model starts',()=>{
+  const host=new Host();let now=1000000;const engine=new AutonomyEngine(host,()=>now),task=createTask(engine);
+  let attempts=0;host.startAutonomous=()=>{attempts++;return undefined as any;};
+  engine.execute('task',{action:'run_now',id:task.id});engine.tick();engine.tick();assert.equal(attempts,1);
+  now+=60000;engine.tick();assert.equal(attempts,2);assert.equal(host.root.runs.length,1);
+});

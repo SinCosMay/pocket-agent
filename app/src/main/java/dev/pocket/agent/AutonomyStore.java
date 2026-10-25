@@ -84,20 +84,22 @@ final class AutonomyStore extends SQLiteOpenHelper {
             JSONObject root=load();long next=Long.MAX_VALUE;
             for(String key:new String[]{"schedules","wakeups"}) {
                 JSONArray items=root.getJSONArray(key);
-                for(int i=0;i<items.length();i++){JSONObject item=items.getJSONObject(i);if(item.optBoolean("enabled")&&!item.isNull("nextAt"))next=Math.min(next,item.optLong("nextAt",Long.MAX_VALUE));}
+                for(int i=0;i<items.length();i++){JSONObject item=items.getJSONObject(i);if(item.optBoolean("enabled")&&!item.isNull("nextAt")&&activeTask(root,item.optString("taskId")))next=Math.min(next,item.optLong("nextAt",Long.MAX_VALUE));}
             }
-            JSONArray runs=root.getJSONArray("runs");boolean active=false,queued=false;
+            JSONArray runs=root.getJSONArray("runs");long queuedDue=Long.MAX_VALUE;boolean active=false;
             for(int i=0;i<runs.length();i++) {
                 JSONObject run=runs.getJSONObject(i);String status=run.optString("status");
-                if(status.equals("queued")) {
-                    JSONArray tasks=root.getJSONArray("tasks");
-                    for(int t=0;t<tasks.length();t++){JSONObject task=tasks.getJSONObject(t);if(task.optString("id").equals(run.optString("taskId"))&&"active".equals(task.optString("status")))queued=true;}
-                }
+                if(status.equals("queued")&&activeTask(root,run.optString("taskId"))){queuedDue=Math.min(queuedDue,Math.max(System.currentTimeMillis()+1000,run.optLong("nextAttemptAt")));}
                 if(status.equals("running")||status.equals("dispatching")){active=true;next=Math.min(next,run.optLong("startedAt",run.optLong("createdAt"))+9*60_000L);}
             }
-            if(queued&&!active)next=Math.min(next,System.currentTimeMillis()+1000);
+            if(!active)next=Math.min(next,queuedDue);
             return next;
         }
+    }
+    static boolean activeTask(JSONObject root,String id) throws Exception {
+        JSONArray tasks=root.getJSONArray("tasks");
+        for(int i=0;i<tasks.length();i++){JSONObject task=tasks.getJSONObject(i);if(id.equals(task.optString("id")))return "active".equals(task.optString("status"));}
+        return false;
     }
     JSONObject status() {
         ConnectivityManager connectivity=context.getSystemService(ConnectivityManager.class);

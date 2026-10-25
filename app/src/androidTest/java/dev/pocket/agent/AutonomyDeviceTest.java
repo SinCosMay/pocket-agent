@@ -29,6 +29,26 @@ public final class AutonomyDeviceTest {
             }
         } finally {context.deleteDatabase(database);}
     }
+    @Test public void pausedTasksDoNotArmTimersAndQueuedRunsWaitForActiveRun() throws Exception {
+        Context context=InstrumentationRegistry.getInstrumentation().getTargetContext();
+        String database="autonomy-timer-instrumentation.db";context.deleteDatabase(database);
+        boolean enabled=AutonomyStore.enabled(context);
+        context.getSharedPreferences("autonomy-policy",0).edit().putBoolean("enabled",true).commit();
+        try(AutonomyStore store=new AutonomyStore(context,database)) {
+            JSONObject root=store.load();long now=System.currentTimeMillis();
+            root.getJSONArray("tasks").put(Json.obj("id","task","status","paused"));
+            root.getJSONArray("wakeups").put(Json.obj("id","wake","taskId","task","enabled",true,"nextAt",now));
+            root.put("revision",1);store.save(root,0);assertEquals(Long.MAX_VALUE,store.nextDue());
+            root.getJSONArray("tasks").getJSONObject(0).put("status","active");root.put("wakeups",new JSONArray());
+            root.getJSONArray("runs").put(Json.obj("id","active","taskId","task","status","running","startedAt",now));
+            root.getJSONArray("runs").put(Json.obj("id","queued","taskId","task","status","queued"));
+            root.put("revision",2);store.save(root,1);assertEquals(now+9*60_000L,store.nextDue());
+        } finally {
+            context.deleteDatabase(database);
+            context.getSharedPreferences("autonomy-policy",0).edit().putBoolean("enabled",enabled).commit();
+            AutonomyScheduler.arm(context);
+        }
+    }
     @Test public void serviceAndBackgroundWorkShareOneRuntimeOwner() throws Exception {
         Context context=InstrumentationRegistry.getInstrumentation().getTargetContext();
         RuntimeOwner first=RuntimeOwner.acquire(context),second=RuntimeOwner.acquire(context);

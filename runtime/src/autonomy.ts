@@ -208,7 +208,7 @@ export class AutonomyEngine {
         if(worker?.active)continue;
         this.commit(s=>{
           const run=this.find(s,'runs',r.id),task=this.find(s,'tasks',run.taskId);
-          run.status=worker?.status==='completed'?'succeeded':worker?.status==='failed'?'failed':'interrupted';
+          run.status=worker?.status==='completed'?'succeeded':worker?.status==='failed'?'failed':worker?.status==='cancelled'?'cancelled':'interrupted';
           run.output=(worker?.output??'Work was interrupted. Inspect operation receipts before restarting.').slice(0,6000);run.finishedAt=this.now();
           if(task.status==='active')task.progress=run.output;
 
@@ -242,7 +242,7 @@ export class AutonomyEngine {
         s.seenEvents=s.seenEvents.slice(-256);
         for(const collection of ['schedules','wakeups'])for(const trigger of s[collection]) {
           const task=s.tasks.find((t:RecordValue)=>t.id===trigger.taskId);
-          if(!trigger.enabled||trigger.nextAt>this.now())continue;
+          if(!trigger.enabled||trigger.nextAt>this.now()||task?.status!=='active')continue;
           if(task?.status==='active')this.queue(s,collection,trigger.id,trigger.taskId,trigger.prompt,trigger.id+':'+trigger.nextAt);
           if(collection==='wakeups'||trigger.schedule.type==='at'){trigger.enabled=false;trigger.nextAt=null;trigger.nextRunAt=null;}
           else {trigger.nextAt=nextOccurrence(trigger.schedule,this.now());trigger.nextRunAt=new Date(trigger.nextAt).toISOString();}
@@ -251,13 +251,13 @@ export class AutonomyEngine {
       if(events.length)this.host.call('autonomy.ack',{ids:events.map((e:RecordValue)=>e.id)});
       for(const n of this.state.notifications.filter((n:RecordValue)=>n.delivery==='pending'))this.deliverNotification(n);
       if(this.state.runs.some((r:RecordValue)=>['running','dispatching'].includes(r.status)))return;
-      const next=this.state.runs.find((r:RecordValue)=>r.status==='queued'&&this.state.tasks.some((t:RecordValue)=>t.id===r.taskId&&t.status==='active'));if(!next)return;
+      const next=this.state.runs.find((r:RecordValue)=>r.status==='queued'&&(r.nextAttemptAt??0)<=this.now()&&this.state.tasks.some((t:RecordValue)=>t.id===r.taskId&&t.status==='active'));if(!next)return;
       const task=this.state.tasks.find((t:RecordValue)=>t.id===next.taskId);
       if(task?.status!=='active')return;
       this.commit(s=>{const run=this.find(s,'runs',next.id);run.status='dispatching';run.approvedTools=task.approvedTools;run.approvalExpiresAt=task.approvalExpiresAt;});
       try {
         const conversationId=this.host.startAutonomous(next,task);
-        if(!conversationId){this.commit(s=>{this.find(s,'runs',next.id).status='queued';});return;}
+        if(!conversationId){this.commit(s=>{const run=this.find(s,'runs',next.id);run.status='queued';run.nextAttemptAt=this.now()+60000;});return;}
         this.commit(s=>{const run=this.find(s,'runs',next.id);run.status='running';run.conversationId=conversationId;run.startedAt=this.now();const target=this.find(s,'tasks',task.id);target.runCount++;target.approvedTools=[];});
       } catch(error) {
         this.commit(s=>{const run=this.find(s,'runs',next.id);run.status='interrupted';run.finishedAt=this.now();run.output=String(error).slice(0,500);});
