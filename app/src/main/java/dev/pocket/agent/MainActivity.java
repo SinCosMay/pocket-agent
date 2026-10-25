@@ -348,6 +348,19 @@ public final class MainActivity extends Activity implements AgentService.Observe
         if (hasPersistedReasoningModelProof(modelId, verifiedModel, verifiedLevels)) return verifiedLevels;
         return new String[]{CredentialStore.DEFAULT_REASONING_EFFORT};
     }
+    /** Matches Save's blank-key retention and fixed-provider endpoint semantics. */
+    static boolean matchesSavedConnection(JSONObject saved, String mode, String endpoint, String enteredKey) {
+        String savedMode = saved.optString("authMode");
+        boolean sameMode = mode.equals(savedMode)
+                || (mode.equals("openai") && savedMode.equals("api-key"))
+                || (mode.equals("codex") && (savedMode.equals("codexRelay") || savedMode.equals("codex-relay")));
+        if (!sameMode) return false;
+        if (mode.equals(CredentialStore.CODEX_ACCOUNT) || mode.equals("scripted")) return true;
+        boolean fixed = mode.equals(CredentialStore.OPENCODE) || mode.equals(CredentialStore.NEBIUS);
+        String key = enteredKey.trim();
+        return (fixed || endpoint.trim().equals(saved.optString("endpoint")))
+                && (key.isEmpty() || key.equals(saved.optString("apiKey")));
+    }
     private void populateReasoningPicker(Spinner picker, String modelId, String preferred,
             boolean manualModel, String verifiedModel, String[] verifiedLevels) {
         String[] values = reasoningChoices(manualModel, modelReasoningEfforts.get(modelId),
@@ -409,6 +422,8 @@ public final class MainActivity extends Activity implements AgentService.Observe
         final boolean[] savedProofApplies = {true};
         final boolean[] changingModel = {false};
         final boolean[] manualModelEdited = {false};
+        final String[] sourceBeforeConnectionEdit = {savedModelSource};
+        final String[] modelBeforeConnectionEdit = {model.getText().toString().trim()};
         populateReasoningPicker(reasoning, model.getText().toString(), savedActiveReasoning,
                 modelSource[0].equals("manual"), savedReasoningModel, savedReasoningLevels);
         panel.addView(reasoning);
@@ -419,7 +434,7 @@ public final class MainActivity extends Activity implements AgentService.Observe
         picker.setAdapter(new ArrayAdapter<>(this, android.R.layout.simple_spinner_dropdown_item, new String[]{"Manual model ID · or Discover models"}));
         picker.setOnItemSelectedListener(new AdapterView.OnItemSelectedListener() {
             @Override public void onItemSelected(AdapterView<?> parent, View view, int position, long id) {
-                if (position > 0 && position < modelIds.length && modelIds[position] != null) {
+                if (savedProofApplies[0] && position > 0 && position < modelIds.length && modelIds[position] != null) {
                     String selectedMode = modes[mode.getSelectedItemPosition()];
                     String currentModel = model.getText().toString().trim();
                     preferredReasoning[0] = reasoningPreferenceAfterSelection(selectedMode, currentModel,
@@ -514,7 +529,6 @@ public final class MainActivity extends Activity implements AgentService.Observe
             accountPanel.setVisibility(account ? View.VISIBLE : View.GONE);
             secret.setHint(openCode ? "OpenCode Console service-account key (required)" : nebius ? "Nebius API key (required)" : "API key / relay token (blank keeps saved value)");
             changingModel[0] = true;
-            savedProofApplies[0] = sameProvider;
             modelSource[0] = sameProvider ? savedModelSource : "manual";
             manualModelEdited[0] = false;
             if (sameProvider) {
@@ -527,10 +541,17 @@ public final class MainActivity extends Activity implements AgentService.Observe
             else if (selectedMode.equals("openai")) { endpoint.setText("https://api.openai.com/v1"); model.setText("gpt-4.1-mini"); }
             else { endpoint.setText("https://api.openai.com/v1"); model.setText("scripted"); }
             changingModel[0] = false;
+            boolean sameConnection = matchesSavedConnection(saved, selectedMode,
+                    endpoint.getText().toString(), secret.getText().toString());
+            savedProofApplies[0] = sameConnection;
+            if (!sameConnection) modelSource[0] = "manual";
+            sourceBeforeConnectionEdit[0] = modelSource[0];
+            modelBeforeConnectionEdit[0] = model.getText().toString().trim();
+            picker.setEnabled(sameConnection);
             String pickerPreference = sameProvider ? savedActiveReasoning : preferredReasoning[0];
             populateReasoningPicker(reasoning, model.getText().toString(), pickerPreference,
-                    modelSource[0].equals("manual"), sameProvider ? savedReasoningModel : "",
-                    sameProvider ? savedReasoningLevels : new String[0]);
+                    modelSource[0].equals("manual"), sameConnection ? savedReasoningModel : "",
+                    sameConnection ? savedReasoningLevels : new String[0]);
         };
         final int[] lastProvider = {selected};
         mode.setOnItemSelectedListener(new AdapterView.OnItemSelectedListener() {
@@ -578,18 +599,25 @@ public final class MainActivity extends Activity implements AgentService.Observe
             @Override public void onTextChanged(CharSequence value, int start, int before, int count) { }
             @Override public void afterTextChanged(Editable value) {
                 if (changingModel[0]) return;
-                // Catalog metadata belongs to the saved connection, including its credential.
-                savedProofApplies[0] = false;
-                modelSource[0] = "manual";
-                manualModelEdited[0] = false;
-                modelRequestId = null;
-                modelIds = new String[0];
-                modelReasoningEfforts.clear();
-                modelDefaultReasoningEfforts.clear();
-                picker.setAdapter(new ArrayAdapter<>(MainActivity.this, android.R.layout.simple_spinner_dropdown_item,
-                        new String[]{"Manual model ID · save connection to discover models"}));
-                populateReasoningPicker(reasoning, model.getText().toString().trim(),
-                        CredentialStore.DEFAULT_REASONING_EFFORT, true, "", new String[0]);
+                String effort = selectedReasoningEffort(reasoning);
+                String currentModel = model.getText().toString().trim();
+                boolean sameConnection = matchesSavedConnection(saved, modes[mode.getSelectedItemPosition()],
+                        endpoint.getText().toString(), secret.getText().toString());
+                if (sameConnection == savedProofApplies[0]) return;
+                if (!sameConnection) {
+                    sourceBeforeConnectionEdit[0] = modelSource[0];
+                    modelBeforeConnectionEdit[0] = currentModel;
+                    modelSource[0] = "manual";
+                    modelRequestId = null;
+                } else if (!manualModelEdited[0] && currentModel.equals(modelBeforeConnectionEdit[0])) {
+                    modelSource[0] = sourceBeforeConnectionEdit[0];
+                }
+                // Keep the original connection's catalog cached, but unavailable while edits
+                // change its identity. Reverting the endpoint/key restores that catalog.
+                savedProofApplies[0] = sameConnection;
+                picker.setEnabled(sameConnection);
+                populateReasoningPicker(reasoning, currentModel, effort, modelSource[0].equals("manual"),
+                        sameConnection ? savedReasoningModel : "", sameConnection ? savedReasoningLevels : new String[0]);
             }
         };
         endpoint.addTextChangedListener(connectionChanges);

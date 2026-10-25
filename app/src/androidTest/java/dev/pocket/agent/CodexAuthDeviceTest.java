@@ -1,6 +1,12 @@
 package dev.pocket.agent;
 
 import android.content.Context;
+import android.content.Intent;
+import android.view.View;
+import android.view.ViewGroup;
+import android.widget.EditText;
+import android.widget.Spinner;
+import android.widget.TextView;
 import android.util.Base64;
 import androidx.test.ext.junit.runners.AndroidJUnit4;
 import androidx.test.platform.app.InstrumentationRegistry;
@@ -243,6 +249,7 @@ public class CodexAuthDeviceTest {
     }
 
     @Test public void catalogProofCannotCrossEndpointOrCredentialChanges() throws Exception {
+        Assume.assumeTrue("Synthetic credential tests require an emulator",CredentialStore.isEmulator());
         CredentialStore credentials=new CredentialStore(context());JSONObject saved=credentials.get();
         try {
             JSONObject base=new JSONObject().put("authMode","openai").put("endpoint","https://a.example.test/v1")
@@ -267,6 +274,83 @@ public class CodexAuthDeviceTest {
                 assertFalse(reopened.has("reasoningEfforts"));
             }
         } finally {credentials.save(saved);}
+    }
+
+    private static View findDialogControl(View root,String value,boolean inputOnly) {
+        if(root instanceof TextView && (!inputOnly || root instanceof EditText)) {
+            TextView text=(TextView)root;
+            if(value.contentEquals(text.getText()) || (text.getHint()!=null && value.contentEquals(text.getHint()))) return root;
+        }
+        if(root instanceof ViewGroup) {
+            ViewGroup group=(ViewGroup)root;
+            for(int i=0;i<group.getChildCount();i++) {
+                View found=findDialogControl(group.getChildAt(i),value,inputOnly);
+                if(found!=null)return found;
+            }
+        }
+        return null;
+    }
+    private static Spinner settingsSpinner(MainActivity activity,String name) throws Exception {
+        java.lang.reflect.Field field=MainActivity.class.getDeclaredField(name);
+        field.setAccessible(true);return (Spinner)field.get(activity);
+    }
+    private static String pickedEffort(Spinner reasoning) {
+        return ((String[])reasoning.getTag())[reasoning.getSelectedItemPosition()];
+    }
+    @Test public void revertingConnectionEditsRestoresCatalogAndPreservesSelectedEffort() throws Exception {
+        Assume.assumeTrue("Synthetic credential tests require an emulator",CredentialStore.isEmulator());
+        CredentialStore credentials=new CredentialStore(context());JSONObject saved=credentials.get();
+        android.app.Instrumentation instrumentation=InstrumentationRegistry.getInstrumentation();
+        MainActivity activity=null;
+        try {
+            JSONObject base=new JSONObject().put("authMode","openai").put("endpoint","https://a.example.test/v1")
+                    .put("apiKey","synthetic-ui-key").put("model","shared-model").put("modelSource","manual").put("reasoningEffort","low");
+            credentials.save(base);
+            credentials.save(new JSONObject(base.toString()).put("modelSource","catalog").put("reasoningEffort","high")
+                    .put("reasoningEffortModel","shared-model").put("reasoningEfforts",new JSONArray().put("medium").put("high")));
+            activity=(MainActivity)instrumentation.startActivitySync(new Intent(context(),MainActivity.class).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK));
+            MainActivity current=activity;
+            instrumentation.runOnMainSync(()->{
+                try {
+                    java.lang.reflect.Method settings=MainActivity.class.getDeclaredMethod("settings");
+                    settings.setAccessible(true);settings.invoke(current);
+                } catch(ReflectiveOperationException error){throw new AssertionError(error);}
+            });
+            instrumentation.waitForIdleSync();
+            Spinner models=settingsSpinner(current,"modelPicker"),reasoning=settingsSpinner(current,"reasoningPicker");
+            View root=models.getRootView();
+            EditText endpoint=(EditText)findDialogControl(root,"https://a.example.test/v1",true);
+            EditText key=(EditText)findDialogControl(root,"API key / relay token (blank keeps saved value)",true);
+            assertNotNull(endpoint);assertNotNull(key);
+            for(boolean changeKey:new boolean[]{true,false}) {
+                EditText field=changeKey?key:endpoint;
+                instrumentation.runOnMainSync(()->field.setText(changeKey?"temporary-ui-key":"https://b.example.test/v1"));
+                instrumentation.waitForIdleSync();
+                instrumentation.runOnMainSync(()->{
+                    assertEquals("Connection edits must retain the selected effort","high",pickedEffort(reasoning));
+                    assertFalse("Old catalog must be unavailable for a changed connection",models.isEnabled());
+                    assertArrayEquals(new String[]{"minimal","low","medium","high","xhigh","max"},(String[])reasoning.getTag());
+                    field.setText(changeKey?"":"https://a.example.test/v1");
+                });
+                instrumentation.waitForIdleSync();
+                instrumentation.runOnMainSync(()->{
+                    assertEquals("high",pickedEffort(reasoning));
+                    assertTrue("Restored connection must recover its catalog",models.isEnabled());
+                    assertArrayEquals(new String[]{"medium","high"},(String[])reasoning.getTag());
+                });
+            }
+            instrumentation.runOnMainSync(()->{
+                View save=findDialogControl(root,"Save",false);assertNotNull(save);save.performClick();
+            });
+            JSONObject reopened=new CredentialStore(context()).get();
+            assertEquals("catalog",reopened.getString("modelSource"));
+            assertEquals("high",reopened.getString("reasoningEffort"));
+            assertEquals("synthetic-ui-key",reopened.getString("apiKey"));
+            assertEquals(new JSONArray().put("medium").put("high").toString(),reopened.getJSONArray("reasoningEfforts").toString());
+        } finally {
+            if(activity!=null){MainActivity current=activity;instrumentation.runOnMainSync(current::finish);}
+            credentials.save(saved);
+        }
     }
 
 }

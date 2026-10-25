@@ -497,7 +497,9 @@ test('explicit same-ID worker catalog selection does not inherit manual main-mod
    ] as const) {
      const session=new MobileSession(owner,{...accountConfig,reasoningEffort:'max'},credentials,[],[],'',selectedModel,'max',['low','high']);
      try {
+       wire=undefined;
        await session.prompt('Model source probe');
+       assert.ok(wire,owner+' did not capture a provider request');
        assert.equal(wire.reasoning.effort,expected,owner);
      } finally {session.dispose();}
    }
