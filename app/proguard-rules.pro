@@ -60,3 +60,13 @@
 
 # Release instrumentation directly exercises persisted local wake tuning.
 -keep class dev.pocket.agent.WakeWordSettings { *; }
+
+# WorkManager 2.10's Room dependency loads this no-argument constructor reflectively.
+# R8 full mode no longer retains constructors from a class-only keep rule.
+# https://android.googlesource.com/platform/frameworks/support/+/e4765e38e27a3f4d86188b996df97a52403dff46
+-keep class androidx.work.impl.WorkDatabase_Impl { public <init>(); }
+
+# The separately minified instrumentation APK calls this shared target ABI.
+-keep class androidx.tracing.Trace { *; }
+-keep class dev.pocket.agent.AutonomyStore { *; }
+-keep class dev.pocket.agent.RuntimeOwner { *; }
