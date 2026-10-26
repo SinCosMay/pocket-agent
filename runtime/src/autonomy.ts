@@ -59,6 +59,9 @@ export function nextOccurrence(schedule:RecordValue,now:number):number|null {
   throw Error('Cannot calculate next local occurrence');
 }
 const terminal=(run:RecordValue)=>['succeeded','failed','interrupted','cancelled'].includes(run.status);
+function cancelQueuedRun(run:RecordValue):void {
+  run.status='cancelled';delete run.output;delete run.nextAttemptAt;
+}
 
 /** One writer (the app-owned Node runtime); independent of the conversation checkpoint. */
 export class AutonomyEngine {
@@ -168,13 +171,13 @@ export class AutonomyEngine {
           if(action==='delete'){s.tasks=s.tasks.filter((t:RecordValue)=>t.id!==item.id);s.decisions=s.decisions.filter((d:RecordValue)=>d.taskId!==item.id);}
           item.status='cancelled';for(const key of ['schedules','wakeups','watches'])for(const trigger of s[key])if(trigger.taskId===item.id)trigger.enabled=false;
         } else s[collection]=s[collection].filter((x:RecordValue)=>x.id!==item.id);
-        for(const r of s.runs)if(r.status==='queued'&&(r.sourceId===item.id||name==='task'&&r.taskId===item.id))r.status='cancelled';
+        for(const r of s.runs)if(r.status==='queued'&&(r.sourceId===item.id||name==='task'&&r.taskId===item.id))cancelQueuedRun(r);
         return {id:item.id,status:'cancelled'};
       }
       if(action==='pause'||action==='resume') {
         if(name==='task'){if(['cancelled','completed'].includes(item.status))throw Error('Terminal tasks cannot be paused or resumed; create a new task');if(action==='resume'&&s.decisions.some((d:RecordValue)=>d.taskId===item.id&&d.status==='pending'))throw Error('Answer the pending decision before resuming this task');item.status=action==='pause'?'paused':'active';}
         else {item.enabled=action==='resume';if(name==='schedule'&&item.enabled){item.nextAt=nextOccurrence(item.schedule,this.now());item.nextRunAt=item.nextAt?new Date(item.nextAt).toISOString():null;if(!item.nextAt)item.enabled=false;}}
-        if(action==='pause')for(const r of s.runs)if(r.status==='queued'&&(r.sourceId===item.id||name==='task'&&r.taskId===item.id))r.status='cancelled';
+        if(action==='pause')for(const r of s.runs)if(r.status==='queued'&&(r.sourceId===item.id||name==='task'&&r.taskId===item.id))cancelQueuedRun(r);
         return item;
       }
       if(action==='run_now')return this.queue(s,name,item.id,name==='task'?item.id:item.taskId,args.prompt??item.prompt??item.objective,`${name}:${item.id}:manual:${callId}`);
@@ -183,7 +186,7 @@ export class AutonomyEngine {
         if(args.nextStep!==undefined)item.nextStep=text(args.nextStep,'nextStep');
         if(args.objective!==undefined&&!automated)item.objective=text(args.objective,'objective');
         if(args.maxRuns!==undefined&&!automated)item.maxRuns=integer(args.maxRuns,'maxRuns',1,100);
-        item.updatedAt=this.now();if(action==='complete'){item.status='completed';for(const r of s.runs)if(r.taskId===item.id&&r.status==='queued')r.status='cancelled';for(const key of ['schedules','wakeups','watches'])for(const t of s[key])if(t.taskId===item.id)t.enabled=false;}
+        item.updatedAt=this.now();if(action==='complete'){item.status='completed';for(const r of s.runs)if(r.taskId===item.id&&r.status==='queued')cancelQueuedRun(r);for(const key of ['schedules','wakeups','watches'])for(const t of s[key])if(t.taskId===item.id)t.enabled=false;}
         return item;
       }
       if(name==='skill'&&action==='update'){item.instructions=text(args.instructions,'instructions',12000);item.version++;item.updatedAt=this.now();return item;}

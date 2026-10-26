@@ -132,6 +132,18 @@ test('worker-capacity contention backs off without repeated model starts',()=>{
   engine.execute('task',{action:'run_now',id:task.id});engine.tick();engine.tick();assert.equal(attempts,1);
   now+=60000;engine.tick();assert.equal(attempts,2);assert.equal(host.root.runs.length,1);
 });
+test('cancelling a deferred run clears its waiting explanation and retry time',()=>{
+  for(const action of ['pause','cancel','complete']) {
+    const host=new Host(),engine=new AutonomyEngine(host),task=createTask(engine);
+    host.startAutonomous=()=>undefined as any;
+    engine.execute('task',{action:'run_now',id:task.id});engine.tick();
+    const waiting=engine.snapshot().runs[0];
+    assert.match(waiting.output,/Retrying in one minute/);assert.ok(waiting.nextAttemptAt);
+    engine.execute('task',{action,id:task.id});
+    const cancelled=new AutonomyEngine(host).snapshot().runs[0];
+    assert.equal(cancelled.status,'cancelled');assert.equal(cancelled.output,undefined);assert.equal(cancelled.nextAttemptAt,undefined);
+  }
+});
 test('retained conversation capacity defers a one-time run until capacity is freed',async()=>{
   const host=new Host(),runtime=new PocketRuntime(host as any,{maxExecuting:4,maxConversations:1});
   let now=Date.now();(runtime.autonomy as any).now=()=>now;
