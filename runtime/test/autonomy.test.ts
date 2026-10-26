@@ -131,6 +131,46 @@ test('worker-capacity contention backs off without repeated model starts',()=>{
   engine.execute('task',{action:'run_now',id:task.id});engine.tick();engine.tick();assert.equal(attempts,1);
   now+=60000;engine.tick();assert.equal(attempts,2);assert.equal(host.root.runs.length,1);
 });
+test('retained conversation capacity defers a one-time run until capacity is freed',async()=>{
+  const host=new Host(),runtime=new PocketRuntime(host as any,{maxExecuting:4,maxConversations:1});
+  let now=Date.now();(runtime.autonomy as any).now=()=>now;
+  const filler=runtime.startTasks([{kind:'spawn',agent:'researcher',label:'Retained result',prompt:'Read status'}],{initiatedBy:'user'}).starts[0];
+  assert.equal(filler.ok,true);if(!filler.ok)return;
+  const deadline=Date.now()+5000;
+  while(runtime.runtime.conversation(filler.conversationId).currentGeneration&&Date.now()<deadline)await new Promise(resolve=>setTimeout(resolve,20));
+  assert.equal(Boolean(runtime.runtime.conversation(filler.conversationId).currentGeneration),false);
+  const at=new Date(now+60000).toISOString();
+  runtime.autonomy.execute('schedule',{action:'create',title:'One time',prompt:'Read status',schedule:{type:'at',at}});
+  now+=60000;runtime.dispatch(JSON.stringify({action:'autonomy_tick'}));
+  let run=runtime.autonomy.snapshot().runs[0];
+  assert.equal(run.status,'queued');assert.equal(run.nextAttemptAt,now+60000);
+  assert.equal(runtime.autonomy.snapshot().tasks[0].runCount,0);
+  assert.equal(runtime.autonomy.snapshot().schedules[0].enabled,false);
+  await runtime.runtime.removeConversations([filler.conversationId]);runtime.cleanupRemoved();
+  now+=60000;runtime.dispatch(JSON.stringify({action:'autonomy_tick'}));
+  run=runtime.autonomy.snapshot().runs[0];assert.equal(run.status,'running');
+  const finished=Date.now()+5000;
+  while(runtime.autonomy.snapshot().runs[0].status==='running'&&Date.now()<finished)await new Promise(resolve=>setTimeout(resolve,20));
+  assert.equal(runtime.autonomy.snapshot().runs[0].status,'succeeded');
+  assert.equal(runtime.autonomy.snapshot().runs.length,1);
+});
+
+test('stop_all reconciles cancelled autonomous runs while automation is paused',async()=>{
+  const host=new Host(),runtime=new PocketRuntime(host as any),task=createTask(runtime.autonomy);
+  const original=host.call.bind(host);host.call=(method,args)=>{
+    if(method==='autonomy.pause'){host.enabled=false;return true;}
+    return original(method,args);
+  };
+  runtime.autonomy.execute('task',{action:'run_now',id:task.id});
+  runtime.dispatch(JSON.stringify({action:'autonomy_tick'}));
+  const id=runtime.autonomy.snapshot().runs[0].conversationId;
+  runtime.dispatch(JSON.stringify({action:'stop_all'}));
+  const deadline=Date.now()+5000;
+  while((runtime.autonomy.snapshot().runs[0].status==='running'||runtime.runtime.listConversations().length)&&Date.now()<deadline)await new Promise(resolve=>setTimeout(resolve,20));
+  assert.equal(host.enabled,false);
+  assert.equal(runtime.autonomy.snapshot().runs[0].status,'cancelled');
+  assert.equal(runtime.runtime.listConversations().some(c=>c.conversationId===id),false);
+});
 
 test('native tick reports durable-store failure to its worker instead of acknowledging success',()=>{
   const host=new Host(),runtime=new PocketRuntime(host as any),task=createTask(runtime.autonomy);
