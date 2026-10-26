@@ -172,6 +172,11 @@ export function nativeTools(host:any,owner:string,grant?:readonly string[]):any[
     parameters:Type.Unsafe(s.inputSchema),
     execute:async(_id:string,args:any,signal?:AbortSignal)=>{
       if(signal?.aborted) throw new Error('Cancelled before native dispatch');
+      const authorize=()=>{
+        host.authorizePhone?.(owner,s.name,args);
+        if(s.name==='phone_batch')for(const call of args.calls??[])host.authorizePhone?.(owner,call.name,call.args);
+      };
+      authorize();
       // Batch entries must also stay inside this conversation's grant.
       if(s.name==='phone_batch' && args.calls?.some((x:any)=>!schemas.some(t=>t.name===x.name) || (grant && !grant.includes(x.name)))) throw new Error('Batch tool exceeds tool grant');
       if(s.name==='phone_screen'){
@@ -197,6 +202,9 @@ export function nativeTools(host:any,owner:string,grant?:readonly string[]):any[
         if(settled?.isError)return toolResult(settled);
         if(settled?.display_replaced)return toolResult({isError:true,code:'NOT_READY',message:'Display lease was replaced while settling pending UI readiness; prior private-display app state was discarded and the batch was not dispatched.',display_replaced:true,display_note:settled.display_note,batch_dispatched:false});
       }
+      // Display leases can wait behind other workers. Recheck pause/approval expiry
+      // after those awaits, immediately before any phone side effect.
+      authorize();
       const result=s.name==='phone_observe'?await observeReady(host,owner,args,signal):host.call('tool',{name:s.name,args,owner});
       if(s.name==='phone_batch')recordBatchUiState(host,owner,args,result);
       else if(!result?.isError) {

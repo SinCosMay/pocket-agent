@@ -1,3 +1,4 @@
+import {emptyAutonomy} from '../src/autonomy.js';
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import {PocketRuntime} from '../src/runtime.js';
@@ -20,6 +21,8 @@ class MemoryBridge {
       else result={memories:this.records};
     }
     if(method==='tool')result={available:true,owner:args.owner};
+    if(method==='autonomy.load')result=emptyAutonomy();
+    if(method==='autonomy.status')result={enabled:false};
     return JSON.stringify({ok:true,result});
   }
   emit(j:string):void{this.events.push(JSON.parse(j));}

@@ -22,6 +22,8 @@ public final class RuntimeHost implements AutoCloseable {
     private final Context context;
     private final StateStore store;
     private final MemoryStore memory;
+    private final AutonomyStore autonomy;
+    private final CompletableFuture<Void> closeCompletion=new CompletableFuture<>();
     private final CredentialStore credentials;
     private final Consumer<JSONObject> listener;
     private final HandlerThread thread = new HandlerThread("PocketNode");
@@ -54,7 +56,7 @@ public final class RuntimeHost implements AutoCloseable {
     }
     public RuntimeHost(Context context, Consumer<JSONObject> listener) {
         this.context = context.getApplicationContext(); this.listener = listener;
-        store = new StateStore(this.context); memory = new MemoryStore(this.context); credentials = new CredentialStore(this.context);
+        store = new StateStore(this.context); autonomy=new AutonomyStore(this.context); memory = new MemoryStore(this.context); credentials = new CredentialStore(this.context);
         thread.start(); handler = new Handler(thread.getLooper());
     }
     private void createRuntime() throws Exception {
@@ -275,7 +277,8 @@ public final class RuntimeHost implements AutoCloseable {
             try {
                 if (argsJson == null || argsJson.length() > 2_000_000) throw new IllegalArgumentException("Native arguments exceed limit");
                 JSONObject args = new JSONObject(argsJson); Object result;
-                switch (method) {
+                if(method.startsWith("autonomy."))result=autonomy.call(method.substring(9),args);
+                else switch (method) {
                     case "tool": result = tools.execute(args.getString("name"), args.optJSONObject("args") == null ? new JSONObject() : args.getJSONObject("args"), args.optString("owner", "main")); break;
                     case "memory": result = memory.run(args.getJSONObject("request"), args.getString("owner")); break;
                     case "store.load": result = store.loadDurable(); break;
@@ -411,9 +414,11 @@ public final class RuntimeHost implements AutoCloseable {
             try {store.markInterrupted();} catch(Throwable error) {android.util.Log.w("PocketRuntime","Could not mark interrupted",error);}
             try {store.markDurableInterrupted();} catch(Throwable error) {android.util.Log.w("PocketRuntime","Could not neutralize durable inbox",error);}
         }
+        try {autonomy.close();} catch(Throwable error) {android.util.Log.w("PocketRuntime","Autonomy store close failed",error);}
         try {memory.close();} catch(Throwable error) {android.util.Log.w("PocketRuntime","Memory store close failed",error);}
         try {store.close();} catch(Throwable error) {android.util.Log.w("PocketRuntime","State store close failed",error);}
         try {thread.quitSafely();} catch(Throwable error) {android.util.Log.w("PocketRuntime","Runtime thread close failed",error);}
+        closeCompletion.complete(null);
     }
     private void closeOnOwnerThread() {
         if(closed)return;
@@ -431,11 +436,14 @@ public final class RuntimeHost implements AutoCloseable {
         abortDurableSave();
         try {store.markInterrupted();} catch(Throwable error) {android.util.Log.w("PocketRuntime","Could not mark interrupted",error);}
         try {store.markDurableInterrupted();} catch(Throwable error) {android.util.Log.w("PocketRuntime","Could not neutralize durable inbox",error);}
+        try {autonomy.close();} catch(Throwable error) {android.util.Log.w("PocketRuntime","Autonomy store close failed",error);}
         try {memory.close();} catch(Throwable error) {android.util.Log.w("PocketRuntime","Memory store close failed",error);}
         try {store.close();} catch(Throwable error) {android.util.Log.w("PocketRuntime","State store close failed",error);}
         try {thread.quitSafely();} catch(Throwable error) {android.util.Log.w("PocketRuntime","Runtime thread close failed",error);}
+        closeCompletion.complete(null);
         android.util.Log.e("PocketRuntime","Runtime owner thread unavailable; thread-affine isolate left for process teardown");
     }
+    CompletableFuture<Void> closeAsync() {close();return closeCompletion;}
     @Override public void close() {
         if(closed||closing)return;
         closing=true;
