@@ -207,6 +207,17 @@ test('a full pending result outbox rejects new results without losing pending wo
   assert.throws(()=>engine.execute('notify_user',{title:'New',message:'Result'}),/Pending notification limit/);
   assert.equal(host.root.notifications.length,100);assert.equal(host.root.notifications[0].id,'0');
 });
+test('run history pruning preserves chronology and keeps active work visible',()=>{
+  const host=new Host(),engine=new AutonomyEngine(host),task=createTask(engine);
+  host.root.runs=Array.from({length:101},(_,i)=>({id:'old-'+i,key:'old-'+i,taskId:task.id,status:'succeeded',createdAt:i}));
+  host.root.runs.splice(50,0,{id:'pending',key:'pending',taskId:task.id,status:'queued',createdAt:49.5});
+  const restored=new AutonomyEngine(host),nextTask=createTask(restored);
+  const latest=restored.execute('task',{action:'run_now',id:nextTask.id});
+  const runs=restored.snapshot().runs;
+  assert.equal(runs.length,102);assert.equal(runs[0].id,'old-1');
+  assert.deepEqual(runs.map((r:any)=>r.id),['old-1',...Array.from({length:48},(_,i)=>'old-'+(i+2)),'pending',...Array.from({length:51},(_,i)=>'old-'+(i+50)),latest.id]);
+  assert.equal(runs.slice(-20).at(-1).id,latest.id);
+});
 test('both historical built-in prompts and custom prompts sharing their prefix migrate correctly',async()=>{
   const {migratePersonal}=await import('../src/prompts.js');
   const {default:defaults}=await import('../../app/src/main/assets/legacy-main-prompts.json');

@@ -97,7 +97,9 @@ export class AutonomyEngine {
     // Coalesce a recurring trigger while the same responsibility is already in flight.
     if(source!=='decision'&&state.runs.some((r:RecordValue)=>r.taskId===taskId&&!terminal(r)))return;
     const run={id:randomUUID(),key,taskId,source,sourceId,prompt,status:'queued',createdAt:this.now()};
-    state.runs.push(run);state.runs=state.runs.filter((r:RecordValue)=>!terminal(r)).concat(state.runs.filter(terminal).slice(-100));return run;
+    state.runs.push(run);
+    const retained=new Set(state.runs.filter(terminal).slice(-100).map((r:RecordValue)=>r.id));
+    state.runs=state.runs.filter((r:RecordValue)=>!terminal(r)||retained.has(r.id));return run;
   }
   execute(name:string,args:RecordValue,owner='main',callId=randomUUID()):any {
     const automated=owner.startsWith('auto:');
