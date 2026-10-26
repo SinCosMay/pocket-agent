@@ -1,4 +1,4 @@
-import {AutonomyEngine,autonomyTools,AUTONOMY_TOOL_NAMES} from './autonomy.js';
+import {AutonomyEngine,autonomyTools,AUTONOMY_TOOL_NAMES,type AutonomousStartResult} from './autonomy.js';
 import phoneSchemas from '../../app/src/main/assets/tools.json';
 import { AgentRegistry } from '../vendor/pi9/agents.js';
 import { SubagentRuntime } from '../vendor/pi9/runtime.js';
@@ -407,7 +407,7 @@ export class PocketRuntime {
     const known=new Set(phoneSchemas.map(s=>s.name));
     return [...reads,...approved.filter(name=>known.has(name)), 'phone_screen','task','wakeup','notify_user','request_decision','runtime_status','skill','memory_search','memory_profile'];
   }
-  startAutonomous(run:any,task:any):string|undefined {
+  startAutonomous(run:any,task:any):AutonomousStartResult {
     if(this.shuttingDown||this.stoppingAll||this.runtime.listConversations().filter(c=>c.currentGeneration).length>=4)return;
     const approved=task.approvalExpiresAt>Date.now()?task.approvedTools:[];
     this.registry.agents.get('autonomy-worker')!.tools=this.autonomousGrant(approved);
@@ -415,7 +415,7 @@ export class PocketRuntime {
     const result=this.runtime.startTasks(this.context,[{kind:'spawn',agent:'autonomy-worker',label:task.title,prompt}],{initiatedBy:'user'});
     const start=result.starts[0];
     if(!start?.ok) {
-      if(start?.error?.startsWith('Subagent capacity ('))return;
+      if(start?.error?.startsWith('Subagent capacity ('))return {deferredReason:start.error};
       throw Error(start?.error??'Autonomous worker could not start');
     }
     if(!this.save()){void this.runtime.cancelSubagent(start.conversationId).catch(this.reportError);throw Error('Worker reservation persistence failed; inspect interrupted work before retry');}

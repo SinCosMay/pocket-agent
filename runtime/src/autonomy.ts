@@ -3,9 +3,10 @@ import {Type} from 'typebox';
 
 export const AUTONOMY_TOOL_NAMES=['schedule','wakeup','task','notify_user','request_decision','runtime_status','watch','skill'];
 type RecordValue=Record<string,any>;
+export type AutonomousStartResult=string|{deferredReason:string}|undefined;
 export interface AutonomyHost {
   call(method:string,args:any):any;
-  startAutonomous(run:RecordValue,task:RecordValue):string|undefined;
+  startAutonomous(run:RecordValue,task:RecordValue):AutonomousStartResult;
   autonomousWorker(id:string):RecordValue|undefined;
   retireAutonomous(id:string):void;
   cancelAutonomous?(taskId:string):void;
@@ -264,9 +265,11 @@ export class AutonomyEngine {
       if(task?.status!=='active')return;
       this.commit(s=>{const run=this.find(s,'runs',next.id);run.status='dispatching';run.approvedTools=task.approvedTools;run.approvalExpiresAt=task.approvalExpiresAt;});
       try {
-        const conversationId=this.host.startAutonomous(next,task);
-        if(!conversationId){this.commit(s=>{const run=this.find(s,'runs',next.id);run.status='queued';run.nextAttemptAt=this.now()+60000;});return;}
-        this.commit(s=>{const run=this.find(s,'runs',next.id);run.status='running';run.conversationId=conversationId;run.startedAt=this.now();const target=this.find(s,'tasks',task.id);target.runCount++;target.approvedTools=[];});
+        const start=this.host.startAutonomous(next,task);
+        if(typeof start!=='string') {
+          this.commit(s=>{const run=this.find(s,'runs',next.id);run.status='queued';run.nextAttemptAt=this.now()+60000;run.output=`${start?.deferredReason??'Waiting for worker capacity.'} Retrying in one minute.`.slice(0,1000);});return;
+        }
+        this.commit(s=>{const run=this.find(s,'runs',next.id);run.status='running';run.conversationId=start;run.startedAt=this.now();delete run.output;delete run.nextAttemptAt;const target=this.find(s,'tasks',task.id);target.runCount++;target.approvedTools=[];});
       } catch(error) {
         this.commit(s=>{const run=this.find(s,'runs',next.id);run.status='interrupted';run.finishedAt=this.now();run.output=String(error).slice(0,500);});
       }

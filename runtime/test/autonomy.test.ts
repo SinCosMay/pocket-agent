@@ -144,11 +144,14 @@ test('retained conversation capacity defers a one-time run until capacity is fre
   now+=60000;runtime.dispatch(JSON.stringify({action:'autonomy_tick'}));
   let run=runtime.autonomy.snapshot().runs[0];
   assert.equal(run.status,'queued');assert.equal(run.nextAttemptAt,now+60000);
+  assert.match(run.output,/Subagent capacity \(1\) reached/);
+  assert.match(run.output,new RegExp(filler.conversationId));
+  assert.equal(new AutonomyEngine(host).snapshot().runs[0].output,run.output);
   assert.equal(runtime.autonomy.snapshot().tasks[0].runCount,0);
   assert.equal(runtime.autonomy.snapshot().schedules[0].enabled,false);
   await runtime.runtime.removeConversations([filler.conversationId]);runtime.cleanupRemoved();
   now+=60000;runtime.dispatch(JSON.stringify({action:'autonomy_tick'}));
-  run=runtime.autonomy.snapshot().runs[0];assert.equal(run.status,'running');
+  run=runtime.autonomy.snapshot().runs[0];assert.equal(run.status,'running');assert.equal(run.output,undefined);
   const finished=Date.now()+5000;
   while(runtime.autonomy.snapshot().runs[0].status==='running'&&Date.now()<finished)await new Promise(resolve=>setTimeout(resolve,20));
   assert.equal(runtime.autonomy.snapshot().runs[0].status,'succeeded');
