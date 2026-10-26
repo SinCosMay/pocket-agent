@@ -16,6 +16,7 @@ class Host {
     if(method==='autonomy.events')return structuredClone(this.events);
     if(method==='autonomy.ack'){this.events=this.events.filter(e=>!args.ids.includes(e.id));return true;}
     if(method==='autonomy.status')return {enabled:this.enabled};
+    if(method==='autonomy.pause'){this.enabled=false;return true;}
     if(method==='autonomy.notify'){this.notifications.push(args);return {status:'posted'};}
     if(method==='credentials.get')return {authMode:'scripted'};
     if(method==='store.load')return this.runtimeState;
@@ -160,10 +161,6 @@ test('retained conversation capacity defers a one-time run until capacity is fre
 
 test('stop_all reconciles cancelled autonomous runs while automation is paused',async()=>{
   const host=new Host(),runtime=new PocketRuntime(host as any),task=createTask(runtime.autonomy);
-  const original=host.call.bind(host);host.call=(method,args)=>{
-    if(method==='autonomy.pause'){host.enabled=false;return true;}
-    return original(method,args);
-  };
   runtime.autonomy.execute('task',{action:'run_now',id:task.id});
   runtime.dispatch(JSON.stringify({action:'autonomy_tick'}));
   const id=runtime.autonomy.snapshot().runs[0].conversationId;
@@ -257,6 +254,38 @@ test('stop_all stops current workers even when the native pause write fails',asy
   (runtime as any).stopAll=async()=>{stopped++;};
   runtime.dispatch(JSON.stringify({action:'stop_all'}));
   assert.equal(stopped,1);assert.match(runtime.state().lastError,/pause disk full/);
+});
+for(const recovery of ['stop_all','native_policy'])test(`a failed Stop all pause blocks queued work until confirmed paused (${recovery})`,async()=>{
+  const host=new Host(),runtime=new PocketRuntime(host as any),active=createTask(runtime.autonomy),waiting=createTask(runtime.autonomy);
+  let failPause=true;const original=host.call.bind(host);
+  host.call=(method,args)=>{
+    if(method==='autonomy.pause'&&failPause)throw Error('pause unavailable');
+    return original(method,args);
+  };
+  runtime.autonomy.execute('task',{action:'run_now',id:active.id});
+  runtime.dispatch(JSON.stringify({action:'autonomy_tick'}));
+  runtime.autonomy.execute('task',{action:'run_now',id:waiting.id});
+  runtime.dispatch(JSON.stringify({action:'stop_all'}));
+  const deadline=Date.now()+5000;
+  while((runtime.autonomy.snapshot().runs[0].status==='running'||runtime.runtime.listConversations().length)&&Date.now()<deadline)await new Promise(resolve=>setTimeout(resolve,20));
+  assert.equal(host.enabled,true);assert.equal(runtime.autonomy.snapshot().runs[0].status,'cancelled');
+  assert.equal(runtime.runtime.listConversations().length,0);
+  for(let i=0;i<2;i++)runtime.dispatch(JSON.stringify({action:'autonomy_tick'}));
+  assert.equal(runtime.autonomy.snapshot().runs[1].status,'queued');
+  assert.equal(runtime.autonomy.snapshot().tasks[1].runCount,0);
+  assert.match(runtime.state().lastError,/pause unavailable/);
+  if(recovery==='stop_all') {
+    failPause=false;runtime.dispatch(JSON.stringify({action:'stop_all'}));
+    await new Promise(resolve=>setTimeout(resolve,20));
+  } else {
+    host.enabled=false;runtime.dispatch(JSON.stringify({action:'autonomy_tick'}));
+  }
+  assert.equal(host.enabled,false);assert.equal(runtime.autonomy.snapshot().runs[1].status,'queued');
+  host.enabled=true;runtime.dispatch(JSON.stringify({action:'autonomy_tick'}));
+  assert.equal(runtime.autonomy.snapshot().runs[1].status,'running');
+  const finished=Date.now()+5000;
+  while(runtime.autonomy.snapshot().runs[1].status==='running'&&Date.now()<finished)await new Promise(resolve=>setTimeout(resolve,20));
+  assert.equal(runtime.autonomy.snapshot().runs[1].status,'succeeded');
 });
 test('notification matches beyond the excerpt survive native inbox clipping',()=>{
   const host=new Host(),engine=new AutonomyEngine(host);

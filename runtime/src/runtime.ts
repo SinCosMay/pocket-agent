@@ -58,6 +58,8 @@ export class PocketRuntime {
   private restoring=true;
   private pumping=false;
   private stoppingAll=false;
+  // A bridge failure must not let later ticks bypass the user's requested pause.
+  private autonomyPausePending=false;
   private shuttingDown=false;
   private mainPaused=false;
   private totalStarts=0;
@@ -152,6 +154,10 @@ export class PocketRuntime {
     const serialized=method.startsWith('store.save')||method==='autonomy.save'||method==='autonomy.notify'?this.redactJson(args):JSON.stringify(args);
     const result=JSON.parse(this.native.call(method,serialized));
     if(!result.ok)throw new Error(result.error?.message??result.error??`${method} failed`);
+    if(method==='autonomy.status'&&this.autonomyPausePending) {
+      if(result.result?.enabled===false)this.autonomyPausePending=false;
+      else return {...result.result,enabled:false};
+    }
     return result.result;
   }
   emit(event:any):void {
@@ -510,7 +516,11 @@ export class PocketRuntime {
           this.inbox=this.inbox.filter(item=>item.voiceSessionId!==sessionId);
         }
       }
-      else if(cmd.action==='stop_all'){try{this.call('autonomy.pause',{});}catch(error){this.reportError(error);}void this.stopAll().catch(this.reportError).finally(()=>this.tickAutonomy());}
+      else if(cmd.action==='stop_all') {
+        this.autonomyPausePending=true;
+        try{this.call('autonomy.pause',{});this.autonomyPausePending=false;}catch(error){this.reportError(error);}
+        void this.stopAll().catch(this.reportError).finally(()=>this.tickAutonomy());
+      }
       else if(cmd.action==='cancel_worker')void this.runtime.cancelSubagent(cmd.conversationId,this.hostCaller(cmd.conversationId)).catch(this.reportError);
       else if(cmd.action==='steer_worker')void this.steer(cmd.conversationId,cmd.text,this.hostCaller(cmd.conversationId),'user').catch(this.reportError);
       else if(cmd.action==='inspect_worker') {
