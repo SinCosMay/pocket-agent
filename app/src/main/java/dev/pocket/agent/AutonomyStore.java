@@ -22,8 +22,10 @@ import org.json.JSONObject;
 final class AutonomyStore extends SQLiteOpenHelper {
     static final Object LOCK=new Object();
     private final Context context;
+    private final boolean production;
+    private static volatile java.util.Set<String> watchedPackages;
     AutonomyStore(Context context) {this(context,"agent-autonomy.db");}
-    AutonomyStore(Context context,String databaseName) {super(context,databaseName,null,1);this.context=context.getApplicationContext();}
+    AutonomyStore(Context context,String databaseName) {super(context,databaseName,null,1);this.context=context.getApplicationContext();this.production="agent-autonomy.db".equals(databaseName);}
     @Override public void onCreate(SQLiteDatabase db) {
         db.execSQL("CREATE TABLE state (id INTEGER PRIMARY KEY CHECK(id=1), json TEXT NOT NULL)");
         db.execSQL("CREATE TABLE incoming (id TEXT PRIMARY KEY, json TEXT NOT NULL, at INTEGER NOT NULL)");
@@ -32,11 +34,11 @@ final class AutonomyStore extends SQLiteOpenHelper {
     JSONObject load() throws Exception {
         synchronized(LOCK) {
             try(Cursor c=getReadableDatabase().rawQuery("SELECT json FROM state WHERE id=1",null)) {
-                if(c.moveToFirst())return new JSONObject(c.getString(0));
+                if(c.moveToFirst()){JSONObject state=new JSONObject(c.getString(0));refreshWatchCache(state);return state;}
             }
             JSONObject root=Json.obj("version",1,"revision",0);
             for(String key:new String[]{"schedules","wakeups","tasks","watches","skills","decisions","notifications","runs","seenEvents"})root.put(key,new JSONArray());
-            return root;
+            refreshWatchCache(root);return root;
         }
     }
     void save(JSONObject state,long expectedRevision) throws Exception {
@@ -50,16 +52,25 @@ final class AutonomyStore extends SQLiteOpenHelper {
                 db.setTransactionSuccessful();
             } finally {db.endTransaction();}
         }
-        AutonomyScheduler.arm(context);
+        refreshWatchCache(state);if(production)AutonomyScheduler.arm(context);
     }
+    private void refreshWatchCache(JSONObject state) throws Exception {
+        if(!production)return;
+        java.util.Set<String> packages=new java.util.HashSet<>();JSONArray watches=state.getJSONArray("watches");
+        for(int i=0;i<watches.length();i++){JSONObject watch=watches.getJSONObject(i);if(watch.optBoolean("enabled")&&activeTask(state,watch.optString("taskId")))packages.add(watch.optString("packageName"));}
+        watchedPackages=java.util.Collections.unmodifiableSet(packages);
+    }
+    static boolean mayWatch(String packageName){java.util.Set<String> packages=watchedPackages;return packages==null||packages.contains(packageName);}
     static boolean enabled(Context context) {return context.getSharedPreferences("autonomy-policy",0).getBoolean("enabled",true);}
     static void setEnabled(Context context,boolean enabled) {
+        persistEnabled(context,enabled);AutonomyScheduler.arm(context);
+    }
+    static void persistEnabled(Context context,boolean enabled) {
         synchronized(LOCK) {
             android.content.SharedPreferences.Editor edit=context.getSharedPreferences("autonomy-policy",0).edit().putBoolean("enabled",enabled);
             if(enabled)edit.remove("startupFailures").remove("backoffUntil").remove("lastFailure");
             if(!edit.commit())throw new IllegalStateException("Could not save automation setting");
         }
-        AutonomyScheduler.arm(context);
     }
     static void startupFailed(Context context) {
         synchronized(LOCK) {
@@ -74,7 +85,7 @@ final class AutonomyStore extends SQLiteOpenHelper {
         }
     }
     static void startupHealthy(Context context) {
-        context.getSharedPreferences("autonomy-policy",0).edit().remove("startupFailures").remove("backoffUntil").remove("lastFailure").commit();
+        synchronized(LOCK){if(!context.getSharedPreferences("autonomy-policy",0).edit().remove("startupFailures").remove("backoffUntil").remove("lastFailure").commit())throw new IllegalStateException("Could not clear background backoff");}
     }
     JSONArray events() throws Exception {
         synchronized(LOCK) {
@@ -85,16 +96,17 @@ final class AutonomyStore extends SQLiteOpenHelper {
     }
     void ack(JSONArray ids) {
         synchronized(LOCK) {for(int i=0;i<ids.length();i++)getWritableDatabase().delete("incoming","id=?",new String[]{ids.optString(i)});}
-        AutonomyScheduler.arm(context);
+        if(production)AutonomyScheduler.arm(context);
     }
     void incoming(JSONObject event) throws Exception {
         synchronized(LOCK) {
             ContentValues values=new ContentValues();values.put("id",event.getString("id"));values.put("json",event.toString());values.put("at",System.currentTimeMillis());
             SQLiteDatabase db=getWritableDatabase();
+            try(Cursor existing=db.rawQuery("SELECT 1 FROM incoming WHERE id=?",new String[]{event.getString("id")})){if(existing.moveToFirst())return;}
             try(Cursor c=db.rawQuery("SELECT COUNT(*) FROM incoming",null)){if(c.moveToFirst()&&c.getInt(0)>=64)throw new IllegalStateException("Autonomy event inbox full");}
-            db.insertWithOnConflict("incoming",null,values,SQLiteDatabase.CONFLICT_IGNORE);
+            if(db.insertWithOnConflict("incoming",null,values,SQLiteDatabase.CONFLICT_IGNORE)<0)throw new IllegalStateException("Could not persist incoming event");
         }
-        AutonomyScheduler.arm(context);
+        if(production)AutonomyScheduler.arm(context);
     }
     long nextDue() throws Exception {
         if(!enabled(context))return Long.MAX_VALUE;

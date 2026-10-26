@@ -414,7 +414,7 @@ public final class RuntimeHost implements AutoCloseable {
             try {store.markInterrupted();} catch(Throwable error) {android.util.Log.w("PocketRuntime","Could not mark interrupted",error);}
             try {store.markDurableInterrupted();} catch(Throwable error) {android.util.Log.w("PocketRuntime","Could not neutralize durable inbox",error);}
         }
-        try {autonomy.close();} catch(Throwable ignored) {}
+        try {autonomy.close();} catch(Throwable error) {android.util.Log.w("PocketRuntime","Autonomy store close failed",error);}
         try {memory.close();} catch(Throwable error) {android.util.Log.w("PocketRuntime","Memory store close failed",error);}
         try {store.close();} catch(Throwable error) {android.util.Log.w("PocketRuntime","State store close failed",error);}
         try {thread.quitSafely();} catch(Throwable error) {android.util.Log.w("PocketRuntime","Runtime thread close failed",error);}
@@ -436,7 +436,7 @@ public final class RuntimeHost implements AutoCloseable {
         abortDurableSave();
         try {store.markInterrupted();} catch(Throwable error) {android.util.Log.w("PocketRuntime","Could not mark interrupted",error);}
         try {store.markDurableInterrupted();} catch(Throwable error) {android.util.Log.w("PocketRuntime","Could not neutralize durable inbox",error);}
-        try {autonomy.close();} catch(Throwable ignored) {}
+        try {autonomy.close();} catch(Throwable error) {android.util.Log.w("PocketRuntime","Autonomy store close failed",error);}
         try {memory.close();} catch(Throwable error) {android.util.Log.w("PocketRuntime","Memory store close failed",error);}
         try {store.close();} catch(Throwable error) {android.util.Log.w("PocketRuntime","State store close failed",error);}
         try {thread.quitSafely();} catch(Throwable error) {android.util.Log.w("PocketRuntime","Runtime thread close failed",error);}

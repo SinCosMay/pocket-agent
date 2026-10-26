@@ -74,7 +74,9 @@ retained-worker slots; their bounded result is kept in run history.
 
 Activity shows pending decisions, schedules, recent runs and results, plus the
 master enable switch. Stop all pauses future automation and stops current work.
-Resume automation explicitly in Activity. Pausing a schedule stops future runs;
+Resume automation explicitly in Activity. Pausing a task stops its current worker
+and keeps saved continuations; answering a pending decision is required before
+that task can resume. Pausing a schedule stops future runs;
 cancel the associated task to stop its current worker as well.
 
 ## Core and personal instructions
@@ -84,8 +86,10 @@ can edit locally and rebuild. The app exposes only **Personal instructions**.
 These preferences supplement the source-owned core; they cannot replace it.
 The core and default prompt fields are absent from public state and copied debug
 history. Legacy `set_system_prompt` and `configure.systemPrompt` are rejected.
-Legacy saved custom text migrates to preferences; the former built-in default
-migrates to empty preferences. Clearing preferences retains all core rules.
+Legacy saved custom text migrates to preferences; exact historical built-in
+defaults migrate to empty preferences using one shared migration list. Clearing
+preferences retains all core rules. Saving Settings starts the assistant so the
+shared runtime can serialize the update after any closing checkpoint.
 
 This separation prevents accidental replacement through Settings. It is not a
 claim that prompt text is a security sandbox or cannot be extracted from an APK;
@@ -96,8 +100,9 @@ tool grants and native permission checks enforce execution boundaries.
 Runtime tests cover restart/deduplication, persistence failure, self-wake
 checkpoints, missed intervals, timezone/DST rules, decision races, one-run approval,
 notification filters, skills, task completion and core-prompt migration/protection.
-`AutonomyDeviceTest` exercises real SQLite revision/event handling and shared
-runtime ownership. The APK workflow runs that test alongside the existing
-instruction/editor lifecycle instrumentation. APK compilation and signing run
+`AutonomyDeviceTest` exercises real SQLite revision/event handling, direct runtime
+leases, notification text handling, and native instruction migration. Existing
+lifecycle tests exercise the foreground service separately. The APK workflow runs
+these tests alongside the instruction/editor lifecycle instrumentation. APK compilation and signing run
 only in GitHub Actions. Physical-device Doze/OEM battery behavior and live scheduled
 provider runs remain separate device validation, not guarantees from unit tests.

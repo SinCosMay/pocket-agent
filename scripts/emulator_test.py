@@ -8,11 +8,21 @@ def run(*args, timeout=240, check=True):
     if check and result.returncode:raise RuntimeError(result.stdout+result.stderr)
     return result
 
+def selected_test_classes(names, live):
+    selected=[]
+    for cls in names:
+        if not re.fullmatch(r'[A-Za-z][A-Za-z0-9_]*DeviceTest',cls):raise SystemExit('Use a short DeviceTest class name')
+        if cls=='LiveProviderDeviceTest' and not live:raise SystemExit('Live provider tests require --live')
+        if cls in {'LifecycleDeviceTest','CodexAuthDeviceTest'}:raise SystemExit('Run stateful tests with supported --case selections')
+        selected.append((cls,None))
+    return selected
+
 def main():
     p=argparse.ArgumentParser();p.add_argument('--serial',required=True);p.add_argument('--artifacts',type=Path,required=True);p.add_argument('--live',action='store_true');p.add_argument('--codex-account',action='store_true',help='Opt in to direct Luna account inference using existing local Codex auth on emulator-5580');p.add_argument('--account-auth-tests',action='store_true',help='Include synthetic native account import, storage, rotation and sign-out tests');p.add_argument('--fresh',action='store_true');p.add_argument('--case',action='append',default=[]);p.add_argument('--diagnostics',action='store_true',help='Capture full logcat on a disposable CI emulator');p.add_argument('--class',dest='test_classes',action='append',default=[],help='Run an entire named DeviceTest class on the selected emulator');a=p.parse_args()
     if a.codex_account:
         if a.serial!='emulator-5580':raise SystemExit('Direct account provisioning is restricted to emulator-5580')
         a.live=True
+    selected_classes=selected_test_classes(a.test_classes,a.live)
     if not a.serial.startswith('emulator-'):raise SystemExit('Explicit emulator serial required; physical phones are excluded.')
     def adb(*args,**kw):return run('adb','-s',a.serial,*args,**kw)
     if adb('shell','getprop','ro.kernel.qemu').stdout.strip()!='1':raise SystemExit('Selected serial is not an emulator')
@@ -37,11 +47,6 @@ def main():
     if a.live:cases.append(('LiveProviderDeviceTest','liveCodexDelegationAndFixture'))
     cases.extend([('LifecycleDeviceTest','mainThreadPromptAndDebugControlsWorkOnDevice')])
     if a.case or a.test_classes:cases=[case for case in cases if '#'.join(case) in a.case]
-    selected_classes=[]
-    for cls in a.test_classes:
-        if not re.fullmatch(r'[A-Za-z][A-Za-z0-9_]*DeviceTest',cls):raise SystemExit('Use a short DeviceTest class name')
-        if cls=='LiveProviderDeviceTest' and not a.live:raise SystemExit('Live provider tests require --live')
-        selected_classes.append((cls,None))
     cases=selected_classes+cases
     if not cases:raise SystemExit('No matching device test case')
     (a.artifacts/'emulator-results.json').write_text(json.dumps(report,indent=2)+'\n')

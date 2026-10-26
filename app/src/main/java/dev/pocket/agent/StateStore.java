@@ -12,7 +12,19 @@ import org.json.JSONObject;
 
 /** App-private durable snapshots; credentials have a separate Keystore-backed store. */
 public final class StateStore extends SQLiteOpenHelper {
-    public StateStore(Context context) { super(context, "agent-state.db", null, 1); }
+    private final Context context;
+    private static java.util.Set<String> legacyDefaults;
+    public StateStore(Context context) { super(context, "agent-state.db", null, 1);this.context=context.getApplicationContext(); }
+    private boolean legacyDefault(String prompt) {
+        synchronized(StateStore.class) {
+            if(legacyDefaults==null)try(java.io.InputStream input=context.getAssets().open("legacy-main-prompts.json")) {
+                ByteArrayOutputStream bytes=new ByteArrayOutputStream();byte[] buffer=new byte[8192];int count;while((count=input.read(buffer))!=-1)bytes.write(buffer,0,count);
+                JSONArray values=new JSONArray(bytes.toString(StandardCharsets.UTF_8.name()));
+                java.util.Set<String> defaults=new java.util.HashSet<>();for(int i=0;i<values.length();i++)defaults.add(values.getString(i));legacyDefaults=defaults;
+            } catch(Exception error){throw new IllegalStateException("Could not load instruction migration",error);}
+            return legacyDefaults.contains(prompt);
+        }
+    }
     @Override public void onCreate(SQLiteDatabase db) {
         db.execSQL("CREATE TABLE snapshot (id INTEGER PRIMARY KEY CHECK(id=1), json TEXT NOT NULL)");
         db.execSQL("CREATE TABLE runtime_state (id INTEGER PRIMARY KEY CHECK(id=1), json TEXT NOT NULL)");
@@ -25,7 +37,7 @@ public final class StateStore extends SQLiteOpenHelper {
                 JSONObject snapshot=new JSONObject(cursor.getString(0));
                 if(!snapshot.has("personalInstructions")) {
                     String legacy=snapshot.optString("mainSystemPrompt");
-                    snapshot.put("personalInstructions",legacy.startsWith("You are the user's persistent phone assistant.")?"":legacy);
+                    snapshot.put("personalInstructions",legacyDefault(legacy)?"":legacy);
                 }
                 snapshot.remove("mainSystemPrompt");snapshot.remove("defaultMainSystemPrompt");return snapshot;
             }
@@ -114,17 +126,6 @@ public final class StateStore extends SQLiteOpenHelper {
             while (cursor.moveToNext()) result.put(new JSONObject(cursor.getString(0)));
         } catch (org.json.JSONException e) { throw new IllegalStateException(e); }
         return result;
-    }
-    public synchronized void savePersonalInstructions(String prompt) {
-        JSONObject durable = loadDurable(), snapshot = load();
-        try {
-            durable.remove("mainSystemPrompt");
-            durable.put("personalInstructions", prompt == null ? "" : prompt.trim());
-            saveDurable(durable);
-            snapshot.remove("mainSystemPrompt"); snapshot.remove("defaultMainSystemPrompt");
-            snapshot.put("personalInstructions", prompt == null ? "" : prompt.trim());
-            save(snapshot);
-        } catch (org.json.JSONException e) { throw new IllegalStateException(e); }
     }
     public synchronized JSONObject requestFreshMain() {
         JSONObject durable = loadDurable(), snapshot = load();

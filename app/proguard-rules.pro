@@ -66,7 +66,15 @@
 # https://android.googlesource.com/platform/frameworks/support/+/e4765e38e27a3f4d86188b996df97a52403dff46
 -keep class androidx.work.impl.WorkDatabase_Impl { public <init>(); }
 
-# The separately minified instrumentation APK calls this shared target ABI.
+# AndroidX test runner / ActivityScenario transitively call Trace in the target APK.
+# Removing this rule caused a release-instrumentation NoSuchMethodError in run 40200409651.
+# Preserve the shared ABI across the separately minified target and test APKs.
 -keep class androidx.tracing.Trace { *; }
 -keep class dev.pocket.agent.AutonomyStore { *; }
 -keep class dev.pocket.agent.RuntimeOwner { *; }
+
+# Package-private notification helpers exercised by the separately compiled device suite.
+-keepclassmembers class dev.pocket.agent.PhoneNotifications {
+    static java.lang.String notificationText(android.os.Bundle);
+    static java.lang.String clip(java.lang.String);
+}

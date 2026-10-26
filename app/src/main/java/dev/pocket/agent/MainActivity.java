@@ -110,7 +110,7 @@ public final class MainActivity extends Activity implements AgentService.Observe
         }); controls.addView(send, new LinearLayout.LayoutParams(0, -2, 1));
         controls.addView(button("Stop response", () -> command(json("action", "stop_main"))));
         controls.addView(button("Stop all", () -> {
-            AutonomyStore.setEnabled(this,false);
+            AutonomyScheduler.execute(()->{try{AutonomyStore.setEnabled(this,false);}catch(Exception error){runOnUiThread(()->toast("Could not pause future automation"));}});
             RuntimeHost shared=RuntimeOwner.peekHost();if(shared!=null)shared.dispatch(json("action","stop_all"));
             if (AgentService.isRunning()) startService(new Intent(this, AgentService.class).setAction(AgentService.ACTION_STOP));
         })); root.addView(controls);
@@ -374,13 +374,29 @@ public final class MainActivity extends Activity implements AgentService.Observe
         picker.setSelection(Math.max(0, selection));
     }
     private void autonomyActivity() {
+        AutonomyScheduler.execute(()->{
+            try(AutonomyStore automation=new AutonomyStore(this)) {
+                JSONObject saved=automation.load(),status=automation.status();
+                runOnUiThread(()->{if(!isFinishing()&&!isDestroyed())showAutonomyActivity(saved,status);});
+            } catch(Exception error){
+                android.util.Log.w("PocketAutonomy","Could not load background activity: "+error.getClass().getSimpleName());
+                runOnUiThread(()->toast("Could not load background activity"));
+            }
+        });
+    }
+    private void showAutonomyActivity(JSONObject saved,JSONObject status) {
         LinearLayout panel=column();panel.setPadding(dp(18),dp(8),dp(18),dp(12));
         CheckBox enabled=new CheckBox(this);enabled.setText("Allow scheduled and autonomous work");enabled.setChecked(AutonomyStore.enabled(this));
-        enabled.setOnCheckedChangeListener((button,checked)->{AutonomyStore.setEnabled(this,checked);if(checked)AutonomyScheduler.run(this);else command(json("action","stop_autonomy"));});panel.addView(enabled);
+        enabled.setOnCheckedChangeListener((button,checked)->{
+            if(!checked){RuntimeHost shared=RuntimeOwner.peekHost();if(shared!=null)shared.dispatch(json("action","stop_autonomy"));}
+            AutonomyScheduler.execute(()->{
+                try{AutonomyStore.setEnabled(this,checked);if(checked)AutonomyScheduler.run(this);}
+                catch(Exception error){runOnUiThread(()->toast("Could not update automation"));}
+            });
+        });panel.addView(enabled);
         panel.addView(text("Android may delay background runs. Runs use the phone's network and provider connection. Stop all pauses future automation. Quiet hours: 10 PM–8 AM on this phone."));
-        try(AutonomyStore automation=new AutonomyStore(this)) {
-            String startupIssue=automation.status().optString("lastFailure");if(!startupIssue.isEmpty())panel.addView(text(startupIssue));
-            JSONObject saved=automation.load();
+        try {
+            String startupIssue=status.optString("lastFailure");if(!startupIssue.isEmpty())panel.addView(text(startupIssue));
             JSONArray decisions=saved.getJSONArray("decisions");
             panel.addView(text("Needs your input"));boolean pending=false;
             for(int i=0;i<decisions.length();i++) {
@@ -412,15 +428,17 @@ public final class MainActivity extends Activity implements AgentService.Observe
             for(int i=results.length()-1;i>=Math.max(0,results.length()-20);i--) {
                 JSONObject result=results.getJSONObject(i);panel.addView(text(result.optString("title")+"\n"+result.optString("message")));
             }
-        } catch(Exception error){panel.addView(text("Could not load background activity"));}
+        } catch(Exception error){android.util.Log.w("PocketAutonomy","Could not render background activity: "+error.getClass().getSimpleName());panel.addView(text("Could not load background activity"));}
         ScrollView scroll=new ScrollView(this);scroll.addView(panel);
         new AlertDialog.Builder(this).setTitle("Background activity").setView(scroll).setPositiveButton("Close",null).setNeutralButton("Refresh",(dialog,which)->autonomyActivity()).show();
     }
     private void answerDecision(JSONObject decision,boolean approved,String answer) {
-        try(AutonomyStore automation=new AutonomyStore(this)) {
-            automation.incoming(Json.obj("id","decision:"+decision.getString("id"),"type","decision","decisionId",decision.getString("id"),"approved",approved,"answer",answer));
-            toast("Response saved. The task will continue when background work can run.");
-        } catch(Exception error){toast("Could not save the response");}
+        AutonomyScheduler.execute(()->{
+            try(AutonomyStore automation=new AutonomyStore(this)) {
+                automation.incoming(Json.obj("id","decision:"+decision.getString("id"),"type","decision","decisionId",decision.getString("id"),"approved",approved,"answer",answer));
+                runOnUiThread(()->toast("Response saved. The task will continue when background work can run."));
+            } catch(Exception error){android.util.Log.w("PocketAutonomy","Could not save decision: "+error.getClass().getSimpleName());runOnUiThread(()->toast("Could not save the response"));}
+        });
     }
     private void settings() {
         if(activeWork()){toast("Stop active work before changing settings");return;}

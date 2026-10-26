@@ -21,6 +21,10 @@ public final class AutonomyDeviceTest {
                 try{store.save(root,0);fail("Stale writers must be rejected");}catch(IllegalStateException expected){}
                 JSONObject answer=Json.obj("id","decision:test-decision","type","decision","decisionId","test-decision","approved",true);
                 store.incoming(answer);store.incoming(answer);assertEquals(1,store.events().length());
+                for(int i=0;i<63;i++)store.incoming(Json.obj("id","filler:"+i,"type","notification"));
+                store.incoming(answer);assertEquals(64,store.events().length());
+                try{store.incoming(Json.obj("id","overflow"));fail("Full inbox must reject new events");}catch(IllegalStateException expected){}
+                JSONArray fillers=new JSONArray();for(int i=0;i<63;i++)fillers.put("filler:"+i);store.ack(fillers);
             }
             try(AutonomyStore reopened=new AutonomyStore(context,database)) {
                 assertEquals("test-job",reopened.load().getJSONArray("schedules").getJSONObject(0).getString("id"));
@@ -29,7 +33,7 @@ public final class AutonomyDeviceTest {
             }
         } finally {context.deleteDatabase(database);}
     }
-    @Test public void pausedTasksDoNotArmTimersAndQueuedRunsWaitForActiveRun() throws Exception {
+    @Test public void pausedTaskDueCalculationAndQueuedRunsWaitForActiveRun() throws Exception {
         Context context=InstrumentationRegistry.getInstrumentation().getTargetContext();
         String database="autonomy-timer-instrumentation.db";context.deleteDatabase(database);
         boolean enabled=AutonomyStore.enabled(context);
@@ -46,7 +50,6 @@ public final class AutonomyDeviceTest {
         } finally {
             context.deleteDatabase(database);
             context.getSharedPreferences("autonomy-policy",0).edit().putBoolean("enabled",enabled).commit();
-            AutonomyScheduler.arm(context);
         }
     }
     @Test public void startupFailuresBackOffPersistentlyAndPauseAfterThreeAttempts() throws Exception {
@@ -61,19 +64,45 @@ public final class AutonomyDeviceTest {
             assertTrue(policy.getLong("backoffUntil",0)>System.currentTimeMillis());
             AutonomyStore.startupFailed(isolated);AutonomyStore.startupFailed(isolated);
             assertFalse(AutonomyStore.enabled(isolated));assertEquals(3,policy.getInt("startupFailures",0));
-            AutonomyStore.setEnabled(isolated,true);
+            AutonomyStore.persistEnabled(isolated,true);
             assertTrue(AutonomyStore.enabled(isolated));assertFalse(policy.contains("backoffUntil"));assertFalse(policy.contains("lastFailure"));
             AutonomyStore.startupFailed(isolated);AutonomyStore.startupHealthy(isolated);assertFalse(policy.contains("startupFailures"));
         } finally {policy.edit().clear().commit();}
     }
-    @Test public void serviceAndBackgroundWorkShareOneRuntimeOwner() throws Exception {
+    @Test public void runtimeLeasesShareOneHost() throws Exception {
         Context context=InstrumentationRegistry.getInstrumentation().getTargetContext();
         RuntimeOwner first=RuntimeOwner.acquire(context),second=RuntimeOwner.acquire(context);
         assertSame(first.host,second.host);
+        boolean firstClosed=false;
         try {
             first.ready.get(40,java.util.concurrent.TimeUnit.SECONDS);
-            first.close();assertSame(second.host,RuntimeOwner.peekHost());
+            first.close();firstClosed=true;assertSame(second.host,RuntimeOwner.peekHost());
             assertTrue(second.host.dispatch(Json.obj("action","state")).get(10,java.util.concurrent.TimeUnit.SECONDS).getBoolean("ok"));
-        } finally {second.close();}
+        } finally {if(!firstClosed)first.close();second.close();}
     }
+    @Test public void expandedNotificationContentAndUnicodeExcerptsRemainReadable() {
+        assertEquals("",PhoneNotifications.notificationText(null));
+        android.os.Bundle extras=new android.os.Bundle();
+        extras.putCharSequence(android.app.Notification.EXTRA_TEXT,"summary");
+        extras.putCharSequence(android.app.Notification.EXTRA_BIG_TEXT,"expanded keyword");
+        android.os.Bundle message=new android.os.Bundle();message.putCharSequence("text","message keyword");
+        extras.putParcelableArray(android.app.Notification.EXTRA_MESSAGES,new android.os.Parcelable[]{message});
+        String full=PhoneNotifications.notificationText(extras);
+        assertTrue(full.contains("expanded keyword"));assertTrue(full.contains("message keyword"));
+        String clipped=PhoneNotifications.clip("x".repeat(1999)+"\uD83D\uDE00"+"tail");
+        assertEquals(1999,clipped.length());assertFalse(Character.isHighSurrogate(clipped.charAt(clipped.length()-1)));
+    }
+    @Test public void nativePersonalMigrationPreservesCustomPrefixAndStripsHistoricalDefaults() throws Exception {
+        Context context=InstrumentationRegistry.getInstrumentation().getTargetContext();
+        try(StateStore store=new StateStore(context);java.io.InputStream input=context.getAssets().open("legacy-main-prompts.json")) {
+            JSONObject original=store.load();java.io.ByteArrayOutputStream bytes=new java.io.ByteArrayOutputStream();byte[] buffer=new byte[8192];int count;while((count=input.read(buffer))!=-1)bytes.write(buffer,0,count);
+            JSONArray defaults=new JSONArray(bytes.toString("UTF-8"));
+            try {
+                for(int i=0;i<defaults.length();i++){store.save(Json.obj("mainSystemPrompt",defaults.getString(i)));assertEquals("",store.load().getString("personalInstructions"));}
+                String custom="You are the user's persistent phone assistant. Please use Hindi.";
+                store.save(Json.obj("mainSystemPrompt",custom));assertEquals(custom,store.load().getString("personalInstructions"));
+            } finally{store.save(original);}
+        }
+    }
+
 }
