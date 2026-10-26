@@ -54,7 +54,7 @@ public final class AgentService extends Service {
         if (intent == null) return START_NOT_STICKY;
         if (ACTION_STOP.equals(intent.getAction())) {
             stopping = true;
-            AutonomyScheduler.execute(()->{try{AutonomyStore.setEnabled(this,false);}catch(Exception error){Log.w("PocketAgent","Could not pause future automation",error);}});
+            AutonomyStore.requestEnabled(this,false,error->Log.w("PocketAgent","Could not persist automation pause",error));
             if(host!=null)host.dispatch(Json.obj("action","stop_all"));
             WakeWordService.disableImmediately(this);
             stopService(new Intent(this, WakeWordService.class));

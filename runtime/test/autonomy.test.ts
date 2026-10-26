@@ -226,3 +226,11 @@ test('autonomous saved context is serialized and memory injection retains its no
   assert.doesNotMatch(String(session.agent.state.messages[0].content),/Recursive delegation is available/);session.dispose();
   const deadline=Date.now()+5000;while(runtime.state().active&&Date.now()<deadline)await new Promise(resolve=>setTimeout(resolve,20));
 });
+test('completed and cancelled tasks stay terminal across pause and resume attempts',()=>{
+  for(const action of ['complete','cancel']){
+    const host=new Host(),engine=new AutonomyEngine(host),task=createTask(engine);
+    engine.execute('task',{action,id:task.id});
+    for(const attempt of ['pause','resume'])assert.throws(()=>engine.execute('task',{action:attempt,id:task.id}),/Terminal tasks/);
+    assert.equal(engine.execute('task',{action:'get',id:task.id}).status,action==='complete'?'completed':'cancelled');
+  }
+});

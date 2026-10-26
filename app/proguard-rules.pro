@@ -78,3 +78,6 @@
     static java.lang.String notificationText(android.os.Bundle);
     static java.lang.String clip(java.lang.String);
 }
+
+# Release device coverage checks timer request coalescing under a superseded attempt.
+-keep class dev.pocket.agent.AutonomyScheduler$ArmRequests { *; }

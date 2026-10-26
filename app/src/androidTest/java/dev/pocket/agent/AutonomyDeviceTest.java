@@ -85,10 +85,12 @@ public final class AutonomyDeviceTest {
         android.os.Bundle extras=new android.os.Bundle();
         extras.putCharSequence(android.app.Notification.EXTRA_TEXT,"summary");
         extras.putCharSequence(android.app.Notification.EXTRA_BIG_TEXT,"expanded keyword");
+        extras.putCharSequence(android.app.Notification.EXTRA_SUB_TEXT,"summary");
         android.os.Bundle message=new android.os.Bundle();message.putCharSequence("text","message keyword");
         extras.putParcelableArray(android.app.Notification.EXTRA_MESSAGES,new android.os.Parcelable[]{message});
         String full=PhoneNotifications.notificationText(extras);
         assertTrue(full.contains("expanded keyword"));assertTrue(full.contains("message keyword"));
+        assertEquals(full.indexOf("summary"),full.lastIndexOf("summary"));
         String clipped=PhoneNotifications.clip("x".repeat(1999)+"\uD83D\uDE00"+"tail");
         assertEquals(1999,clipped.length());assertFalse(Character.isHighSurrogate(clipped.charAt(clipped.length()-1)));
     }
@@ -103,6 +105,30 @@ public final class AutonomyDeviceTest {
                 store.save(Json.obj("mainSystemPrompt",custom));assertEquals(custom,store.load().getString("personalInstructions"));
             } finally{store.save(original);}
         }
+    }
+
+    @Test public void newerTimerRequestSurvivesCompletionOfAnOlderAttempt() {
+        AutonomyScheduler.ArmRequests requests=new AutonomyScheduler.ArmRequests();
+        assertTrue(requests.request());long first=requests.revision();
+        assertFalse(requests.request());assertFalse(requests.current(first));
+        assertFalse(requests.finish(first)); // Final failure must leave the newer request queued.
+        long latest=requests.revision();assertTrue(requests.finish(latest));
+        assertTrue(requests.request()); // Successful drain permits the next independent request.
+    }
+    @Test public void pauseIsImmediateAndStalePolicyWritesCannotReenableWork() {
+        Context base=InstrumentationRegistry.getInstrumentation().getTargetContext();
+        Context isolated=new android.content.ContextWrapper(base) {
+            @Override public android.content.SharedPreferences getSharedPreferences(String name,int mode){return base.getSharedPreferences(name+"-pause-test",mode);}
+        };
+        android.content.SharedPreferences policy=isolated.getSharedPreferences("autonomy-policy",0);policy.edit().clear().putBoolean("enabled",true).commit();
+        try {
+            Object oldEnable=AutonomyStore.beginPolicyChange(true),pause=AutonomyStore.beginPolicyChange(false);
+            assertFalse(AutonomyStore.enabled(isolated));assertTrue(policy.getBoolean("enabled",false));
+            assertFalse(AutonomyStore.applyPolicyChange(isolated,oldEnable));assertFalse(AutonomyStore.enabled(isolated));
+            assertTrue(AutonomyStore.applyPolicyChange(isolated,pause));assertFalse(policy.getBoolean("enabled",true));
+            Object enable=AutonomyStore.beginPolicyChange(true);assertFalse(AutonomyStore.enabled(isolated));
+            assertTrue(AutonomyStore.applyPolicyChange(isolated,enable));assertTrue(AutonomyStore.enabled(isolated));
+        } finally {AutonomyStore.applyPolicyChange(isolated,AutonomyStore.beginPolicyChange(true));policy.edit().clear().commit();}
     }
 
 }

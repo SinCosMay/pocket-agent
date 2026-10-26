@@ -45,14 +45,18 @@ final class AutonomyStore extends SQLiteOpenHelper {
         String json=state.toString();if(json.getBytes(java.nio.charset.StandardCharsets.UTF_8).length>1_800_000)throw new IllegalArgumentException("Autonomy store limit reached");
         synchronized(LOCK) {
             SQLiteDatabase db=getWritableDatabase();db.beginTransaction();
+            // Unknown cache means queue a fresh lookup while the transaction changes watches.
+            if(production)watchedPackages=null;
             try {
                 if(load().optLong("revision")!=expectedRevision||state.getLong("revision")!=expectedRevision+1)throw new IllegalStateException("Stale autonomy writer");
+                if(production)watchedPackages=null;
                 ContentValues values=new ContentValues();values.put("id",1);values.put("json",json);
                 if(db.insertWithOnConflict("state",null,values,SQLiteDatabase.CONFLICT_REPLACE)<0)throw new IllegalStateException("Could not persist autonomy state");
                 db.setTransactionSuccessful();
             } finally {db.endTransaction();}
+            refreshWatchCache(state);
         }
-        refreshWatchCache(state);if(production)AutonomyScheduler.arm(context);
+        if(production)AutonomyScheduler.arm(context);
     }
     private void refreshWatchCache(JSONObject state) throws Exception {
         if(!production)return;
@@ -61,9 +65,28 @@ final class AutonomyStore extends SQLiteOpenHelper {
         watchedPackages=java.util.Collections.unmodifiableSet(packages);
     }
     static boolean mayWatch(String packageName){java.util.Set<String> packages=watchedPackages;return packages==null||packages.contains(packageName);}
-    static boolean enabled(Context context) {return context.getSharedPreferences("autonomy-policy",0).getBoolean("enabled",true);}
+    // A pending pause is visible before disk/SQLite locks; only its own writer may clear it.
+    private record PolicyChange(boolean enabled) {}
+    private static final java.util.concurrent.atomic.AtomicReference<PolicyChange> pendingPolicy=new java.util.concurrent.atomic.AtomicReference<>();
+    static boolean enabled(Context context) {
+        PolicyChange pending=pendingPolicy.get();
+        return (pending==null||pending.enabled())&&context.getSharedPreferences("autonomy-policy",0).getBoolean("enabled",true);
+    }
+    static Object beginPolicyChange(boolean enabled){PolicyChange change=new PolicyChange(enabled);pendingPolicy.set(change);return change;}
+    static boolean applyPolicyChange(Context context,Object token) {
+        synchronized(LOCK){
+            PolicyChange change=(PolicyChange)token;if(pendingPolicy.get()!=change)return false;
+            persistEnabled(context,change.enabled());pendingPolicy.compareAndSet(change,null);return true;
+        }
+    }
+    static void requestEnabled(Context context,boolean enabled,java.util.function.Consumer<Exception> onFailure) {
+        Object change=beginPolicyChange(enabled);Context app=context.getApplicationContext();
+        AutonomyScheduler.execute(()->{try{
+            if(applyPolicyChange(app,change)){AutonomyScheduler.arm(app);if(enabled)AutonomyScheduler.run(app);}
+        }catch(Exception error){onFailure.accept(error);}});
+    }
     static void setEnabled(Context context,boolean enabled) {
-        persistEnabled(context,enabled);AutonomyScheduler.arm(context);
+        Object change=beginPolicyChange(enabled);if(applyPolicyChange(context,change))AutonomyScheduler.arm(context);
     }
     static void persistEnabled(Context context,boolean enabled) {
         synchronized(LOCK) {
@@ -102,9 +125,12 @@ final class AutonomyStore extends SQLiteOpenHelper {
         synchronized(LOCK) {
             ContentValues values=new ContentValues();values.put("id",event.getString("id"));values.put("json",event.toString());values.put("at",System.currentTimeMillis());
             SQLiteDatabase db=getWritableDatabase();
-            try(Cursor existing=db.rawQuery("SELECT 1 FROM incoming WHERE id=?",new String[]{event.getString("id")})){if(existing.moveToFirst())return;}
-            try(Cursor c=db.rawQuery("SELECT COUNT(*) FROM incoming",null)){if(c.moveToFirst()&&c.getInt(0)>=64)throw new IllegalStateException("Autonomy event inbox full");}
-            if(db.insertWithOnConflict("incoming",null,values,SQLiteDatabase.CONFLICT_IGNORE)<0)throw new IllegalStateException("Could not persist incoming event");
+            boolean duplicate;
+            try(Cursor existing=db.rawQuery("SELECT 1 FROM incoming WHERE id=?",new String[]{event.getString("id")})){duplicate=existing.moveToFirst();}
+            if(!duplicate){
+                try(Cursor c=db.rawQuery("SELECT COUNT(*) FROM incoming",null)){if(c.moveToFirst()&&c.getInt(0)>=64)throw new IllegalStateException("Autonomy event inbox full");}
+                if(db.insertWithOnConflict("incoming",null,values,SQLiteDatabase.CONFLICT_IGNORE)<0)throw new IllegalStateException("Could not persist incoming event");
+            }
         }
         if(production)AutonomyScheduler.arm(context);
     }

@@ -110,7 +110,7 @@ public final class MainActivity extends Activity implements AgentService.Observe
         }); controls.addView(send, new LinearLayout.LayoutParams(0, -2, 1));
         controls.addView(button("Stop response", () -> command(json("action", "stop_main"))));
         controls.addView(button("Stop all", () -> {
-            AutonomyScheduler.execute(()->{try{AutonomyStore.setEnabled(this,false);}catch(Exception error){runOnUiThread(()->toast("Could not pause future automation"));}});
+            AutonomyStore.requestEnabled(this,false,error->runOnUiThread(()->toast("Could not persist automation pause")));
             RuntimeHost shared=RuntimeOwner.peekHost();if(shared!=null)shared.dispatch(json("action","stop_all"));
             if (AgentService.isRunning()) startService(new Intent(this, AgentService.class).setAction(AgentService.ACTION_STOP));
         })); root.addView(controls);
@@ -388,11 +388,8 @@ public final class MainActivity extends Activity implements AgentService.Observe
         LinearLayout panel=column();panel.setPadding(dp(18),dp(8),dp(18),dp(12));
         CheckBox enabled=new CheckBox(this);enabled.setText("Allow scheduled and autonomous work");enabled.setChecked(AutonomyStore.enabled(this));
         enabled.setOnCheckedChangeListener((button,checked)->{
+            AutonomyStore.requestEnabled(this,checked,error->runOnUiThread(()->toast("Could not persist automation setting")));
             if(!checked){RuntimeHost shared=RuntimeOwner.peekHost();if(shared!=null)shared.dispatch(json("action","stop_autonomy"));}
-            AutonomyScheduler.execute(()->{
-                try{AutonomyStore.setEnabled(this,checked);if(checked)AutonomyScheduler.run(this);}
-                catch(Exception error){runOnUiThread(()->toast("Could not update automation"));}
-            });
         });panel.addView(enabled);
         panel.addView(text("Android may delay background runs. Runs use the phone's network and provider connection. Stop all pauses future automation. Quiet hours: 10 PM–8 AM on this phone."));
         try {

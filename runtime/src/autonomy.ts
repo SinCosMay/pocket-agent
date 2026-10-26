@@ -169,7 +169,7 @@ export class AutonomyEngine {
         return {id:item.id,status:'cancelled'};
       }
       if(action==='pause'||action==='resume') {
-        if(name==='task'){if(action==='resume'&&s.decisions.some((d:RecordValue)=>d.taskId===item.id&&d.status==='pending'))throw Error('Answer the pending decision before resuming this task');item.status=action==='pause'?'paused':'active';}
+        if(name==='task'){if(['cancelled','completed'].includes(item.status))throw Error('Terminal tasks cannot be paused or resumed; create a new task');if(action==='resume'&&s.decisions.some((d:RecordValue)=>d.taskId===item.id&&d.status==='pending'))throw Error('Answer the pending decision before resuming this task');item.status=action==='pause'?'paused':'active';}
         else {item.enabled=action==='resume';if(name==='schedule'&&item.enabled){item.nextAt=nextOccurrence(item.schedule,this.now());item.nextRunAt=item.nextAt?new Date(item.nextAt).toISOString():null;if(!item.nextAt)item.enabled=false;}}
         if(action==='pause')for(const r of s.runs)if(r.status==='queued'&&(r.sourceId===item.id||name==='task'&&r.taskId===item.id))r.status='cancelled';
         return item;

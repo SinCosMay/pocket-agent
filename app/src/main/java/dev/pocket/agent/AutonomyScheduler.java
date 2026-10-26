@@ -9,29 +9,32 @@ import java.util.concurrent.TimeUnit;
 /** OS-owned timers never keep the Node engine awake. All times are best effort. */
 final class AutonomyScheduler {
     private static final java.util.concurrent.ScheduledExecutorService WORK=java.util.concurrent.Executors.newSingleThreadScheduledExecutor();
-    private static boolean armQueued;
-    private static long armRevision;
+    static final class ArmRequests {
+        private boolean queued;private long revision;
+        synchronized boolean request(){revision++;if(queued)return false;queued=true;return true;}
+        synchronized long revision(){return revision;}
+        synchronized boolean current(long expected){return revision==expected;}
+        synchronized boolean finish(long expected){if(revision!=expected)return false;queued=false;return true;}
+    }
+    private static final ArmRequests ARMS=new ArmRequests();
     static void execute(Runnable work){WORK.execute(work);}
-    static synchronized void arm(Context context) {
-        Context app=context.getApplicationContext();armRevision++;
-        if(!armQueued){armQueued=true;WORK.execute(()->attemptArm(app,0));}
+    static void arm(Context context) {
+        Context app=context.getApplicationContext();if(ARMS.request())WORK.execute(()->attemptArm(app,0));
     }
     private static void attemptArm(Context context,int attempt) {
-        long revision;synchronized(AutonomyScheduler.class){revision=armRevision;}
+        long revision=ARMS.revision();
         try {
             armNow(context);
-            synchronized(AutonomyScheduler.class){
-                if(revision==armRevision)armQueued=false;
-                else WORK.execute(()->attemptArm(context,0));
-            }
+            if(!ARMS.finish(revision))WORK.execute(()->attemptArm(context,0));
         } catch(Exception error) {
             android.util.Log.e("PocketAutonomy","Could not arm background work (attempt "+(attempt+1)+")",error);
             if(attempt<2)WORK.schedule(()->attemptArm(context,attempt+1),5L*(attempt+1),TimeUnit.SECONDS);
             else {
-                synchronized(AutonomyScheduler.class){armQueued=false;}
+                if(!ARMS.current(revision)){WORK.execute(()->attemptArm(context,0));return;}
                 // Persist a visible recovery state instead of leaving durable work silently stranded.
                 try{AutonomyStore.startupFailed(context);AutonomyStore.startupFailed(context);AutonomyStore.startupFailed(context);}
                 catch(Exception failure){android.util.Log.e("PocketAutonomy","Could not persist scheduling failure",failure);}
+                if(!ARMS.finish(revision))WORK.execute(()->attemptArm(context,0));
             }
         }
     }
@@ -49,6 +52,7 @@ final class AutonomyScheduler {
         }
     }
     static synchronized void run(Context context) throws Exception {
+        if(!AutonomyStore.enabled(context))return;
         WorkManager manager=WorkManager.getInstance(context);
         // At most one running request and one successor. KEEP would lose a trigger arriving
         // after the runner's final state read but before WorkManager marks it complete.

@@ -42,6 +42,8 @@ research this, check again in an hour, and tell me only if something changes.”
 `AutonomyEngine` owns the job, task, wake-up, watch, decision, result and run state.
 `AutonomyStore` stores it in a separate SQLite database with revision checks.
 External notification events and user decisions use a durable, deduplicated inbox.
+The notification callback queue is bounded to 64 waiting events; overflow rejects
+the newest notification with a diagnostic instead of retaining unlimited objects.
 An event is acknowledged only after its resulting state is saved. The record count
 and UTF-8 byte budget are bounded; exhausted limits return errors, never silently
 truncate pending work. Delete old schedules, tasks or skills when their limits
@@ -73,7 +75,9 @@ call. Terminal automated worker conversations are collected and removed to free
 retained-worker slots; their bounded result is kept in run history.
 
 Activity shows pending decisions, schedules, recent runs and results, plus the
-master enable switch. Stop all pauses future automation and stops current work.
+master enable switch. Stop all pauses future automation immediately in memory and
+stops current work; the policy write is serialized in the background. Stale policy
+writes cannot override a newer user choice.
 Resume automation explicitly in Activity. Pausing a task stops its current worker
 and keeps saved continuations; answering a pending decision is required before
 that task can resume. Pausing a schedule stops future runs;
