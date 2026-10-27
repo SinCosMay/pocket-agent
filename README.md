@@ -41,6 +41,19 @@ credentials afterward. It does not change the PC's Codex cache. Phone tools and
 all agent scheduling execute locally in the APK. See [AUTH.md](docs/AUTH.md) for
 device sign-in, secure import and the optional legacy development relay.
 
+## Scheduled work and personal instructions
+
+Ask the assistant to save a schedule, a future wake-up, or a notification watch.
+Background work uses persistent jobs and dedicated workers on this phone;
+Android can delay execution. Open **Activity** to review runs, answer questions,
+approve a task's next phone actions, or pause/resume automation. **Stop all** also
+pauses future automation. Default unattended phone tools are read-only.
+
+Settings exposes **Personal instructions** for preferences. Core operating
+instructions are source-owned in `runtime/src/prompts.ts` and are not editable or
+displayed in the app. Existing custom prompt text migrates to personal preferences.
+See [scheduled and autonomous work](docs/AUTONOMY.md) for tools and limits.
+
 ## How it runs
 
 One app-owned Javet Node engine hosts main and every logical worker. Pi9 supplies the in-process scheduler and retained worker conversations. Direct native tools share a FIFO pool of three on-demand Shizuku virtual displays (fourth UI worker waits without failing), bounded batching, and a mutation ledger. Worker completion reaches main through a persisted event inbox rather than repeated model polling. App-private SQLite stores transcripts and task checkpoints separately from protected credentials.
@@ -48,6 +61,8 @@ One app-owned Javet Node engine hosts main and every logical worker. Pi9 supplie
 Android can restrict or terminate the user-started service. Interrupted work is preserved as interrupted; side effects are not automatically replayed. Interactive device-code approval, ARM64 execution, physical-phone battery/OEM behavior, and comparative resource measurements remain outstanding. Build success is not full runtime validation.
 
 ## Development
+
+For the latest test build from `main`, open the [**Development prerelease**](https://github.com/ru-aish/pocket-agent/releases/tag/development) and expand **Assets**. Download **`Pocket-Agent-development-arm64.apk`** for an ARM64 phone, `Pocket-Agent-development-x86_64.apk` for an emulator, or `Pocket-Agent-development-universal.apk` if unsure. The [Scheduled development APK workflow](https://github.com/ru-aish/pocket-agent/actions/workflows/development-apk.yml) checks every three hours and only builds when `main` differs from the last successfully published development build. See [development build downloads and schedule](docs/DEVELOPMENT_APK.md#downloads-and-schedule) for details.
 
 **Compile and sign APKs only in GitHub Actions.** The workflow builds release/test APKs, runs runtime tests and lint, and packages hashes and provenance. Emulator/device execution is a separate local step; use an explicit emulator serial, as described in the validation documentation.
 

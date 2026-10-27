@@ -2,6 +2,20 @@
 
 The signed Android workflow now emits **release** and **development** APKs from one source commit. Development uses the same `dev.pocket.agent` application ID and **distribution signing key** as release, so it can be installed over release and access the same app-private SQLite history. Development includes its own notification-backed server, ngrok JNI, and Settings entry; release does **not** include this server, activity, library, or ngrok native assets. Installing release over development removes the bridge code; stop the bridge first.
 
+## Downloads and schedule
+
+Bookmark the [**Development prerelease**](https://github.com/ru-aish/pocket-agent/releases/tag/development). Under **Assets**, download:
+
+- **`Pocket-Agent-development-arm64.apk`** for an ARM64 phone ([direct download](https://github.com/ru-aish/pocket-agent/releases/download/development/Pocket-Agent-development-arm64.apk)).
+- **`Pocket-Agent-development-x86_64.apk`** for an x86_64 emulator.
+- **`Pocket-Agent-development-universal.apk`** if unsure which architecture to use.
+
+The **Scheduled development APK** workflow runs at **00:17, 03:17, 06:17, 09:17, 12:17, 15:17, 18:17 and 21:17 UTC** (`17 */3 * * *`). It pins the current `main` commit and compares it with the source recorded in the last complete, published development release. If unchanged, the APK build job is skipped. A missing/incomplete release is rebuilt; a failed build or publication does not record a successful source, so the next run retries. The first successful run creates the prerelease; later runs replace its assets and move only the `development` tag to the built commit. Stable releases keep their existing tags and Latest status.
+
+The schedule becomes active once `.github/workflows/development-apk.yml` is merged into `main` (the default branch). GitHub may delay scheduled runs. To check status or trigger an earlier check, open [**Actions → Scheduled development APK**](https://github.com/ru-aish/pocket-agent/actions/workflows/development-apk.yml), choose **Run workflow** on **main**, and open the run. Manual runs use the same unchanged-source check. A successful build also has a **`pocket-agent-development`** artifact at the bottom of its run page, retained for 30 days; extract that ZIP to get the APKs. Release assets remain available at the bookmark above until replaced.
+
+No new secrets are required: this workflow uses the existing `APK_KEYSTORE_BASE64`, `APK_STORE_PASSWORD` and `APK_KEY_PASSWORD` repository secrets and the workflow's `GITHUB_TOKEN` with `contents: write` for publication. It runs the runtime tests, builds and lints the development variant, and verifies APK signatures and ARM64 ngrok packaging. These scheduled snapshots do not run the full emulator suite; the existing **Signed Android APK** workflow continues its validation on pushes.
+
 ## Recorded data
 
 `agent-state.db` already stores the durable Pi runtime checkpoint (`runtime_state`) including `mainMessages`, `workerMessages`, tool transcripts, and the pending completion inbox. The independent `snapshot` row contains UI state. The events table logs startup/errors and, in development, bounded tool-start/end activity (the newest 2,000 entries). Native mutation receipts are separately persisted by `OperationStore`; `phone_operation` queries them. Memory is another private database. **Logs are not full Android logcat, raw Shizuku logs, screenshots from past sessions, or provider transport traces**; images are intentionally omitted from checkpoints. Events and stored transcript are locally retained until DB deletion/uninstall, explicit worker removal, or capacity policies; event diagnostics are a rolling window.

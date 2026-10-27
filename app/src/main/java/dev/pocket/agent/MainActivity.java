@@ -77,6 +77,7 @@ public final class MainActivity extends Activity implements AgentService.Observe
         });
         LinearLayout toolbar = row(); TextView title = text("Pocket Agent"); title.setTextSize(22); title.setTypeface(null, Typeface.BOLD);
         toolbar.addView(title, new LinearLayout.LayoutParams(0, -2, 1));
+        toolbar.addView(button("Activity", this::autonomyActivity));
         toolbar.addView(button("Settings", this::settings)); root.addView(toolbar);
         status = text("Stopped · Send starts the runtime"); root.addView(status);
         LinearLayout historyActions = row();
@@ -110,11 +111,15 @@ public final class MainActivity extends Activity implements AgentService.Observe
         }); controls.addView(send, new LinearLayout.LayoutParams(0, -2, 1));
         controls.addView(button("Stop response", () -> command(json("action", "stop_main"))));
         controls.addView(button("Stop all", () -> {
+            AutonomyStore.requestEnabled(this,false,error->runOnUiThread(()->toast("Could not persist automation pause")));
+            RuntimeHost shared=RuntimeOwner.peekHost();if(shared!=null)shared.dispatch(json("action","stop_all"));
             if (AgentService.isRunning()) startService(new Intent(this, AgentService.class).setAction(AgentService.ACTION_STOP));
         })); root.addView(controls);
         root.addView(button("Stop voice listening", () -> startService(new Intent(this,
             VoiceListeningService.class).setAction(VoiceListeningService.ACTION_STOP))));
         setContentView(root);
+        AutonomyScheduler.arm(this);
+        if(getIntent().getBooleanExtra("openAutonomy",false))root.post(this::autonomyActivity);
     }
     @Override protected void onStart() {
         super.onStart(); AgentService.observe(this); state = store.load(); render();
@@ -256,7 +261,7 @@ public final class MainActivity extends Activity implements AgentService.Observe
             debug.put("mainInterrupted", snapshot.optBoolean("mainInterrupted"));
             debug.put("mainTurns", snapshot.optInt("mainTurns"));
             debug.put("lastError", snapshot.opt("lastError"));
-            debug.put("mainSystemPrompt", snapshot.optString("mainSystemPrompt"));
+            debug.put("personalInstructions", snapshot.optString("personalInstructions"));
             debug.put("mainMessages", snapshot.optJSONArray("messages") == null ? new JSONArray() : snapshot.optJSONArray("messages"));
             debug.put("tasks", snapshot.optJSONArray("tasks") == null ? new JSONArray() : snapshot.optJSONArray("tasks"));
             debug.put("workerMessages", snapshot.optJSONObject("workerMessages") == null ? new JSONObject() : snapshot.optJSONObject("workerMessages"));
@@ -279,7 +284,7 @@ public final class MainActivity extends Activity implements AgentService.Observe
         Intent service = new Intent(this, AgentService.class).setAction(AgentService.ACTION_COMMAND).putExtra("command", command.toString());
         startForegroundService(service);
     }
-    private boolean activeWork() { return AgentService.isRunning() && (state.optBoolean("busy") || state.optBoolean("active")); }
+    private boolean activeWork() { return RuntimeOwner.peekHost()!=null && (state.optBoolean("busy") || state.optBoolean("active")); }
     private static boolean isReasoningEffort(String value) {
         for (String candidate : REASONING_EFFORTS) if (candidate.equals(value)) return true;
         return false;
@@ -383,17 +388,82 @@ public final class MainActivity extends Activity implements AgentService.Observe
         picker.setSelection(Math.max(0, selection));
         renderedReasoningEffort = values[Math.max(0, selection)];
     }
+    private void autonomyActivity() {
+        AutonomyScheduler.execute(()->{
+            try(AutonomyStore automation=new AutonomyStore(this)) {
+                JSONObject saved=automation.load(),status=automation.status();
+                runOnUiThread(()->{if(!isFinishing()&&!isDestroyed())showAutonomyActivity(saved,status);});
+            } catch(Exception error){
+                android.util.Log.w("PocketAutonomy","Could not load background activity: "+error.getClass().getSimpleName());
+                runOnUiThread(()->toast("Could not load background activity"));
+            }
+        });
+    }
+    private void showAutonomyActivity(JSONObject saved,JSONObject status) {
+        LinearLayout panel=column();panel.setPadding(dp(18),dp(8),dp(18),dp(12));
+        CheckBox enabled=new CheckBox(this);enabled.setText("Allow scheduled and autonomous work");enabled.setChecked(AutonomyStore.enabled(this));
+        enabled.setOnCheckedChangeListener((button,checked)->{
+            AutonomyStore.requestEnabled(this,checked,error->runOnUiThread(()->toast("Could not update automation")));
+            if(!checked){RuntimeHost shared=RuntimeOwner.peekHost();if(shared!=null)shared.dispatch(json("action","stop_autonomy"));}
+        });panel.addView(enabled);
+        panel.addView(text("Android may delay background runs. Runs use the phone's network and provider connection. Stop all pauses future automation. Quiet hours: 10 PM–8 AM on this phone."));
+        try {
+            String startupIssue=status.optString("lastFailure");if(!startupIssue.isEmpty())panel.addView(text(startupIssue));
+            JSONArray decisions=saved.getJSONArray("decisions");
+            panel.addView(text("Needs your input"));boolean pending=false;
+            for(int i=0;i<decisions.length();i++) {
+                JSONObject decision=decisions.getJSONObject(i);if(!"pending".equals(decision.optString("status")))continue;pending=true;
+                panel.addView(text(decision.optString("question")));
+                if("approval".equals(decision.optString("kind"))) {
+                    panel.addView(text("Allow these phone tools for the next run of this task (expires in one hour): "+decision.optJSONArray("tools")));
+                    panel.addView(button("Approve next run",()->answerDecision(decision,true,"Approved the listed phone tools for the next run")));
+                    panel.addView(button("Decline",()->answerDecision(decision,false,"Declined")));
+                } else {
+                    EditText answer=new EditText(this);answer.setHint("Your answer");panel.addView(answer);
+                    panel.addView(button("Send answer",()->{String value=answer.getText().toString().trim();if(!value.isEmpty())answerDecision(decision,true,value);}));
+                }
+            }
+            if(!pending)panel.addView(text("No pending questions"));
+            panel.addView(text("Schedules"));JSONArray schedules=saved.getJSONArray("schedules");
+            if(schedules.length()==0)panel.addView(text("Ask the assistant to schedule work or save a follow-up."));
+            for(int i=0;i<schedules.length();i++) {
+                JSONObject schedule=schedules.getJSONObject(i);String id=schedule.getString("id");boolean active=schedule.optBoolean("enabled");
+                panel.addView(text(schedule.optString("title")+" · "+(active?"Active":"Paused or finished")+"\nNext: "+schedule.optString("nextRunAt","—")));
+                panel.addView(button(active?"Pause schedule":"Resume schedule",()->command(Json.obj("action","automation_control","tool","schedule","args",json("action",active?"pause":"resume","id",id)))));
+            }
+            panel.addView(text("Run history"));JSONArray runs=saved.getJSONArray("runs");
+            if(runs.length()==0)panel.addView(text("No background runs yet"));
+            for(int i=runs.length()-1;i>=Math.max(0,runs.length()-20);i--) {
+                JSONObject run=runs.getJSONObject(i);panel.addView(text(run.optString("status")+" · "+run.optString("source")+"\n"+run.optString("output","Waiting for a result")));
+            }
+            panel.addView(text("Results"));JSONArray results=saved.getJSONArray("notifications");
+            for(int i=results.length()-1;i>=Math.max(0,results.length()-20);i--) {
+                JSONObject result=results.getJSONObject(i);panel.addView(text(result.optString("title")+"\n"+result.optString("message")));
+            }
+        } catch(Exception error){android.util.Log.w("PocketAutonomy","Could not render background activity: "+error.getClass().getSimpleName());panel.addView(text("Could not load background activity"));}
+        ScrollView scroll=new ScrollView(this);scroll.addView(panel);
+        new AlertDialog.Builder(this).setTitle("Background activity").setView(scroll).setPositiveButton("Close",null).setNeutralButton("Refresh",(dialog,which)->autonomyActivity()).show();
+    }
+    private void answerDecision(JSONObject decision,boolean approved,String answer) {
+        AutonomyScheduler.execute(()->{
+            try(AutonomyStore automation=new AutonomyStore(this)) {
+                automation.incoming(Json.obj("id","decision:"+decision.getString("id"),"type","decision","decisionId",decision.getString("id"),"approved",approved,"answer",answer));
+                runOnUiThread(()->toast("Response saved. The task will continue when background work can run."));
+            } catch(Exception error){android.util.Log.w("PocketAutonomy","Could not save decision: "+error.getClass().getSimpleName());runOnUiThread(()->toast("Could not save the response"));}
+        });
+    }
     private void settings() {
+        if(activeWork()){toast("Stop active work before changing settings");return;}
         CredentialStore credentials = new CredentialStore(this); final JSONObject saved;
         try { saved = credentials.get(); } catch (Exception e) { toast("Unable to read protected credentials"); return; }
         LinearLayout panel = column(); panel.setPadding(dp(20), dp(4), dp(20), dp(8));
-        panel.addView(text("Main system prompt"));
-        EditText mainPrompt = new EditText(this); mainPrompt.setText(state.optString("mainSystemPrompt")); mainPrompt.setHint("Built-in default will be used if left blank");
+        panel.addView(text("Personal instructions"));
+        EditText mainPrompt = new EditText(this); mainPrompt.setText(state.optString("personalInstructions")); mainPrompt.setHint("Preferences such as tone, priorities, and how to address you");
         mainPrompt.setMinLines(5); mainPrompt.setMaxLines(12); mainPrompt.setGravity(Gravity.TOP | Gravity.START);
         mainPrompt.setInputType(InputType.TYPE_CLASS_TEXT | InputType.TYPE_TEXT_FLAG_MULTI_LINE | InputType.TYPE_TEXT_FLAG_CAP_SENTENCES); panel.addView(mainPrompt);
-        panel.addView(text("This controls the main agent only. Worker prompts stay unchanged."));
-        panel.addView(button("Reset to built-in default", () -> {
-            mainPrompt.setText(""); mainPrompt.setHint("Built-in default selected; tap Save");
+        panel.addView(text("Optional preferences for your assistant. App operating instructions are managed separately."));
+        panel.addView(button("Clear personal instructions", () -> {
+            mainPrompt.setText(""); mainPrompt.setHint("No personal instructions; tap Save");
         }));
         panel.addView(text("Provider")); Spinner mode = new Spinner(this);
         String[] names = {"Scripted model (local validation)", "API key (HTTPS)", "OpenCode Free (Console key)", "Nebius Token Factory", "Codex emulator relay (development)", "Codex account (ChatGPT)"};
@@ -816,15 +886,12 @@ public final class MainActivity extends Activity implements AgentService.Observe
                         config.put("apiKey", entered.isEmpty() && sameProvider ? saved.optString("apiKey") : entered);
                     }
                     String prompt = mainPrompt.getText().toString().trim();
-                    if (prompt.length() > 50000) { toast("Main system prompt must be 50000 characters or fewer"); return; }
+                    if (prompt.length() > 50000) { toast("Personal instructions must be 50000 characters or fewer"); return; }
                     credentials.save(config); invalidateAccountOperations();
-                    if (AgentService.isRunning()) {
-                        JSONObject configure = json("action", "configure");
-                        if (prompt.isEmpty()) configure.put("resetSystemPrompt", true); else configure.put("systemPrompt", prompt);
-                        command(configure);
-                    } else {
-                        store.saveMainSystemPrompt(prompt); state = store.load(); render();
-                    }
+                    // Serialize settings through the runtime owner, including when its previous
+                    // isolate is closing, so a late checkpoint cannot overwrite these preferences.
+                    JSONObject configure=json("action","configure","personalInstructions",prompt);
+                    command(configure);
                     dialog.dismiss(); toast("Settings saved");
                 } catch (Exception error) { toast(error instanceof IllegalArgumentException ? error.getMessage() : "Could not save connection"); }
             });

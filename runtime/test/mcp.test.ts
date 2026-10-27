@@ -1,3 +1,4 @@
+import {emptyAutonomy} from '../src/autonomy.js';
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { McpToolRegistry, boundMcpJsonResponse, mcpAuthHeaders, normalizeMcpSchema, validateMcpServer } from '../src/mcp.js';
@@ -126,7 +127,7 @@ test('registry rejects over-limit server lists before connecting',async()=>{
 test('Pi runtime keeps native tools and adds a namespaced MCP tool with redacted serializable output',async()=>{
   const events:any[]=[];
   const bridge:NativeBridge={
-    call(method,json){const args=JSON.parse(json);const result=method==='credentials.get'?{authMode:'scripted',mcpServers:[server()]}:method==='store.load'?{}:method==='store.save'?args.state:{available:true};return JSON.stringify({ok:true,result});},
+    call(method,json){const args=JSON.parse(json);const result=method==='autonomy.load'?emptyAutonomy():method==='autonomy.status'?{enabled:false}:method==='credentials.get'?{authMode:'scripted',mcpServers:[server()]}:method==='store.load'?{}:method==='store.save'?args.state:{available:true};return JSON.stringify({ok:true,result});},
     emit(json){events.push(JSON.parse(json));},
   };
   let closeCount=0;

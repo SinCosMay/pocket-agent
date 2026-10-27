@@ -112,3 +112,15 @@ test('physical-only batch does not reserve a virtual display',async()=>{
  assert.equal(dispatched,1);
  assert.equal(acquisitions,0);
 });
+
+test('an approval expiring while a UI tool waits for a display prevents native mutation',async()=>{
+  let expired=false,dispatches=0;
+  const host:any={
+    authorizePhone:()=>{if(expired)throw Error('Approval expired');},
+    ensureDisplay:async()=>{expired=true;return {status:'acquired'};},
+    call:()=>{dispatches++;return {status:'unexpected'};},
+  };
+  const tool=nativeTools(host,'automated').find(tool=>tool.name==='phone_act')!;
+  await assert.rejects(()=>tool.execute('expired-during-wait',{kind:'click',snapshot_id:'snap',selector:{text:'Send'},operation_id:'fixture_operation_0001'}),/Approval expired/);
+  assert.equal(dispatches,0);
+});
