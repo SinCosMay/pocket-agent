@@ -70,6 +70,8 @@ final class SubscriptionVoiceFailureStore {
     /** Only known local categories are displayed; untrusted transport text is discarded. */
     static String safeReason(String message) {
         String value = message == null ? "" : message.toLowerCase(Locale.ROOT);
+        if (value.equals("chatgpt rejected voice authentication"))
+            return "ChatGPT rejected voice authentication";
         if (value.contains("microphone") || value.contains("permission"))
             return "Microphone access unavailable";
         if (value.contains("sign-in") || value.contains("expired")

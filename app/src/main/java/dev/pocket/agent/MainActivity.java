@@ -803,7 +803,9 @@ public final class MainActivity extends Activity implements AgentService.Observe
             JSONObject voiceAccount = credentials.getVoiceCodex();
             panel.addView(text(voiceAccount.optString("accountId").isEmpty()
                 ? "ChatGPT voice account: not connected"
-                : "ChatGPT voice account: connected independently of chat model"));
+                : credentials.voiceSharesChatAccount()
+                    ? "ChatGPT voice account: shared with chat"
+                    : "ChatGPT voice account: connected separately from chat"));
         } catch (Exception unreadable) {
             panel.addView(text("ChatGPT voice account: protected account unavailable"));
         }
@@ -814,12 +816,12 @@ public final class MainActivity extends Activity implements AgentService.Observe
         panel.addView(button("Disconnect ChatGPT voice account", () -> {
             if (activeWork()) { toast("Stop active work before changing voice login"); return; }
             try {
-                stopService(new Intent(this, SubscriptionVoiceService.class));
-                credentials.signOutVoiceCodex();
-                invalidateAccountOperations();
-                if (AgentService.isRunning()) command(json("action", "configure"));
-                settingsDialog[0].dismiss();
-                toast("Voice login removed (also signs out ChatGPT chat when selected)");
+                if (credentials.voiceSharesChatAccount()) {
+                    new AlertDialog.Builder(this).setTitle("Disconnect shared ChatGPT account?")
+                        .setMessage("Voice and chat share this login. Disconnecting it signs out both; your saved conversations stay on this phone.")
+                        .setNegativeButton("Cancel", null)
+                        .setPositiveButton("Disconnect both", (dialog, which) -> disconnectVoiceAccount(settingsDialog[0])).show();
+                } else disconnectVoiceAccount(settingsDialog[0]);
             } catch (Exception error) { toast("Unable to remove the protected voice login"); }
         }));
         String lastVoiceFailure = SubscriptionVoiceFailureStore.lastStatus(this);
@@ -1233,6 +1235,18 @@ public final class MainActivity extends Activity implements AgentService.Observe
                 .setAction(WakeWordService.ACTION_ENABLE));
             toast("Hey Jarvis enabled");
         } catch (RuntimeException denied) { toast("Android denied background listening"); }
+    }
+
+    private void disconnectVoiceAccount(AlertDialog settingsDialog) {
+        if (activeWork()) { toast("Stop active work before changing voice login"); return; }
+        try {
+            stopService(new Intent(this, SubscriptionVoiceService.class));
+            new CredentialStore(this).signOutVoiceCodex();
+            invalidateAccountOperations();
+            if (AgentService.isRunning()) command(json("action", "configure"));
+            settingsDialog.dismiss();
+            toast("Voice login disconnected");
+        } catch (Exception error) { toast("Unable to remove the protected voice login"); }
     }
 
     @Override public void onRequestPermissionsResult(int requestCode, String[] permissions, int[] results) {

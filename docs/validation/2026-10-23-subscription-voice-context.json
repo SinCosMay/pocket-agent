@@ -3,7 +3,7 @@
   "endpoint": "https://chatgpt.com/backend-api/codex/realtime/calls?intent=quicksilver&architecture=avas",
   "model": "gpt-live-1-codex",
   "authentication": "Existing local ChatGPT subscription login",
-  "conclusion": "Startup instructions successfully carry recent-conversation facts and support a client-memory delegation workflow.",
+  "conclusion": "Startup instructions carried recent-conversation facts into a reply. Client delegation was exercised with a synthetic result; memory-tool execution was not tested.",
   "recent_history": {
     "case": "recent_history",
     "input_field_present": false,

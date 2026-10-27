@@ -93,7 +93,10 @@ final class SubscriptionVoiceCredentials {
             byte[] body = form.getBytes(StandardCharsets.UTF_8);
             connection.setFixedLengthStreamingMode(body.length);
             try (OutputStream output = connection.getOutputStream()) { output.write(body); }
-            if (connection.getResponseCode() != HttpURLConnection.HTTP_OK)
+            int status = connection.getResponseCode();
+            if (status == 429 || status >= 500 && status <= 599)
+                throw new java.io.IOException("ChatGPT refresh temporarily unavailable");
+            if (status != HttpURLConnection.HTTP_OK)
                 throw new IllegalStateException("ChatGPT session refresh rejected");
             try (InputStream input = connection.getInputStream()) {
                 ByteArrayOutputStream bytes = new ByteArrayOutputStream();

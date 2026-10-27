@@ -158,10 +158,11 @@ public final class CredentialStore {
             }
             allowed.put("providerRevision", providerRevision(current, allowed));
             JSONObject voice = current.optJSONObject(VOICE_ACCOUNT);
-            // Preserve the voice login when chat switches to an unrelated model.
-            if (voice == null && CODEX_ACCOUNT.equals(current.optString("authMode")))
+            // Preserve an independently selected voice account across chat settings.
+            if (CODEX_ACCOUNT.equals(mode) && (voice == null || sameCodexAccount(voice, allowed)))
+                voice = accountSnapshot(allowed);
+            else if (voice == null && CODEX_ACCOUNT.equals(current.optString("authMode")))
                 voice = accountSnapshot(current);
-            if (CODEX_ACCOUNT.equals(mode)) voice = accountSnapshot(allowed);
             if (voice != null) allowed.put(VOICE_ACCOUNT, voice);
             write(allowed);
         }
@@ -336,13 +337,29 @@ public final class CredentialStore {
     public void signOutVoiceCodex() throws Exception {
         synchronized (LOCK) {
             JSONObject current = read();
-            if (CODEX_ACCOUNT.equals(current.optString("authMode"))) {
+            JSONObject voice = current.optJSONObject(VOICE_ACCOUNT);
+            if (CODEX_ACCOUNT.equals(current.optString("authMode"))
+                    && (voice == null || sameCodexAccount(voice, current))) {
                 signOutCodex();
             } else {
                 current.remove(VOICE_ACCOUNT);
                 write(current);
             }
         }
+    }
+
+    public boolean voiceSharesChatAccount() throws Exception {
+        synchronized (LOCK) {
+            JSONObject current = read();
+            JSONObject voice = current.optJSONObject(VOICE_ACCOUNT);
+            return CODEX_ACCOUNT.equals(current.optString("authMode"))
+                && (voice == null || sameCodexAccount(voice, current));
+        }
+    }
+
+    private static boolean sameCodexAccount(JSONObject left, JSONObject right) {
+        String id = left.optString("accountId");
+        return !id.isEmpty() && id.equals(right.optString("accountId"));
     }
 
     private static JSONObject accountSnapshot(JSONObject source) throws Exception {

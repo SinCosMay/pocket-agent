@@ -19,6 +19,7 @@ public final class SubscriptionVoiceLifecycleSimulator {
         @Override public void sendSpeech(String id, String text) { calls.add("speech:" + id + ":" + text); }
         @Override public void interruptSpeech() { calls.add("interrupt-speech"); }
         @Override public void interruptPi(String id) { calls.add("interrupt-pi:" + id); }
+        @Override public void connectionReadyCue() { calls.add("connection-ready-cue"); }
         @Override public void status(String text) { }
         @Override public void failure(String reason) { calls.add("failure:" + reason); }
         @Override public void announcementFailed(String id, String reason) { calls.add("failed:" + id); }
@@ -240,6 +241,23 @@ public final class SubscriptionVoiceLifecycleSimulator {
             "disconnect stole typed input or cancelled main-thread work");
     }
 
+    private static void connectionCueWaitsForActualRecordingAndFencesOldCallbacks() {
+        FakePort p = new FakePort(); p.capture = true;
+        SubscriptionVoiceLifecycle s = new SubscriptionVoiceLifecycle(p);
+        s.wake(0); s.connected(1, 10);
+        s.microphoneReady(1);
+        check(p.count("connection-ready-cue") == 0, "ready sound played during initial capture");
+        s.initialCaptureUnavailable(1);
+        check(p.count("connection-ready-cue") == 0, "ready sound assumed recording started");
+        s.microphoneReady(1); s.microphoneReady(1);
+        check(p.count("connection-ready-cue") == 1, "ready sound was missing or played twice");
+        s.close(); s.microphoneReady(1);
+        s.wake(100); s.connected(2, 110); s.microphoneReady(1);
+        check(p.count("connection-ready-cue") == 1, "stale recording callback played a sound");
+        s.initialCaptureUnavailable(2); s.microphoneReady(2);
+        check(p.count("connection-ready-cue") == 2, "new connection lacked its own ready sound");
+    }
+
     public static void main(String[] args) {
         normalWakeAndPiHandoff();
         firstTranscriptBeforeConnection();
@@ -251,6 +269,7 @@ public final class SubscriptionVoiceLifecycleSimulator {
         outputOnlyAnnouncement();
         explicitCallSurvivesNoListenAnnouncement();
         typedMainThreadRequestsJoinVoiceConversation();
-        System.out.println("Subscription voice lifecycle simulator: 10 scenarios PASSED");
+        connectionCueWaitsForActualRecordingAndFencesOldCallbacks();
+        System.out.println("Subscription voice lifecycle simulator: 11 scenarios PASSED");
     }
 }

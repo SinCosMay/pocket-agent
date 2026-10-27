@@ -29,7 +29,7 @@ public final class SubscriptionVoiceService extends Service implements AgentServ
     static final String ACTION_ANNOUNCE = "dev.pocket.agent.SUBSCRIPTION_VOICE_ANNOUNCE";
     static final String ACTION_STOP = "dev.pocket.agent.SUBSCRIPTION_VOICE_STOP";
     private static final int NOTIFICATION_ID = 34;
-    private static final int FAILURE_NOTIFICATION_ID = 35;
+    static final int FAILURE_NOTIFICATION_ID = 35;
     private static final String CHANNEL = "voice_subscription";
     private static final String FAILURE_CHANNEL = "voice_subscription_failures";
     private final Handler main = new Handler(Looper.getMainLooper());
@@ -47,7 +47,6 @@ public final class SubscriptionVoiceService extends Service implements AgentServ
     private final Runnable initialCaptureTimeout = () -> finishInitialCapture(null);
     private Runnable microphoneStartTimeout;
     private boolean started;
-    private boolean wakeNeedsReadyCue;
     private String startupPhase = "startup";
     private static volatile boolean active;
     private static SubscriptionVoiceService instance;
@@ -117,10 +116,6 @@ public final class SubscriptionVoiceService extends Service implements AgentServ
                         || lifecycle.state() == SubscriptionVoiceLifecycle.State.CLOSED) return;
                 if (microphoneStartTimeout != null) main.removeCallbacks(microphoneStartTimeout);
                 lifecycle.microphoneReady(epoch);
-                if (wakeNeedsReadyCue) {
-                    wakeNeedsReadyCue = false;
-                    playReadyCue();
-                }
             });
         }
         @Override public void onError(long epoch, String safeMessage) {
@@ -251,6 +246,9 @@ public final class SubscriptionVoiceService extends Service implements AgentServ
                 else outputSpeech.speak(lifecycle.epoch(), text);
             }
             @Override public void interruptSpeech() { transport.interruptSpeech(); }
+            @Override public void connectionReadyCue() {
+                playTone(android.media.ToneGenerator.TONE_PROP_ACK, 220);
+            }
             @Override public void interruptPi(String turnId) {
                 try { sendPi(new JSONObject().put("action", "stop_main").put("voiceSessionId", turnId)); }
                 catch (org.json.JSONException invalid) { throw new IllegalStateException(invalid); }
@@ -326,7 +324,6 @@ public final class SubscriptionVoiceService extends Service implements AgentServ
         stopInitialCapture();
         if (!started || lifecycle == null || lifecycle.epoch() != epoch) return;
         if (text != null && !text.trim().isEmpty()) {
-            wakeNeedsReadyCue = false;
             lifecycle.initialCaptured(epoch, text);
         } else {
             // Never execute an incomplete partial transcript as a full command.
@@ -355,10 +352,14 @@ public final class SubscriptionVoiceService extends Service implements AgentServ
     }
 
     private void playReadyCue() {
+        playTone(android.media.ToneGenerator.TONE_PROP_BEEP, 180);
+    }
+
+    private void playTone(int sound, int durationMs) {
         try {
             android.media.ToneGenerator tone = new android.media.ToneGenerator(
                 android.media.AudioManager.STREAM_NOTIFICATION, 65);
-            tone.startTone(android.media.ToneGenerator.TONE_PROP_BEEP, 180);
+            tone.startTone(sound, durationMs);
             main.postDelayed(tone::release, 450);
         } catch (RuntimeException unavailable) {
             Log.w("PocketSubscriptionVoice", "Ready cue unavailable");
@@ -462,8 +463,6 @@ public final class SubscriptionVoiceService extends Service implements AgentServ
             // recording starts only after it releases the microphone.
             byte[] preroll = intent.getByteArrayExtra(WakeWordService.EXTRA_WAKE_PREROLL);
             if (preroll != null) java.util.Arrays.fill(preroll, (byte) 0);
-            wakeNeedsReadyCue = lifecycle.state() == SubscriptionVoiceLifecycle.State.CLOSED
-                || !lifecycle.microphoneAllowed();
             lifecycle.wake(SystemClock.elapsedRealtime());
         } else {
             if (!lifecycle.announce(pendingAnnouncement.id, pendingAnnouncement.message,

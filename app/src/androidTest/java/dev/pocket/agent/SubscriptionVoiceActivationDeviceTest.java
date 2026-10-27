@@ -43,13 +43,17 @@ public final class SubscriptionVoiceActivationDeviceTest {
     }
 
     private static JSONObject fakeAccount(String refresh) throws Exception {
+        return fakeAccount("emulator-voice-test", refresh);
+    }
+
+    private static JSONObject fakeAccount(String account, String refresh) throws Exception {
         String header = base64(new JSONObject().put("alg", "RS256").toString());
         JSONObject claims = new JSONObject()
                 .put("https://api.openai.com/auth",
-                        new JSONObject().put("chatgpt_account_id", "emulator-voice-test"))
+                        new JSONObject().put("chatgpt_account_id", account))
                 .put("exp", System.currentTimeMillis() / 1000L + 7200L);
         return new JSONObject().put("accessToken", header + "." + base64(claims.toString()) + ".c2ln")
-                .put("refreshToken", refresh).put("accountId", "emulator-voice-test")
+                .put("refreshToken", refresh).put("accountId", account)
                 .put("expiresAt", System.currentTimeMillis() + 3_600_000L);
     }
 
@@ -79,6 +83,37 @@ public final class SubscriptionVoiceActivationDeviceTest {
         }
     }
 
+    @Test public void separateVoiceAccountSurvivesCodexChatSaveAndDisconnect() throws Exception {
+        Context ctx = context();
+        SharedPreferences prefs = ctx.getSharedPreferences("provider-secrets", Context.MODE_PRIVATE);
+        String prior = prefs.getString("encrypted", null);
+        try {
+            assertTrue(prefs.edit().remove("encrypted").commit());
+            CredentialStore store = new CredentialStore(ctx);
+            store.save(fakeAccount("chat-account", "chat-refresh").put("authMode", CredentialStore.CODEX_ACCOUNT)
+                .put("model", CredentialStore.CODEX_MODEL));
+            assertTrue(store.voiceSharesChatAccount());
+            store.saveVoiceCodex(fakeAccount("voice-account", "voice-refresh"));
+            store.save(new JSONObject().put("authMode", CredentialStore.CODEX_ACCOUNT)
+                .put("model", CredentialStore.CODEX_MODEL));
+            assertFalse(store.voiceSharesChatAccount());
+            assertEquals("voice-account", store.getVoiceCodex().getString("accountId"));
+            store.signOutVoiceCodex();
+            assertEquals(CredentialStore.CODEX_ACCOUNT, store.get().getString("authMode"));
+            assertEquals("chat-account", store.get().getString("accountId"));
+            assertEquals("chat-refresh", store.get().getString("refreshToken"));
+            // With the separate login removed, voice falls back to chat's shared login.
+            assertTrue(store.voiceSharesChatAccount());
+            store.signOutVoiceCodex();
+            assertEquals("scripted", store.get().getString("authMode"));
+            assertEquals(0, store.getVoiceCodex().length());
+        } finally {
+            SharedPreferences.Editor restore = prefs.edit();
+            if (prior == null) restore.remove("encrypted"); else restore.putString("encrypted", prior);
+            assertTrue(restore.commit());
+        }
+    }
+
     @Test public void failureClassificationNeverPrintsRemoteErrorText() {
         assertEquals("ChatGPT rejected voice authentication",
                 SubscriptionVoiceFailureStore.safeReason("Subscription call rejected (HTTP 401)"));
@@ -86,6 +121,8 @@ public final class SubscriptionVoiceActivationDeviceTest {
                 SubscriptionVoiceFailureStore.safeReason("Unable to initialize native audio"));
         assertEquals("Subscription voice setup failed",
                 SubscriptionVoiceFailureStore.safeReason("token=do-not-log-this"));
+        assertEquals("ChatGPT rejected voice authentication", SubscriptionVoiceFailureStore.safeReason(
+            SubscriptionVoiceFailureStore.safeReason("Subscription call rejected (HTTP 401)")));
     }
 
     private static View findText(View view, String text) {
@@ -143,7 +180,7 @@ public final class SubscriptionVoiceActivationDeviceTest {
             if (prior == null) restore.remove("encrypted"); else restore.putString("encrypted", prior);
             assertTrue(restore.commit());
             SubscriptionVoiceFailureStore.ready(ctx);
-            ctx.getSystemService(NotificationManager.class).cancel(35);
+            ctx.getSystemService(NotificationManager.class).cancel(SubscriptionVoiceService.FAILURE_NOTIFICATION_ID);
         }
     }
 

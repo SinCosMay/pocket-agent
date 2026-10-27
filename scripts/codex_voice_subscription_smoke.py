@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Linux-only subscription WebRTC smoke, no Codex process, emulator or API key.
 
-Requirements: Python Playwright, local Chrome, espeak-ng and ffmpeg.
+Requirements: Python Playwright, websockets, local Chrome, espeak-ng and ffmpeg.
 Run inside a resource-limited systemd user scope; no files or tokens leave the
 temporary directory other than the deliberate subscription voice request.
 This verifies transport and mocked Pi delegation, not Android microphone support.
@@ -102,7 +102,8 @@ def run(authfile):
             browser = pw.chromium.launch(
                 executable_path="/usr/bin/google-chrome",
                 headless=True,
-                args=["--no-sandbox", "--disable-dev-shm-usage", "--disable-gpu",
+                chromium_sandbox=True,
+                args=["--disable-dev-shm-usage", "--disable-gpu",
                       "--disable-extensions", "--renderer-process-limit=1",
                       "--use-fake-ui-for-media-stream", "--use-fake-device-for-media-stream",
                       "--use-file-for-fake-audio-capture=" + wav]

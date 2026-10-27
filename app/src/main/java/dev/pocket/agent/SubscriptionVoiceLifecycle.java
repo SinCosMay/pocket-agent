@@ -13,6 +13,7 @@ final class SubscriptionVoiceLifecycle {
         void sendSpeech(String delegationId, String text);
         void interruptSpeech();
         default void interruptPi(String turnId) { }
+        default void connectionReadyCue() { }
         void status(String text);
         default boolean startInitialCapture(long epoch) { return false; }
         default void setMicrophoneEnabled(boolean enabled) { }
@@ -126,6 +127,7 @@ final class SubscriptionVoiceLifecycle {
         if (id != epoch || state == State.CLOSED || !transportReady
                 || !allowMicrophone || capturingInitial || microphoneReady) return;
         microphoneReady = true;
+        port.connectionReadyCue();
         drain();
     }
 
