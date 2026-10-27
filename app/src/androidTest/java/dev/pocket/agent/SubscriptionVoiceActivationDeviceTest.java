@@ -250,6 +250,7 @@ public final class SubscriptionVoiceActivationDeviceTest {
         Runnable changed;
         Runnable recheck;
         long now;
+        long recheckDelay, recheckAt;
         int rejectedId = -1;
         boolean reject, cleared, unobserved;
         void devices(int... types) {
@@ -270,7 +271,11 @@ public final class SubscriptionVoiceActivationDeviceTest {
         @Override public void observe(Runnable value) { changed = value; }
         @Override public void unobserve() { unobserved = true; changed = null; recheck = null; }
         @Override public long nowMs() { return now; }
-        @Override public void recheckAfter(long delayMs) { recheck = changed; }
+        @Override public void recheckAfter(long delayMs) {
+            recheckDelay = delayMs;
+            recheckAt = now + delayMs;
+            recheck = changed;
+        }
     }
 
     @Test public void liveHeadsetChangesKeepOneRouteOwnerAndFallBackToSpeaker() {
@@ -324,7 +329,13 @@ public final class SubscriptionVoiceActivationDeviceTest {
             assertEquals(List.of(speaker, speaker), platform.selections);
             platform.changed.run();
             assertEquals(2, platform.selections.size());
-            platform.now = 30_001;
+            assertEquals("Route retry must allow Android's 30-second request window", 30_000L,
+                platform.recheckDelay);
+            platform.now = platform.recheckAt - 1;
+            platform.changed.run();
+            assertEquals("A pending request must not retry before its deadline", 2,
+                platform.selections.size());
+            platform.now = platform.recheckAt;
             platform.recheck.run(); // A request that never confirms cannot suppress recovery forever.
             assertEquals(List.of(speaker, speaker, speaker), platform.selections);
         } finally { route.close(); }
