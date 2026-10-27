@@ -134,7 +134,7 @@ public final class AgentService extends Service {
                         if (!"pending".equals(outcome.optString("status"))) reportVoiceFailure(this, request.id,
                             "Voice was not started; continue in chat (" + outcome.optString("status") + ")");
                     }
-                } catch (RuntimeException failure) {
+                } catch (Exception failure) {
                     Log.w("PocketVoice", "Agent-initiated speech could not be started", failure);
                     reportVoiceFailure(this, event.optString("id"),
                         "Speech service could not start; check Pocket Agent voice permissions");

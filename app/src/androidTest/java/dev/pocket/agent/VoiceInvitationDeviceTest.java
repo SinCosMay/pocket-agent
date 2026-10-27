@@ -85,6 +85,10 @@ public final class VoiceInvitationDeviceTest {
             assertNull(notice.fullScreenIntent);
             assertNull(notice.sound);
             assertTrue(notice.vibrate == null || notice.vibrate.length == 0);
+            assertEquals(0, notice.defaults);
+            assertEquals(VoiceConversationInvitation.CHANNEL, notice.getGroup());
+            assertEquals(Notification.GROUP_ALERT_SUMMARY, notice.getGroupAlertBehavior());
+            assertEquals(0, notice.flags & Notification.FLAG_GROUP_SUMMARY);
             assertNotEquals(Notification.CATEGORY_CALL, notice.category);
             assertEquals(2, notice.actions.length);
             assertEquals("Accept", notice.actions[0].title.toString());

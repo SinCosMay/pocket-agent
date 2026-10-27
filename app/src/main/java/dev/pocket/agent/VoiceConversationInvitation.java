@@ -115,7 +115,9 @@ final class VoiceConversationInvitation {
         return new Notification.Builder(context, CHANNEL).setSmallIcon(android.R.drawable.ic_btn_speak_now)
             .setContentTitle("Pocket Agent would like to talk").setContentText(request.optString("message"))
             .setStyle(new Notification.BigTextStyle().bigText(request.optString("message")))
-            .setVisibility(Notification.VISIBILITY_PRIVATE).setSilent(true).setOnlyAlertOnce(true)
+            .setVisibility(Notification.VISIBILITY_PRIVATE).setSound(null).setVibrate(new long[0]).setDefaults(0)
+            // Suppress alerts even if the user has changed the channel's sound settings.
+            .setGroup(CHANNEL).setGroupAlertBehavior(Notification.GROUP_ALERT_SUMMARY).setOnlyAlertOnce(true)
             .setContentIntent(open).setDeleteIntent(declineAction).setTimeoutAfter(EXPIRY_MS)
             .addAction(new Notification.Action.Builder(null, "Accept", acceptAction).build())
             .addAction(new Notification.Action.Builder(null, "Decline", declineAction).build()).build();
