@@ -6,7 +6,7 @@ import { SubagentRuntime } from '../vendor/pi9/runtime.js';
 import { completedGeneration,errorGeneration,interruptedGeneration,generationKey } from '../vendor/pi9/conversation.js';
 import { MobileSession } from './session.js';
 import { DisplayPool } from './display-pool.js';
-import { nativeTools,subagentTool,speakToUserTool,clearNativeToolUiState } from './tools.js';
+import { nativeTools,subagentTool,sendMessageTool,requestVoiceConversationTool,clearNativeToolUiState } from './tools.js';
 import {memoryTools,recallBlock,MEMORY_GUIDANCE,MEMORY_TOOL_NAMES} from './memory.js';
 import { messageText } from './scripted.js';
 import { modelFor,makeStream,normalizeReasoningEffort,REASONING_EFFORTS,type ReasoningEffort } from './provider.js';
@@ -32,7 +32,7 @@ const durableTail=(messages:any[],maxBytes:number)=>{
   }
   return system?[system,...kept]:kept;
 };
-const textMessages=(messages:any[],sanitize=(text:string)=>text)=>messages.filter(m=>m.role==='user'||m.role==='assistant').map((m,i)=>({id:`${m.timestamp}-${i}`,role:m.role,text:messageText(m)||(m.stopReason==='error'?`Request failed: ${sanitize(m.errorMessage??'Provider request failed')}`:''),timestamp:m.timestamp,...(m.stopReason?{stopReason:m.stopReason}:{}),...(m.errorMessage?{error:sanitize(m.errorMessage)}:{})})).filter(m=>m.text);
+const textMessages=(messages:any[],sanitize=(text:string)=>text)=>messages.filter(m=>m.role==='user'||m.role==='assistant').map((m,i)=>({id:`${m.timestamp}-${i}`,role:m.role,...(m.inputSource?{inputSource:m.inputSource}:{}),text:messageText(m)||(m.stopReason==='error'?`Request failed: ${sanitize(m.errorMessage??'Provider request failed')}`:''),timestamp:m.timestamp,...(m.stopReason?{stopReason:m.stopReason}:{}),...(m.errorMessage?{error:sanitize(m.errorMessage)}:{})})).filter(m=>m.text);
 const normalizeMode=(mode:string)=>mode==='api-key'?'openai':mode==='codex-relay'||mode==='codexRelay'?'codex':mode;
 
 export interface NativeBridge {call(method:string,argsJson:string):string;emit(eventJson:string):void}
@@ -100,9 +100,9 @@ export class PocketRuntime {
   constructor(readonly native:NativeBridge,limits={maxExecuting:4,maxConversations:12},mcpConnector?:McpConnector) {
     this.mcp=new McpToolRegistry(this.redact,mcpConnector);
     this.autonomy=new AutonomyEngine(this);
-    const phoneTools=[...nativeTools(this,'placeholder').map(x=>x.name),...MEMORY_TOOL_NAMES,'speak_to_user',...AUTONOMY_TOOL_NAMES];
+    const phoneTools=[...nativeTools(this,'placeholder').map(x=>x.name),...MEMORY_TOOL_NAMES,'send_message','request_voice_conversation',...AUTONOMY_TOOL_NAMES.filter(name=>name!=='notify_user')];
     this.registry.agents.set('phone-operator',{name:'phone-operator',description:'Performs bounded Android workflows and verifies native outcomes.',source:'project',systemPrompt:WORKER_PROMPT,tools:[...phoneTools,'subagent']});
-    this.registry.agents.set('researcher',{name:'researcher',description:'Reads phone capabilities and app data with no screen mutations.',source:'project',systemPrompt:'Read-only bounded worker. Report evidence and uncertainty.',tools:['phone_capabilities','phone_apps','phone_contacts','phone_calendars','phone_calendar_events','phone_notifications','phone_notification_read','phone_operation','memory_search','memory_profile','history_search','history_read','speak_to_user','subagent']});
+    this.registry.agents.set('researcher',{name:'researcher',description:'Reads phone capabilities and app data with no screen mutations.',source:'project',systemPrompt:'Read-only bounded worker. Report evidence and uncertainty.',tools:['phone_capabilities','phone_apps','phone_contacts','phone_calendars','phone_calendar_events','phone_notifications','phone_notification_read','phone_operation','memory_search','memory_profile','history_search','history_read','send_message','request_voice_conversation','subagent']});
     this.registry.agents.set('autonomy-worker',{name:'autonomy-worker',description:'A dedicated bounded autonomous run.',source:'project',systemPrompt:AUTONOMOUS_WORKER_PROMPT,tools:this.autonomousGrant([])});
     this.reloadCredentials();
     void this.refreshMcpTools();
@@ -214,13 +214,13 @@ export class PocketRuntime {
   private configureSessionTools(session:MobileSession,parent?:any):void {
     const grant=parent?.requestedConfig.tools??parent?.definition.tools;
     const remote=(!grant||this.mcp.toolNames.some(name=>grant.includes(name)))?this.mcp.tools.filter(tool=>!grant||grant.includes(tool.name)):[];
-    session.agent.state.tools=[...autonomyTools(this,session.owner,grant),...nativeTools(this,session.owner,grant),...memoryTools(this,session.owner,grant),...(!grant||grant.includes('speak_to_user')?[speakToUserTool(this,session.owner)]:[]),...(!grant||grant.includes('subagent')?[subagentTool(this,parent)]:[]),...remote];
+    session.agent.state.tools=[...autonomyTools(this,session.owner,grant).filter(tool=>tool.name!=='notify_user'||this.autonomyOwner(session.owner).startsWith('auto:')),...nativeTools(this,session.owner,grant),...memoryTools(this,session.owner,grant),...(!grant||grant.includes('send_message')?[sendMessageTool(this,session.owner)]:[]),...(!grant||grant.includes('request_voice_conversation')?[requestVoiceConversationTool(this,session.owner)]:[]),...(!grant||grant.includes('subagent')?[subagentTool(this,parent)]:[]),...remote];
   }
   private async refreshMcpTools():Promise<any[]> {
     try {
       await this.mcp.refresh(Array.isArray(this.credentials.mcpServers)?this.credentials.mcpServers:[]);
       const definition=this.registry.agents.get('phone-operator');
-      if(definition)definition.tools=[...nativeTools(this,'placeholder').map(tool=>tool.name),...MEMORY_TOOL_NAMES,...AUTONOMY_TOOL_NAMES,'speak_to_user',...this.mcp.toolNames,'subagent'];
+      if(definition)definition.tools=[...nativeTools(this,'placeholder').map(tool=>tool.name),...MEMORY_TOOL_NAMES,...AUTONOMY_TOOL_NAMES.filter(name=>name!=='notify_user'),'send_message','request_voice_conversation',...this.mcp.toolNames,'subagent'];
       if(this.main)this.configureSessionTools(this.main);
       for(const [id,session] of this.sessions) {
         const conversation=this.runtime?.conversation(id);
@@ -276,8 +276,19 @@ export class PocketRuntime {
     const initial=owner==='main'?DEFAULT_MAIN_PROMPT:this.autonomyOwner(owner).startsWith('auto:')?AUTONOMOUS_WORKER_PROMPT:(this.registry.agents.get('researcher') && session.agent.state.systemPrompt.startsWith('Read-only bounded worker')?'Read-only bounded worker. Report evidence and uncertainty.':WORKER_PROMPT);
     const messages=session.agent.state.messages;
     if(messages[0]?.role!=='system')throw Error('Memory injection requires a system transcript');
-    const prompt=composePrompt(initial,this.personalInstructions)+'\n'+MEMORY_GUIDANCE;
+    const latestUser:any=messages.findLast((message:any)=>message.role==='user');
+    const sourceLabel=owner==='main'&&latestUser?.inputSource?'\nCurrent user input source: '+latestUser.inputSource+'. Voice input is transcribed speech; typed input was written by the user.':'';
+    const prompt=composePrompt(initial,this.personalInstructions)+'\n'+MEMORY_GUIDANCE+(owner==='main'?this.responsePreferenceGuidance():'')+sourceLabel;
     session.agent.state.messages=[{...messages[0],content:prompt+recallBlock(this,owner,query,session.agent.state.tools.map((tool:any)=>tool.name))},...messages.slice(1)];
+  }
+  private responsePreferenceGuidance():string {
+    let preference:any;
+    try {preference=this.call('voice.preferences',{});} catch {return '';}
+    const mode=preference?.mode;
+    const invitation=preference?.threadId===this.mainThreadId?' Current voice invitation status: '+preference.invitationStatus+'.':'';
+    const rule=mode==='text'?'The user prefers messages. Reply in chat or use send_message; do not offer voice.':
+      'Voice invitations are allowed. You may use request_voice_conversation when a spoken conversation would help, or send_message for text.';
+    return '\nResponse preference: '+rule+invitation+' Voice invitations never ring and never imply acceptance. Do not repeat declined invitations. Manual voice sessions remain available and tasks continue when voice ends.';
   }
   historyOwner(owner:string):string {
     if(owner==='main')return owner;
@@ -387,7 +398,7 @@ export class PocketRuntime {
         }
         this.busy=true;this.mainInterrupted=false;this.lastError=null;this.mainTurns++;
         this.speakingTurn=typeof item.voiceSessionId==='string'&&/^[a-f0-9-]{36}$/.test(item.voiceSessionId)?item.voiceSessionId:null;
-        this.main.agent.state.messages=[...this.main.messages,{role:'user',content:[{type:'text',text:prompt}],timestamp:Date.now()}];
+        this.main.agent.state.messages=[...this.main.messages,{role:'user',content:[{type:'text',text:prompt}],timestamp:Date.now(),...(item.type==='user'?{inputSource:item.inputSource==='voice'?'voice':'typed'}:{})}];
         this.injectMemory(this.main,'main',prompt);
         // Never begin inference until queue removal, transcript delivery and the exact
         // completion receipt are durably committed together.
@@ -425,7 +436,7 @@ export class PocketRuntime {
     }));
   }
   debugToolCall(requestId:string,name:string,args:any):void {
-    const tools=this.devTools??(this.devTools=[...autonomyTools(this,'main'),...nativeTools(this,'dev-mcp'),...memoryTools(this,'main'),speakToUserTool(this,'main'),subagentTool(this)]);
+    const tools=this.devTools??(this.devTools=[...autonomyTools(this,'main').filter(tool=>tool.name!=='notify_user'),...nativeTools(this,'dev-mcp'),...memoryTools(this,'main'),sendMessageTool(this,'main'),requestVoiceConversationTool(this,'main'),subagentTool(this)]);
     const tool=tools.find((item:any)=>item.name===name);
     if(!tool)throw Error('Unknown tool');
     queueMicrotask(async()=>{
@@ -520,6 +531,7 @@ export class PocketRuntime {
         void this.prepareShutdown();
       } else if(cmd.action==='send') {
         if(typeof cmd.text!=='string'||!cmd.text.trim()||cmd.text.length>50000)throw new Error('Message must contain 1..50000 characters');
+        if(cmd.inputSource!==undefined&&!['typed','voice'].includes(cmd.inputSource))throw Error('Input source must be typed or voice');
         if(this.inbox.length>=32)throw new Error('Pending message limit reached (32)');
         if(!cmd.conversationId&&this.main.full())throw new Error('Main conversation is at the mobile context limit; history and pending results were retained');
         if(cmd.conversationId) void this.sendWorker(cmd.conversationId,cmd.text).catch(this.reportError);
@@ -527,7 +539,7 @@ export class PocketRuntime {
           const previousPaused=this.mainPaused;
           this.mainPaused=false;
           const voiceSessionId=typeof cmd.voiceSessionId==='string'&&/^[a-f0-9-]{36}$/.test(cmd.voiceSessionId)?cmd.voiceSessionId:undefined;
-          const queued={type:'user',text:cmd.text,...(voiceSessionId?{voiceSessionId}:{})};
+          const queued={type:'user',text:cmd.text,inputSource:cmd.inputSource??'typed',...(voiceSessionId?{voiceSessionId}:{})};
           this.inbox.push(queued);
           if(!this.save()) {
             if(this.inbox.at(-1)===queued)this.inbox.pop();

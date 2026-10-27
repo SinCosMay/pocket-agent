@@ -13,6 +13,9 @@ class Bridge implements NativeBridge {
  call(method:string,argsJson:string):string {
   const args=JSON.parse(argsJson);let result:any;
   if(method==='credentials.get')result=this.credentials;
+  if(method==='voice.preferences')result={mode:'offer',voiceActive:false};
+  if(method==='voice.request'){this.tools.push({method,...args});result={status:'pending',id:'invitation-test'};}
+  if(method==='autonomy.notify')result={status:'posted'};
   if(method==='store.load')result=this.state;
   if(method==='store.save'){this.state=structuredClone(args.state);result={saved:true};}
   if(method==='tool'){this.tools.push(args);result={available:true,operation_prefix:'20741-0123456789abcdef',owner:args.owner};}
@@ -788,31 +791,48 @@ test('voice input streams only its own main reply; ordinary turns and worker com
  assert.ok(!bridge.events.some(e=>e.type.startsWith('voice_')),'reject unscoped voice output');
 });
 
-test('registered speak_to_user tool requests optional speech without asserting delivery or speaking after worker completion',async()=>{
+test('only message and voice-invitation communication tools are registered with grants and truthful receipts',async()=>{
  const bridge=new Bridge(), runtime=new PocketRuntime(bridge);
- const main=runtime.main.agent.state.tools.find((tool:any)=>tool.name==='speak_to_user');
- assert.ok(main,'main has optional spoken output');
- const worker=(runtime as any).createSession('worker-test',{definition:runtime.registry.agents.get('phone-operator'),requestedConfig:{tools:['speak_to_user']}});
- const tool=worker.agent.state.tools.find((tool:any)=>tool.name==='speak_to_user');
- assert.ok(tool,'registered worker can initiate speech');
- assert.equal(runtime.registry.agents.get('phone-operator')!.tools!.includes('speak_to_user'),true);
- assert.equal(runtime.registry.agents.get('researcher')!.tools!.includes('speak_to_user'),true);
- assert.equal(validateToolArguments(tool,{type:'toolCall',id:'speak1',name:'speak_to_user',arguments:{message:'Hello',listen_after:false}}).listen_after,false);
- const out=await tool.execute('speak1',{message:' Reminder at six. ',listen_after:false});
- assert.equal(out.details.status,'requested');
- assert.match(out.details.note,/does not mean accepted or heard/);
- assert.equal(bridge.events.filter(e=>e.type==='voice_announce').at(-1).type,'voice_announce');
- assert.equal(bridge.events.filter(e=>e.type==='voice_announce').at(-1).message,'Reminder at six.');
- assert.equal(bridge.events.filter(e=>e.type==='voice_announce').at(-1).listenAfter,false);
- assert.equal(bridge.events.filter(e=>e.type==='voice_announce').at(-1).owner,'worker-test');
- assert.match(bridge.events.filter(e=>e.type==='voice_announce').at(-1).id,/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/);
- await main.execute('speak2',{message:'Please reply'});
- assert.equal(bridge.events.filter(e=>e.type==='voice_announce').at(-1).owner,'main');
- assert.equal(bridge.events.filter(e=>e.type==='voice_announce').at(-1).listenAfter,true);
- await assert.rejects(tool.execute('speak3',{message:'  '}),/1..800/);
+ const names=runtime.main.agent.state.tools.map((tool:any)=>tool.name);
+ assert.ok(names.includes('send_message')&&names.includes('request_voice_conversation'));
+ assert.ok(!names.includes('speak_to_user')&&!names.includes('notify_user'));
+ const message=runtime.main.agent.state.tools.find((tool:any)=>tool.name==='send_message');
+ const sent=await message.execute('message1',{message:' Text update. '});
+ assert.equal(sent.details.message,'Text update.');
+ assert.equal(sent.details.delivery,'posted');
+ const repeated=await message.execute('message1',{message:'Text update.'});
+ assert.equal(repeated.details.id,sent.details.id,'same tool call cannot create another message');
+ assert.equal(bridge.events.filter(e=>e.type==='voice_announce').length,0);
+ const worker=(runtime as any).createSession('worker-test',{definition:runtime.registry.agents.get('phone-operator'),requestedConfig:{tools:['request_voice_conversation']}});
+ assert.ok(!worker.agent.state.tools.some((tool:any)=>tool.name==='send_message'),'worker grants remain scoped');
+ const invite=worker.agent.state.tools.find((tool:any)=>tool.name==='request_voice_conversation');
+ assert.ok(invite);
+ assert.equal(validateToolArguments(invite,{type:'toolCall',id:'invite',name:'request_voice_conversation',arguments:{message:'Would talking help?'}}).message,'Would talking help?');
+ const out=await invite.execute('invite',{message:' Would talking help? '});
+ assert.equal(out.details.status,'pending');
+ assert.deepEqual(bridge.tools.at(-1),{method:'voice.request',owner:'worker-test',threadId:runtime.state().mainThreadId,message:'Would talking help?'});
  const controller=new AbortController();controller.abort();
- await assert.rejects(tool.execute('speak4',{message:'No',listen_after:true},controller.signal),/cancelled/);
- assert.equal(bridge.events.filter(e=>e.type==='voice_announce').length,2);
+ await assert.rejects(invite.execute('cancel',{message:'No'},controller.signal),/cancelled/);
+ await assert.rejects(invite.execute('empty',{message:' '}),/1..300/);
+ await assert.rejects(message.execute('empty',{message:' '}),/1..2000/);
+});
+
+test('input source is retained and model-visible independently of voice output ownership',async()=>{
+ const bridge=new Bridge(),runtime=new PocketRuntime(bridge);
+ const voiceSessionId='11111111-2222-4333-8444-555555555555';
+ command(runtime,{action:'send',text:'Spoken request',inputSource:'voice',voiceSessionId});
+ await until(()=>!runtime.state().active);
+ assert.equal(runtime.state().messages.find((m:any)=>m.role==='user').inputSource,'voice');
+ assert.match(String(runtime.main.messages[0].content),/Current user input source: voice/);
+ command(runtime,{action:'send',text:'Typed while voice stays on',inputSource:'typed',voiceSessionId});
+ await until(()=>!runtime.state().active);
+ assert.equal(runtime.state().messages.filter((m:any)=>m.role==='user').at(-1).inputSource,'typed');
+ assert.match(String(runtime.main.messages[0].content),/Current user input source: typed/);
+ assert.equal(bridge.state.mainMessages.filter((m:any)=>m.role==='user').at(-1).content[0].text,'Typed while voice stays on');
+ assert.equal(JSON.parse(runtime.dispatch(JSON.stringify({action:'send',text:'Bad source',inputSource:'other'}))).ok,false);
+ command(runtime,{action:'send',text:'Ordinary chat defaults to typing'});
+ await until(()=>!runtime.state().active);
+ assert.equal(runtime.state().messages.filter((m:any)=>m.role==='user').at(-1).inputSource,'typed');
 });
 
 test('a discovered worker model is pinned across execution and restore without changing the selected main model',async()=>{

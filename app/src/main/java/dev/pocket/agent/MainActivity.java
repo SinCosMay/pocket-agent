@@ -69,6 +69,7 @@ public final class MainActivity extends Activity implements AgentService.Observe
     private long pendingPickerGeneration = -1;
     private int pendingPickerRequest = -1;
     private Future<?> pendingImport;
+    private String pendingVoiceInvitation;
     @Override public void onCreate(Bundle saved) {
         super.onCreate(saved); store = new StateStore(this);
         LinearLayout root = column(); root.setPadding(dp(14), dp(12), dp(14), dp(12));
@@ -129,6 +130,31 @@ public final class MainActivity extends Activity implements AgentService.Observe
         setContentView(root);
         AutonomyScheduler.arm(this);
         if(getIntent().getBooleanExtra("openAutonomy",false))root.post(this::autonomyActivity);
+        pendingVoiceInvitation = saved == null ? null : saved.getString("voiceInvitation");
+        root.post(() -> handleVoiceInvitation(getIntent()));
+    }
+    @Override protected void onNewIntent(Intent intent) {
+        super.onNewIntent(intent);
+        setIntent(intent);
+        getWindow().getDecorView().post(() -> handleVoiceInvitation(intent));
+    }
+    @Override protected void onSaveInstanceState(Bundle saved) {
+        super.onSaveInstanceState(saved);
+        saved.putString("voiceInvitation", pendingVoiceInvitation);
+    }
+    private void handleVoiceInvitation(Intent intent) {
+        if (!VoiceConversationInvitation.ACCEPT.equals(intent.getAction())) return;
+        String id = intent.getStringExtra("invitationId");
+        intent.setAction(null); // Activity recreation must not replay an accepted invitation.
+        if (!VoiceConversationInvitation.canAccept(this, id)) {
+            toast("Voice invitation expired or no longer matches this chat");
+            return;
+        }
+        pendingVoiceInvitation = id;
+        if (SubscriptionVoiceService.isActive()) {
+            VoiceConversationInvitation.accept(this, id);
+            pendingVoiceInvitation = null;
+        } else requestVoiceConversation();
     }
     @Override protected void onStart() {
         super.onStart(); AgentService.observe(this); SubscriptionVoiceService.observe(this); state = store.load(); render();
@@ -157,6 +183,9 @@ public final class MainActivity extends Activity implements AgentService.Observe
             return;
         }
         if (AgentService.isStopping()) { toast("Wait for the agent to finish stopping, then start voice"); return; }
+        requestVoiceConversation();
+    }
+    private void requestVoiceConversation() {
         java.util.ArrayList<String> needed = new java.util.ArrayList<>();
         if (checkSelfPermission(Manifest.permission.RECORD_AUDIO) != PackageManager.PERMISSION_GRANTED)
             needed.add(Manifest.permission.RECORD_AUDIO);
@@ -168,12 +197,31 @@ public final class MainActivity extends Activity implements AgentService.Observe
         }
         startVoiceConversation();
     }
+    private void responsePreference() {
+        String[] modes = {VoiceConversationInvitation.TEXT, VoiceConversationInvitation.OFFER};
+        String[] labels = {"Messages only", "Voice invitations allowed"};
+        int selected = java.util.Arrays.asList(modes).indexOf(VoiceConversationInvitation.mode(this));
+        new AlertDialog.Builder(this).setTitle("Response preference")
+            .setSingleChoiceItems(labels, selected, (dialog, which) -> {
+                try { VoiceConversationInvitation.setMode(this, modes[which]); toast("Response preference saved"); }
+                catch (RuntimeException failure) { toast("Could not save response preference"); }
+                dialog.dismiss();
+            })
+            .setNegativeButton("Close", null).show();
+    }
     private void startVoiceConversation() {
         if (checkSelfPermission(Manifest.permission.RECORD_AUDIO) != PackageManager.PERMISSION_GRANTED) {
             voiceConversationStatus.setText("Allow microphone access to start a voice conversation");
+            if (pendingVoiceInvitation != null) VoiceConversationInvitation.decline(this, pendingVoiceInvitation);
+            pendingVoiceInvitation = null;
             return;
         }
         if (AgentService.isStopping()) { toast("Wait for the agent to finish stopping, then start voice"); return; }
+        if (pendingVoiceInvitation != null) {
+            boolean accepted = VoiceConversationInvitation.accept(this, pendingVoiceInvitation);
+            pendingVoiceInvitation = null;
+            if (!accepted) { toast("Voice invitation is no longer available"); return; }
+        } else VoiceConversationInvitation.cancel(this, "manually_started");
         try {
             startForegroundService(SubscriptionVoiceSettings.conversationIntent(this));
             if (Build.VERSION.SDK_INT >= 33 && checkSelfPermission(Manifest.permission.POST_NOTIFICATIONS) != PackageManager.PERMISSION_GRANTED)
@@ -265,7 +313,7 @@ public final class MainActivity extends Activity implements AgentService.Observe
     private String formatMessages(JSONArray messages) {
         if (messages == null || messages.length() == 0) return "Start a conversation. Multi-step phone work runs in tasks while you keep talking here.";
         StringBuilder text = new StringBuilder();
-        for (int i = 0; i < messages.length(); i++) { JSONObject message = messages.optJSONObject(i); if (message == null) continue; text.append(message.optString("role")).append(":\n").append(message.optString("text", message.optString("content"))).append("\n\n"); }
+        for (int i = 0; i < messages.length(); i++) { JSONObject message = messages.optJSONObject(i); if (message == null) continue; text.append(message.optString("role")).append(message.has("inputSource") ? " (" + message.optString("inputSource") + ")" : "").append(":\n").append(message.optString("text", message.optString("content"))).append("\n\n"); }
         return text.toString();
     }
     private String workerMessages(String id) {
@@ -282,6 +330,7 @@ public final class MainActivity extends Activity implements AgentService.Observe
         new AlertDialog.Builder(this).setTitle("Start a new main thread?")
             .setMessage("The main chat will start fresh. Saved worker tasks and their histories stay available for debugging and follow-up.")
             .setNegativeButton("Cancel", null).setPositiveButton("Start new thread", (dialog, which) -> {
+                VoiceConversationInvitation.cancel(this, "thread_changed");
                 stopService(new Intent(this, SubscriptionVoiceService.class));
                 if (AgentService.isRunning()) command(json("action", "new_main"));
                 else { state = store.requestFreshMain(); render(); toast("New main thread ready"); }
@@ -798,6 +847,8 @@ public final class MainActivity extends Activity implements AgentService.Observe
         panel.addView(button("Choose phone permissions", this::permissions));
         panel.addView(button("Remote MCP servers", this::mcpSettings));
         panel.addView(text("Main-thread voice conversation"));
+        panel.addView(button("Response preference", this::responsePreference));
+        panel.addView(text("Choose messages or allow silent voice invitations. Accept connects this chat; Decline keeps text. Voice starts only after acceptance. You can always start it manually."));
         panel.addView(text("Use Start Codex voice in the main chat to talk to that thread through the phone speaker. Spoken and typed requests share its history. Listening stays open through silence; Disconnect voice in the app or notification ends the call while background tasks continue. Stop response cancels the current response, and Stop all ends the runtime."));
         try {
             JSONObject voiceAccount = credentials.getVoiceCodex();

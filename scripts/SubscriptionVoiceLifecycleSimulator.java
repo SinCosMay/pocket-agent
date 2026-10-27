@@ -14,8 +14,8 @@ public final class SubscriptionVoiceLifecycleSimulator {
         @Override public void connect(long epoch, boolean microphone) { calls.add("connect:" + epoch + ":" + microphone); }
         @Override public void close(long epoch) { calls.add("close:" + epoch); }
         @Override public void setMicrophoneEnabled(boolean enabled) { calls.add("mic:" + enabled); }
-        @Override public void sendUserContext(String text) { calls.add("context:" + text); }
-        @Override public void sendToPi(String turnId, String text) { calls.add("pi:" + turnId + ":" + text); }
+        @Override public void sendUserContext(String text, String inputSource) { calls.add("context:" + text); calls.add("context-source:" + inputSource); }
+        @Override public void sendToPi(String turnId, String text, String inputSource) { calls.add("pi:" + turnId + ":" + text); calls.add("input-source:" + inputSource); }
         @Override public void sendSpeech(String id, String text) { calls.add("speech:" + id + ":" + text); }
         @Override public void sendAnnouncement(String id, String text) {
             calls.add("speech:null:" + text);
@@ -94,6 +94,7 @@ public final class SubscriptionVoiceLifecycleSimulator {
         s.microphoneReady(999);
         check(p.count("speech:") == 0, "stale recording callback released first result");
         recordingReady(s, p, 1);
+        check(p.has("input-source:voice") && p.has("context-source:voice"), "initial speech was mislabeled as typed");
         check(p.has("context:Find the blue button"), "initial request absent from live context");
         check(p.has("speech:null:The button is on the left."), "buffered result not spoken");
         int enabled = p.calls.indexOf("mic:true");
@@ -264,6 +265,7 @@ public final class SubscriptionVoiceLifecycleSimulator {
         s.connected(1, 200);
         check(p.has("context:A typed request"), "live voice missed typed main-thread context");
         s.initialCaptureUnavailable(1); s.microphoneReady(1);
+        check(p.has("input-source:typed") && p.has("context-source:typed"), "typed request in a voice call was mislabeled as spoken");
         check(p.has("speech:null:Main thread result."), "typed main-thread reply was not spoken");
         s.close();
         s.piDelta(p.turn(0), "late result"); s.piFinished(p.turn(0));

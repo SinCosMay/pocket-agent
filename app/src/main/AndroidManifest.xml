@@ -38,6 +38,7 @@
         <provider android:name="rikka.shizuku.ShizukuProvider" android:authorities="${applicationId}.shizuku" android:multiprocess="false" android:enabled="true" android:exported="true" android:permission="android.permission.INTERACT_ACROSS_USERS_FULL" />
         <provider android:name=".AccessibilityBridgeProvider" android:authorities="${applicationId}.accessibility-bridge"
             android:exported="false" android:process=":accessibility" />
+        <receiver android:name=".VoiceConversationInvitation$Receiver" android:exported="false" />
         <activity android:name=".MainActivity" android:exported="true" android:windowSoftInputMode="adjustResize">
             <intent-filter><action android:name="android.intent.action.MAIN" /><category android:name="android.intent.category.LAUNCHER" /></intent-filter>
         </activity>

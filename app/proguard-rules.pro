@@ -63,6 +63,7 @@
 -keep class dev.pocket.agent.SubscriptionVoiceFailureStore { *; }
 -keep class dev.pocket.agent.SubscriptionVoiceSettings { *; }
 -keep class dev.pocket.agent.SubscriptionVoiceContext { *; }
+-keep class dev.pocket.agent.VoiceConversationInvitation** { *; }
 -keep class dev.pocket.agent.SubscriptionVoiceAudioRoute** { *; }
 -keep interface dev.pocket.agent.SubscriptionVoiceAudioRoute$Platform { *; }
 -keep class dev.pocket.agent.SubscriptionVoiceOutputSpeech** { *; }

@@ -9,7 +9,7 @@ public final class SubscriptionVoiceStartupSimulator {
         final List<String> statuses = new ArrayList<>();
         @Override public void connect(long epoch, boolean microphone) { }
         @Override public void close(long epoch) { }
-        @Override public void sendToPi(String turnId, String utterance) { }
+        @Override public void sendToPi(String turnId, String utterance, String inputSource) { }
         @Override public void sendSpeech(String delegationId, String text) { }
         @Override public void sendAnnouncement(String id, String text) { }
         @Override public void status(String text) { statuses.add(text); }

@@ -86,9 +86,9 @@ final class SubscriptionVoiceTransport implements AutoCloseable {
             transport.setMicrophoneEnabled(activeEpoch, enabled);
     }
 
-    synchronized void sendUserContext(String text) {
+    synchronized void sendUserContext(String text, String inputSource) {
         if (!disposed && transport != null)
-            transport.sendUserContext(activeEpoch, text);
+            transport.sendUserContext(activeEpoch, text, inputSource);
     }
 
     synchronized void close(long epoch) {

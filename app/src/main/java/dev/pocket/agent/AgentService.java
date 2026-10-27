@@ -54,6 +54,7 @@ public final class AgentService extends Service {
         if (intent == null) return START_NOT_STICKY;
         if (ACTION_STOP.equals(intent.getAction())) {
             stopping = true;
+            VoiceConversationInvitation.cancel(this, "runtime_stopped");
             AutonomyStore.requestEnabled(this,false,error->Log.w("PocketAgent","Could not persist automation pause",error));
             if(host!=null)host.dispatch(Json.obj("action","stop_all"));
             WakeWordService.disableImmediately(this);
@@ -124,7 +125,15 @@ public final class AgentService extends Service {
             if ("voice_announce".equals(event.optString("type"))) {
                 try {
                     VoiceAnnouncement request = VoiceAnnouncement.fromEvent(event);
-                    startForegroundService(SubscriptionVoiceSettings.announcementIntent(this, request));
+                    if (SubscriptionVoiceService.isActive()) {
+                        startForegroundService(SubscriptionVoiceSettings.announcementIntent(this, request));
+                    } else {
+                        JSONObject outcome = VoiceConversationInvitation.request(this, Json.obj(
+                            "threadId", VoiceConversationInvitation.currentThread(this),
+                            "message", "Would you like to continue this conversation by voice?"));
+                        if (!"pending".equals(outcome.optString("status"))) reportVoiceFailure(this, request.id,
+                            "Voice was not started; continue in chat (" + outcome.optString("status") + ")");
+                    }
                 } catch (RuntimeException failure) {
                     Log.w("PocketVoice", "Agent-initiated speech could not be started", failure);
                     reportVoiceFailure(this, event.optString("id"),

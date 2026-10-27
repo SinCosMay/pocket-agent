@@ -9,14 +9,14 @@ final class SubscriptionVoiceLifecycle {
     interface Port {
         void connect(long epoch, boolean allowMicrophone);
         void close(long epoch);
-        void sendToPi(String turnId, String utterance);
+        void sendToPi(String turnId, String utterance, String inputSource);
         void sendSpeech(String delegationId, String text);
         void sendAnnouncement(String id, String text);
         default void connectionReadyCue() { }
         void status(String text);
         default boolean startInitialCapture(long epoch) { return false; }
         default void setMicrophoneEnabled(boolean enabled) { }
-        default void sendUserContext(String text) { }
+        default void sendUserContext(String text, String inputSource) { }
         default void failure(String safeMessage) { }
         void announcementFailed(String id, String reason);
     }
@@ -34,7 +34,7 @@ final class SubscriptionVoiceLifecycle {
     private State state = State.CLOSED;
     private long epoch, connectionDeadline;
     private boolean transportReady, microphoneReady, capturingInitial;
-    private final ArrayDeque<String> pendingUserContext = new ArrayDeque<>();
+    private final ArrayDeque<String[]> pendingUserContext = new ArrayDeque<>();
     private boolean explicitConversation;
     private boolean listenAfterSpeech = true;
     private boolean allowMicrophone;
@@ -114,8 +114,8 @@ final class SubscriptionVoiceLifecycle {
             String transcript = text.trim();
             // Dispatch immediately, even if the voice connection is still starting.
             // AgentService durably queues this like an ordinary chat request.
-            submit(null, transcript);
-            if (state != State.CLOSED) pendingUserContext.addLast(transcript);
+            submit(null, transcript, "voice");
+            if (state != State.CLOSED) pendingUserContext.addLast(new String[]{transcript, "voice"});
         }
         sendUserContext();
         if (transportReady) port.setMicrophoneEnabled(allowMicrophone);
@@ -133,15 +133,17 @@ final class SubscriptionVoiceLifecycle {
     }
 
     private void sendUserContext() {
-        while (transportReady && !pendingUserContext.isEmpty())
-            port.sendUserContext(pendingUserContext.removeFirst());
+        while (transportReady && !pendingUserContext.isEmpty()) {
+            String[] input = pendingUserContext.removeFirst();
+            port.sendUserContext(input[0], input[1]);
+        }
     }
 
     /** Typed requests use the same main-thread delivery as spoken requests. */
     boolean typed(String text) {
         if (state == State.CLOSED || !explicitConversation || text == null || text.trim().isEmpty()) return false;
-        if (!submit(null, text.trim())) return false;
-        pendingUserContext.addLast(text.trim());
+        if (!submit(null, text.trim(), "typed")) return false;
+        pendingUserContext.addLast(new String[]{text.trim(), "typed"});
         sendUserContext();
         drain();
         return true;
@@ -153,11 +155,11 @@ final class SubscriptionVoiceLifecycle {
                 transcript == null || transcript.trim().isEmpty() ||
                 !delivered.add(requestId)) return;
         if (delivered.size() > 512) delivered.remove(delivered.iterator().next());
-        submit(requestId, transcript.trim());
+        submit(requestId, transcript.trim(), "voice");
         drain();
     }
 
-    private boolean submit(String delegationId, String text) {
+    private boolean submit(String delegationId, String text, String inputSource) {
         if (turns.size() >= MAX_PENDING_TURNS) {
             failed(epoch, "Voice request queue is full; use the chat to continue");
             return false;
@@ -167,7 +169,7 @@ final class SubscriptionVoiceLifecycle {
         if (state != State.SPEAKING) state = State.WAITING_PI;
         port.status(transportReady ? "Pi is working · voice stays connected"
             : "Pi is working · connecting voice");
-        port.sendToPi(turn.id, text);
+        port.sendToPi(turn.id, text, inputSource);
         return state != State.CLOSED;
     }
 

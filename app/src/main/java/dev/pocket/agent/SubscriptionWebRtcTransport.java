@@ -203,7 +203,7 @@ final class SubscriptionWebRtcTransport implements AutoCloseable {
     }
 
     /** Context for a request already durably submitted to Pi by the phone. */
-    void sendUserContext(long epoch, String text) {
+    void sendUserContext(long epoch, String text, String inputSource) {
         if (text == null || text.trim().isEmpty()) return;
         // Pi receives the full request. Retain an explicit head/tail excerpt in
         // live context rather than dropping an oversized typed request entirely.
@@ -212,7 +212,8 @@ final class SubscriptionWebRtcTransport implements AutoCloseable {
             Session session = current;
             if (!active(session) || session.epoch != epoch || !session.connectedNotified) return;
             try {
-                String contextText = "The phone received the following user turn as text. "
+                String contextText = "The phone received this user turn via "
+                    + ("voice".equals(inputSource) ? "voice (transcribed speech). " : "typed/written text. ")
                     + "The client has already submitted it to Pi. Use it as conversation context; "
                     + "do not delegate it again or act on it yourself. Speak subsequent speakable "
                     + "context updates as Pi's supplied results. "

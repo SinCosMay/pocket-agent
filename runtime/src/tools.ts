@@ -219,21 +219,31 @@ export function nativeTools(host:any,owner:string,grant?:readonly string[]):any[
     },
   }));
 }
-export function speakToUserTool(host:any,owner:string):any {
+export function requestVoiceConversationTool(host:any,owner:string):any {
   return {
-    name:'speak_to_user',label:'Speak to user',
-    description:'Optional spoken announcement on this device. Call only when audio is useful or explicitly requested, not automatically for every completed task. This queues delivery without proving playback. When listen_after is true, offer a three-second silence window for a spoken reply. Never speak secrets, one-time codes, or sensitive screen content aloud.',
-    parameters:Type.Object({
-      message:Type.String({minLength:1,maxLength:800,description:'Short text to say aloud.'}),
-      listen_after:Type.Optional(Type.Boolean({description:'Open microphone for a spoken response after the message; default true.'})),
-    },{additionalProperties:false}),
-    execute:async(_id:string,args:{message:string,listen_after?:boolean},signal?:AbortSignal)=>{
-      if(signal?.aborted)throw new Error('Announcement cancelled before dispatch');
+    name:'request_voice_conversation',label:'Offer voice conversation',
+    description:'Offer a Codex voice conversation on the current main chat through one silent notification with Accept and Decline. This is not a phone call and never connects audio or opens the microphone before acceptance. Respect the stored response preference. Keep the substantive answer in chat while waiting; pending does not mean accepted. Do not repeat an invitation after a decline. Never put secrets or sensitive screen content in the notification.',
+    parameters:Type.Object({message:Type.String({minLength:1,maxLength:300,description:'Brief reason to offer voice; visible in the notification.'})},{additionalProperties:false}),
+    execute:async(_id:string,args:{message:string},signal?:AbortSignal)=>{
+      if(signal?.aborted)throw Error('Voice invitation cancelled before dispatch');
       const message=args.message.trim();
-      if(!message||message.length>800)throw new Error('Spoken message must be 1..800 characters');
-      const id=randomUUID();
-      host.emit({type:'voice_announce',id,owner,message,listenAfter:args.listen_after!==false});
-      return toolResult({id,status:'requested',note:'Android will attempt to enqueue and play this speech asynchronously. This request may be rejected by Android or a full queue; requested does not mean accepted or heard.'});
+      if(!message||message.length>300)throw Error('Invitation message must be 1..300 characters');
+      return toolResult(host.call('voice.request',{owner,threadId:host.state().mainThreadId,message}));
+    },
+  };
+}
+export function sendMessageTool(host:any,owner:string):any {
+  return {
+    name:'send_message',label:'Send message',
+    description:'Send the user a text message in Pocket Agent Activity inbox and attempt a notification. This never starts voice or contacts another person. Use for useful updates; ordinary final answers can remain in chat. Saved or posted does not mean read.',
+    parameters:Type.Object({message:Type.String({minLength:1,maxLength:2000})},{additionalProperties:false}),
+    execute:async(id:string,args:{message:string},signal?:AbortSignal)=>{
+      if(signal?.aborted)throw Error('Message cancelled before dispatch');
+      const message=args.message.trim();
+      if(!message||message.length>2000)throw Error('Message must be 1..2000 characters');
+      host.authorizeAutonomy?.(owner,'notify_user',args);
+      return toolResult(host.autonomy.execute('notify_user',{title:'Pocket Agent',message},
+        host.autonomyOwner?.(owner)??owner,owner+':'+id));
     },
   };
 }

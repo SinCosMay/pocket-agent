@@ -156,8 +156,8 @@ public final class SubscriptionVoiceService extends Service implements AgentServ
                     main.postDelayed(microphoneStartTimeout, 10_000);
                 }
             }
-            @Override public void sendUserContext(String text) {
-                transport.sendUserContext(text);
+            @Override public void sendUserContext(String text, String inputSource) {
+                transport.sendUserContext(text, inputSource);
             }
             @Override public void connect(long epoch, boolean allowMicrophone) {
                 if (!allowMicrophone) {
@@ -213,10 +213,10 @@ public final class SubscriptionVoiceService extends Service implements AgentServ
                 outputSpeech.close(epoch);
                 audioRoute.close();
             }
-            @Override public void sendToPi(String turnId, String utterance) {
+            @Override public void sendToPi(String turnId, String utterance, String inputSource) {
                 try {
                     sendPi(new JSONObject().put("action", "send")
-                        .put("voiceSessionId", turnId).put("text", utterance));
+                        .put("voiceSessionId", turnId).put("text", utterance).put("inputSource", inputSource));
                 } catch (Exception rejected) {
                     lifecycle.close();
                 }
