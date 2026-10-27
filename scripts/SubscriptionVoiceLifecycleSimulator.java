@@ -18,6 +18,7 @@ public final class SubscriptionVoiceLifecycleSimulator {
         @Override public void sendToPi(String turnId, String text) { calls.add("pi:" + turnId + ":" + text); }
         @Override public void sendSpeech(String id, String text) { calls.add("speech:" + id + ":" + text); }
         @Override public void interruptSpeech() { calls.add("interrupt-speech"); }
+        @Override public void interruptPi(String id) { calls.add("interrupt-pi:" + id); }
         @Override public void status(String text) { }
         @Override public void failure(String reason) { calls.add("failure:" + reason); }
         @Override public void announcementFailed(String id, String reason) { calls.add("failed:" + id); }
@@ -135,7 +136,7 @@ public final class SubscriptionVoiceLifecycleSimulator {
             "late callbacks resurrected disconnected voice");
     }
 
-    private static void speechCannotCancelPiAndRequestsQueue() {
+    private static void confirmedBargeInSupersedesOnlyOldVoiceTurns() {
         FakePort p = new FakePort();
         SubscriptionVoiceLifecycle s = new SubscriptionVoiceLifecycle(p);
         s.wake(0); connectedAndRecording(s, 1, 100);
@@ -144,14 +145,16 @@ public final class SubscriptionVoiceLifecycleSimulator {
         s.inputInterrupted(1, 201);
         s.transcriptActivity(1, "And check the calendar", 300);
         check(s.state() == SubscriptionVoiceLifecycle.State.WAITING_PI, "raw speech detached Pi result delivery");
+        check(p.count("interrupt-pi:") == 0, "VAD or partial transcript cancelled a task");
         s.delegated(1, "b", "Also check the calendar");
         check(p.count("pi:") == 2, "new complete request was lost");
+        check(p.has("interrupt-pi:" + p.turn(0)) && p.count("interrupt-pi:") == 1,
+            "confirmed replacement did not cancel exactly the prior voice response");
         s.piDelta(p.turn(1), "Second result."); s.piFinished(p.turn(1));
         s.piDelta(p.turn(0), "First result."); s.piFinished(p.turn(0));
         check(p.count("speech:") == 0, "speech output started while VAD said user was speaking");
         s.speechStopped(1, 1000);
-        check(p.has("speech:a:First result."), "earlier task's result was discarded");
-        s.playbackFinished(1, 2000);
+        check(!p.has("speech:a:First result."), "late interrupted output was spoken");
         check(p.has("speech:b:Second result."), "queued result was lost or used wrong delegation ID");
         s.playbackFinished(1, 3000);
         s.tick(3_600_000);
@@ -167,7 +170,7 @@ public final class SubscriptionVoiceLifecycleSimulator {
         s.disconnected(1);
         check(s.state() == SubscriptionVoiceLifecycle.State.CLOSED && p.count("close:") == 1,
             "network failure didn't release voice resources");
-        // Port deliberately has no cancel-Pi operation. Teardown cannot abort the task.
+        check(p.count("interrupt-pi:") == 0, "disconnect cancelled accepted work");
         s.wake(200); connectedAndRecording(s, 2, 300);
         s.microphoneReady(1);
         s.piDelta(turn, "Old result"); s.piFinished(turn);
@@ -204,15 +207,50 @@ public final class SubscriptionVoiceLifecycleSimulator {
             "output-only lifecycle did not finish");
     }
 
+    private static void explicitCallSurvivesNoListenAnnouncement() {
+        FakePort p = new FakePort();
+        SubscriptionVoiceLifecycle s = new SubscriptionVoiceLifecycle(p);
+        s.wake(0); connectedAndRecording(s, 1, 100);
+        s.announce("notice", "A short notice", false, 200);
+        s.playbackFinished(1, 300);
+        s.tick(86_400_000);
+        check(s.state() == SubscriptionVoiceLifecycle.State.LISTENING,
+            "an announcement's listen_after=false or silence ended the explicit conversation");
+        s.close();
+        check(s.state() == SubscriptionVoiceLifecycle.State.CLOSED && p.count("close:") == 1,
+            "manual disconnect did not release the call");
+    }
+
+    private static void typedMainThreadRequestsJoinVoiceConversation() {
+        FakePort p = new FakePort(); p.capture = true;
+        SubscriptionVoiceLifecycle s = new SubscriptionVoiceLifecycle(p);
+        check(!s.typed("Before voice starts"), "inactive voice stole a chat message");
+        s.wake(0);
+        check(s.typed("A typed request"), "connecting call dropped typed input");
+        s.piDelta(p.turn(0), "Main thread result."); s.piFinished(p.turn(0));
+        check(p.count("speech:") == 0 && p.count("context:") == 0,
+            "typed result escaped before connection readiness");
+        s.connected(1, 200);
+        check(p.has("context:A typed request"), "live voice missed typed main-thread context");
+        s.initialCaptureUnavailable(1); s.microphoneReady(1);
+        check(p.has("speech:null:Main thread result."), "typed main-thread reply was not spoken");
+        s.close();
+        s.piDelta(p.turn(0), "late result"); s.piFinished(p.turn(0));
+        check(!s.typed("After disconnect") && p.count("interrupt-pi:") == 0,
+            "disconnect stole typed input or cancelled main-thread work");
+    }
+
     public static void main(String[] args) {
         normalWakeAndPiHandoff();
         firstTranscriptBeforeConnection();
         connectionBeforeFirstTranscript();
         captureFailureAndConnectionTimeout();
-        speechCannotCancelPiAndRequestsQueue();
+        confirmedBargeInSupersedesOnlyOldVoiceTurns();
         disconnectOnlyDetachesVoice();
         announcementsAndBargeIn();
         outputOnlyAnnouncement();
-        System.out.println("Subscription voice lifecycle simulator: 8 scenarios PASSED");
+        explicitCallSurvivesNoListenAnnouncement();
+        typedMainThreadRequestsJoinVoiceConversation();
+        System.out.println("Subscription voice lifecycle simulator: 10 scenarios PASSED");
     }
 }

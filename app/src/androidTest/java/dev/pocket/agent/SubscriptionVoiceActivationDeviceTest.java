@@ -14,6 +14,9 @@ import android.media.AudioManager;
 import android.media.AudioAttributes;
 import android.speech.tts.TextToSpeech;
 import android.speech.tts.UtteranceProgressListener;
+import android.view.View;
+import android.view.ViewGroup;
+import android.widget.TextView;
 import android.util.Base64;
 import androidx.test.ext.junit.runners.AndroidJUnit4;
 import androidx.test.platform.app.InstrumentationRegistry;
@@ -27,7 +30,7 @@ import org.junit.runner.RunWith;
 import org.webrtc.PeerConnectionFactory;
 import static org.junit.Assert.*;
 
-/** Disposable-emulator regressions for the power-button subscription voice path. */
+/** Disposable-emulator regressions for the dedicated Codex voice conversation. */
 @RunWith(AndroidJUnit4.class)
 public final class SubscriptionVoiceActivationDeviceTest {
     private Context context() {
@@ -85,7 +88,19 @@ public final class SubscriptionVoiceActivationDeviceTest {
                 SubscriptionVoiceFailureStore.safeReason("token=do-not-log-this"));
     }
 
-    @Test public void missingLoginWakeLeavesPersistentActionableFailure() throws Exception {
+    private static View findText(View view, String text) {
+        if (view instanceof TextView && text.contentEquals(((TextView) view).getText())) return view;
+        if (view instanceof ViewGroup) {
+            ViewGroup group = (ViewGroup) view;
+            for (int i = 0; i < group.getChildCount(); i++) {
+                View found = findText(group.getChildAt(i), text);
+                if (found != null) return found;
+            }
+        }
+        return null;
+    }
+
+    @Test public void dedicatedButtonLeavesPersistentFailureWithoutReplacingAssistantVoice() throws Exception {
         Context ctx = context();
         SharedPreferences protectedPrefs = ctx.getSharedPreferences("provider-secrets", Context.MODE_PRIVATE);
         String prior = protectedPrefs.getString("encrypted", null);
@@ -100,8 +115,11 @@ public final class SubscriptionVoiceActivationDeviceTest {
             Activity activity = InstrumentationRegistry.getInstrumentation().startActivitySync(
                     new Intent(ctx, MainActivity.class).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK));
             try {
-                ctx.startForegroundService(new Intent(ctx, SubscriptionVoiceService.class)
-                        .setAction(SubscriptionVoiceService.ACTION_WAKE));
+                InstrumentationRegistry.getInstrumentation().runOnMainSync(() -> {
+                    View start = findText(activity.getWindow().getDecorView(), "Start Codex voice");
+                    assertNotNull("Main chat must expose its own Codex voice button", start);
+                    assertTrue(start.performClick());
+                });
                 boolean found = false;
                 long until = SystemClock.elapsedRealtime() + 12_000L;
                 while (SystemClock.elapsedRealtime() < until) {
@@ -112,8 +130,10 @@ public final class SubscriptionVoiceActivationDeviceTest {
                     }
                     SystemClock.sleep(100);
                 }
-                assertTrue("Wake failure must remain visible after service teardown: "
+                assertTrue("Button-start failure must remain visible after service teardown: "
                         + SubscriptionVoiceFailureStore.lastStatus(ctx), found);
+                Intent assistant = SubscriptionVoiceSettings.wakeIntent(ctx);
+                assertEquals(VoiceListeningService.class.getName(), assistant.getComponent().getClassName());
             } finally {
                 activity.finish();
             }
@@ -124,6 +144,23 @@ public final class SubscriptionVoiceActivationDeviceTest {
             assertTrue(restore.commit());
             SubscriptionVoiceFailureStore.ready(ctx);
             ctx.getSystemService(NotificationManager.class).cancel(35);
+        }
+    }
+
+    @Test public void oldBackendPreferenceCannotReplaceAssistantOrStartAnUnrequestedCall() {
+        Context ctx = context();
+        SharedPreferences old = ctx.getSharedPreferences("voice_subscription_v1", Context.MODE_PRIVATE);
+        boolean had = old.contains("enabled"); boolean prior = old.getBoolean("enabled", false);
+        try {
+            assertTrue(old.edit().putBoolean("enabled", true).commit());
+            assertEquals(VoiceListeningService.class.getName(),
+                SubscriptionVoiceSettings.wakeIntent(ctx).getComponent().getClassName());
+            assertEquals(SubscriptionVoiceService.class.getName(),
+                SubscriptionVoiceSettings.conversationIntent(ctx).getComponent().getClassName());
+        } finally {
+            SharedPreferences.Editor restore = old.edit();
+            if (had) restore.putBoolean("enabled", prior); else restore.remove("enabled");
+            assertTrue(restore.commit());
         }
     }
 

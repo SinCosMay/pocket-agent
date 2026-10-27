@@ -101,7 +101,9 @@ final class SubscriptionWebRtcTransport implements AutoCloseable {
     private static final int MAX_SDP_BYTES = 131072;
     private static final int MAX_EVENT_CHARS = 65536;
     private static final int MAX_SPEECH_CHARS = 8000;
-    private static final long CONNECT_TIMEOUT_MS = 15000;
+    // Call setup can take more than 15 seconds on the phone. The service also
+    // enforces a 45-second deadline including credential refresh.
+    private static final long CONNECT_TIMEOUT_MS = 45000;
     private static final long ICE_GATHER_TIMEOUT_MS = 7000;
     private static final long V3_PLAYBACK_QUIET_MS = 3500;
     private static final long PLAYBACK_FIRST_AUDIO_MS = 60_000;
@@ -228,14 +230,14 @@ final class SubscriptionWebRtcTransport implements AutoCloseable {
         });
     }
 
-    /** Context for a first turn already durably submitted to Pi by Android STT. */
+    /** Context for a request already durably submitted to Pi by the phone. */
     void sendUserContext(long epoch, String text) {
         if (text == null || text.trim().isEmpty() || text.length() > MAX_SPEECH_CHARS) return;
         worker.post(() -> {
             Session session = current;
             if (!active(session) || session.epoch != epoch || !session.connectedNotified) return;
             try {
-                String contextText = "Android speech recognition captured the following initial user turn. "
+                String contextText = "The phone received the following user turn as text. "
                     + "The client has already submitted it to Pi. Use it as conversation context; "
                     + "do not delegate it again or act on it yourself. Speak subsequent speakable "
                     + "context updates as Pi's supplied results. "

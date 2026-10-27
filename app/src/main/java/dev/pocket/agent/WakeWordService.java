@@ -116,8 +116,7 @@ public final class WakeWordService extends Service {
         }
         if (ACTION_ENABLE.equals(action)) {
             boolean keyConfigured;
-            try { keyConfigured = SubscriptionVoiceSettings.enabled(this)
-                    || new VoiceCredentialStore(this).configured(); }
+            try { keyConfigured = new VoiceCredentialStore(this).configured(); }
             catch (RuntimeException unavailable) {
                 Log.w("JarvisWake", "Deepgram key cannot be read; wake word not enabled");
                 stopSelf(); return START_NOT_STICKY;
@@ -263,8 +262,7 @@ public final class WakeWordService extends Service {
                     paused = true;
                     getSystemService(NotificationManager.class).notify(
                         NOTIFICATION, notification("Active voice conversation"));
-                    if (VoiceSttSettings.mode(this).usesDeepgramStt()
-                        && !SubscriptionVoiceSettings.enabled(this)) playAcknowledgement();
+                    if (VoiceSttSettings.mode(this).usesDeepgramStt()) playAcknowledgement();
                     try {
                         startForegroundService(SubscriptionVoiceSettings.wakeIntent(this)
                             .putExtra(EXTRA_WAKE_PREROLL, finalWakeTail));

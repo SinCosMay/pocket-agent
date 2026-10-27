@@ -39,12 +39,14 @@ import org.json.JSONArray;
 import org.json.JSONObject;
 
 /** Small native text surface; service/session ownership never follows this Activity. */
-public final class MainActivity extends Activity implements AgentService.Observer {
+public final class MainActivity extends Activity implements AgentService.Observer, SubscriptionVoiceService.Observer {
     private TextView status, transcript, workerTranscript;
     private ScrollView messages;
     private EditText input;
     private LinearLayout taskList;
-    private Button send, jumpToBottom;
+    private Button send, jumpToBottom, voiceConversation;
+    private TextView voiceConversationStatus;
+    private static final int START_VOICE_PERMISSIONS = 109;
     private JSONObject state = new JSONObject();
     private String viewedWorker;
     private String deferredUserMessage;
@@ -106,7 +108,7 @@ public final class MainActivity extends Activity implements AgentService.Observe
                 return;
             }
             try {
-                command(json("action", "send", "text", value));
+                sendMainMessage(value);
                 deferredUserMessage = null;
                 input.setText("");
             } catch (RuntimeException error) { status.setText("Unable to submit message · try again"); }
@@ -117,16 +119,19 @@ public final class MainActivity extends Activity implements AgentService.Observe
             RuntimeHost shared=RuntimeOwner.peekHost();if(shared!=null)shared.dispatch(json("action","stop_all"));
             if (AgentService.isRunning()) startService(new Intent(this, AgentService.class).setAction(AgentService.ACTION_STOP));
         })); root.addView(controls);
-        root.addView(button("Stop voice listening", () -> {
+        voiceConversation = button("Start Codex voice", this::toggleVoiceConversation);
+        root.addView(voiceConversation);
+        voiceConversationStatus = text("Codex voice is off");
+        root.addView(voiceConversationStatus);
+        root.addView(button("Stop assistant listening", () -> {
             stopService(new Intent(this, VoiceListeningService.class));
-            stopService(new Intent(this, SubscriptionVoiceService.class));
         }));
         setContentView(root);
         AutonomyScheduler.arm(this);
         if(getIntent().getBooleanExtra("openAutonomy",false))root.post(this::autonomyActivity);
     }
     @Override protected void onStart() {
-        super.onStart(); AgentService.observe(this); state = store.load(); render();
+        super.onStart(); AgentService.observe(this); SubscriptionVoiceService.observe(this); state = store.load(); render();
         JSONArray events = store.recentEvents();
         for (int i = 0; i < events.length(); i++) {
             JSONObject event = events.optJSONObject(i);
@@ -138,7 +143,45 @@ public final class MainActivity extends Activity implements AgentService.Observe
             }
         }
     }
-    @Override protected void onStop() { AgentService.unobserve(this); super.onStop(); }
+    @Override protected void onStop() { AgentService.unobserve(this); SubscriptionVoiceService.unobserve(this); super.onStop(); }
+    @Override public void onVoiceState(boolean active, String message) {
+        voiceConversation.setText(active ? "Disconnect Codex voice" : "Start Codex voice");
+        voiceConversationStatus.setText(message);
+    }
+    private void sendMainMessage(String text) {
+        if (!SubscriptionVoiceService.sendTyped(text)) command(json("action", "send", "text", text));
+    }
+    private void toggleVoiceConversation() {
+        if (SubscriptionVoiceService.isActive()) {
+            stopService(new Intent(this, SubscriptionVoiceService.class));
+            return;
+        }
+        if (AgentService.isStopping()) { toast("Wait for the agent to finish stopping, then start voice"); return; }
+        java.util.ArrayList<String> needed = new java.util.ArrayList<>();
+        if (checkSelfPermission(Manifest.permission.RECORD_AUDIO) != PackageManager.PERMISSION_GRANTED)
+            needed.add(Manifest.permission.RECORD_AUDIO);
+        if (Build.VERSION.SDK_INT >= 33 && checkSelfPermission(Manifest.permission.POST_NOTIFICATIONS) != PackageManager.PERMISSION_GRANTED)
+            needed.add(Manifest.permission.POST_NOTIFICATIONS);
+        if (!needed.isEmpty()) {
+            requestPermissions(needed.toArray(new String[0]), START_VOICE_PERMISSIONS);
+            return;
+        }
+        startVoiceConversation();
+    }
+    private void startVoiceConversation() {
+        if (checkSelfPermission(Manifest.permission.RECORD_AUDIO) != PackageManager.PERMISSION_GRANTED) {
+            voiceConversationStatus.setText("Allow microphone access to start a voice conversation");
+            return;
+        }
+        if (AgentService.isStopping()) { toast("Wait for the agent to finish stopping, then start voice"); return; }
+        try {
+            startForegroundService(SubscriptionVoiceSettings.conversationIntent(this));
+            if (Build.VERSION.SDK_INT >= 33 && checkSelfPermission(Manifest.permission.POST_NOTIFICATIONS) != PackageManager.PERMISSION_GRANTED)
+                toast("Voice notifications are off; use Disconnect voice in the app to finish");
+        } catch (RuntimeException denied) {
+            voiceConversationStatus.setText("Android could not start voice · check microphone access");
+        }
+    }
     @Override protected void onDestroy() {
         invalidateAccountOperations();
         accountFiles.shutdownNow(); historyQueries.shutdownNow(); store.close(); super.onDestroy();
@@ -191,7 +234,7 @@ public final class MainActivity extends Activity implements AgentService.Observe
         else if (type.equals("stopped")) {
             if (deferredUserMessage != null && deferredUserMessage.equals(input.getText().toString().trim())) {
                 try {
-                    command(json("action", "send", "text", deferredUserMessage));
+                    sendMainMessage(deferredUserMessage);
                     input.setText("");
                     deferredUserMessage = null;
                 } catch (RuntimeException error) { status.setText("Unable to resend after shutdown · press Send again"); }
@@ -239,6 +282,7 @@ public final class MainActivity extends Activity implements AgentService.Observe
         new AlertDialog.Builder(this).setTitle("Start a new main thread?")
             .setMessage("The main chat will start fresh. Saved worker tasks and their histories stay available for debugging and follow-up.")
             .setNegativeButton("Cancel", null).setPositiveButton("Start new thread", (dialog, which) -> {
+                stopService(new Intent(this, SubscriptionVoiceService.class));
                 if (AgentService.isRunning()) command(json("action", "new_main"));
                 else { state = store.requestFreshMain(); render(); toast("New main thread ready"); }
             }).show();
@@ -753,18 +797,8 @@ public final class MainActivity extends Activity implements AgentService.Observe
         panel.addView(button("Notification access settings", () -> startActivity(new Intent(Settings.ACTION_NOTIFICATION_LISTENER_SETTINGS))));
         panel.addView(button("Choose phone permissions", this::permissions));
         panel.addView(button("Remote MCP servers", this::mcpSettings));
-        panel.addView(text("Voice conversation backend"));
-        android.widget.CheckBox subscriptionVoice = new android.widget.CheckBox(this);
-        subscriptionVoice.setText("Experimental · ChatGPT subscription WebRTC voice");
-        subscriptionVoice.setChecked(SubscriptionVoiceSettings.enabled(this));
-        subscriptionVoice.setOnCheckedChangeListener((button, checked) -> {
-            SubscriptionVoiceSettings.setEnabled(this, checked);
-            stopService(new Intent(this, VoiceListeningService.class));
-            stopService(new Intent(this, SubscriptionVoiceService.class));
-            toast(checked ? "Subscription voice enabled for the next wake" : "Legacy voice enabled for the next wake");
-        });
-        panel.addView(subscriptionVoice);
-        panel.addView(text("Subscription voice uses the phone speaker. The first request uses Android's default speech recognition while voice connects. Listening stays open until Stop voice; tasks continue in chat. Stop response cancels the current response, and Stop all ends the runtime."));
+        panel.addView(text("Main-thread voice conversation"));
+        panel.addView(text("Use Start Codex voice in the main chat to talk to that thread through the phone speaker. Spoken and typed requests share its history. Listening stays open through silence; Disconnect voice in the app or notification ends the call while background tasks continue. Stop response cancels the current response, and Stop all ends the runtime."));
         try {
             JSONObject voiceAccount = credentials.getVoiceCodex();
             panel.addView(text(voiceAccount.optString("accountId").isEmpty()
@@ -790,7 +824,7 @@ public final class MainActivity extends Activity implements AgentService.Observe
         }));
         String lastVoiceFailure = SubscriptionVoiceFailureStore.lastStatus(this);
         if (!lastVoiceFailure.isEmpty()) panel.addView(text(lastVoiceFailure));
-        panel.addView(text("Experimental: uses a protected ChatGPT voice login. Pi still runs tools. Subscription listening stays open during silence; use Stop voice to end it. Announcements without listening use the phone's speech voice."));
+        panel.addView(text("Voice conversation uses a protected ChatGPT voice login. The assistant button and Hey Jarvis use the existing voice system and Deepgram key."));
         panel.addView(text("Speech-to-text mode"));
         Spinner sttMode = new Spinner(this);
         String[] sttModeNames = {
@@ -1188,14 +1222,12 @@ public final class MainActivity extends Activity implements AgentService.Observe
             requestPermissions(new String[]{Manifest.permission.RECORD_AUDIO}, 108);
             return;
         }
-        if (!SubscriptionVoiceSettings.enabled(this)) {
-            boolean configured;
-            try { configured = new VoiceCredentialStore(this).configured(); }
-            catch (RuntimeException unreadable) {
-                toast("Stored Deepgram key is unavailable; re-enter your voice key"); return;
-            }
-            if (!configured) { toast("Configure Deepgram voice key first"); return; }
+        boolean configured;
+        try { configured = new VoiceCredentialStore(this).configured(); }
+        catch (RuntimeException unreadable) {
+            toast("Stored Deepgram key is unavailable; re-enter your voice key"); return;
         }
+        if (!configured) { toast("Configure Deepgram voice key first"); return; }
         try {
             startForegroundService(new Intent(this, WakeWordService.class)
                 .setAction(WakeWordService.ACTION_ENABLE));
@@ -1205,6 +1237,10 @@ public final class MainActivity extends Activity implements AgentService.Observe
 
     @Override public void onRequestPermissionsResult(int requestCode, String[] permissions, int[] results) {
         super.onRequestPermissionsResult(requestCode, permissions, results);
+        if (requestCode == START_VOICE_PERMISSIONS) {
+            startVoiceConversation();
+            return;
+        }
         if (requestCode == 108) {
             if (results.length != 0 && results[0] == PackageManager.PERMISSION_GRANTED) enableWakeWord();
             else toast("Microphone permission is required for Hey Jarvis");

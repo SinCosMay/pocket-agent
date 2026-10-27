@@ -19,13 +19,13 @@ import java.util.concurrent.Executors;
 import org.json.JSONObject;
 
 /**
- * Opt-in, standalone Codex-subscription voice foreground session. Pi remains the
+ * User-started main-thread Codex voice conversation. Pi remains the
  * sole agent harness; this service never exposes device tools to the voice model.
  * SubscriptionVoiceTransport owns live audio; output-only announcements use
  * Android speech synthesis without opening a microphone or a subscription call.
  */
 public final class SubscriptionVoiceService extends Service implements AgentService.Observer {
-    static final String ACTION_WAKE = "dev.pocket.agent.SUBSCRIPTION_VOICE_WAKE";
+    static final String ACTION_START_CONVERSATION = "dev.pocket.agent.START_VOICE_CONVERSATION";
     static final String ACTION_ANNOUNCE = "dev.pocket.agent.SUBSCRIPTION_VOICE_ANNOUNCE";
     static final String ACTION_STOP = "dev.pocket.agent.SUBSCRIPTION_VOICE_STOP";
     private static final int NOTIFICATION_ID = 34;
@@ -50,7 +50,28 @@ public final class SubscriptionVoiceService extends Service implements AgentServ
     private boolean wakeNeedsReadyCue;
     private String startupPhase = "startup";
     private static volatile boolean active;
+    private static SubscriptionVoiceService instance;
+    private static String voiceStatus = "Codex voice is off";
+    interface Observer { void onVoiceState(boolean active, String status); }
+    private static final java.util.Set<Observer> observers = new java.util.concurrent.CopyOnWriteArraySet<>();
     static boolean isActive() { return active; }
+    static void observe(Observer observer) {
+        observers.add(observer);
+        observer.onVoiceState(active, voiceStatus);
+    }
+    static void unobserve(Observer observer) { observers.remove(observer); }
+    static boolean sendTyped(String text) {
+        SubscriptionVoiceService current = instance;
+        return active && current != null && current.lifecycle.typed(text);
+    }
+    private void publishVoiceState(String status) {
+        voiceStatus = status;
+        active = started && lifecycle != null && lifecycle.state() != SubscriptionVoiceLifecycle.State.CLOSED;
+        for (Observer observer : observers) {
+            try { observer.onVoiceState(active, status); }
+            catch (RuntimeException unavailable) { Log.w("PocketSubscriptionVoice", "Voice status observer unavailable"); }
+        }
+    }
     private final Runnable tick = new Runnable() {
         @Override public void run() {
             if (!started || lifecycle == null) return;
@@ -63,6 +84,7 @@ public final class SubscriptionVoiceService extends Service implements AgentServ
         @Override public void onConnected(long epoch) {
             main.post(() -> {
                 if (!started || !lifecycle.connecting(epoch)) return;
+                startupPhase = "connected";
                 main.removeCallbacks(tick);
                 SubscriptionVoiceFailureStore.ready(SubscriptionVoiceService.this);
                 getSystemService(NotificationManager.class).cancel(FAILURE_NOTIFICATION_ID);
@@ -104,7 +126,8 @@ public final class SubscriptionVoiceService extends Service implements AgentServ
         @Override public void onError(long epoch, String safeMessage) {
             main.post(() -> {
                 if (!started || lifecycle.epoch() != epoch) return;
-                Log.w("PocketSubscriptionVoice", "Subscription voice transport unavailable");
+                Log.w("PocketSubscriptionVoice", "Subscription voice transport unavailable ("
+                    + SubscriptionVoiceFailureStore.safeReason(safeMessage) + ")");
                 lifecycle.failed(epoch, safeMessage);
             });
         }
@@ -120,6 +143,7 @@ public final class SubscriptionVoiceService extends Service implements AgentServ
 
     @Override public void onCreate() {
         super.onCreate();
+        instance = this;
         getSystemService(NotificationManager.class).createNotificationChannel(
             new NotificationChannel(CHANNEL, "ChatGPT subscription voice", NotificationManager.IMPORTANCE_LOW));
         getSystemService(NotificationManager.class).createNotificationChannel(
@@ -227,12 +251,17 @@ public final class SubscriptionVoiceService extends Service implements AgentServ
                 else outputSpeech.speak(lifecycle.epoch(), text);
             }
             @Override public void interruptSpeech() { transport.interruptSpeech(); }
+            @Override public void interruptPi(String turnId) {
+                try { sendPi(new JSONObject().put("action", "stop_main").put("voiceSessionId", turnId)); }
+                catch (org.json.JSONException invalid) { throw new IllegalStateException(invalid); }
+            }
             @Override public void announcementFailed(String id, String reason) {
                 AgentService.reportVoiceFailure(SubscriptionVoiceService.this, id, reason);
             }
             @Override public void failure(String safeMessage) {
                 String reason = SubscriptionVoiceFailureStore.safeReason(safeMessage);
                 SubscriptionVoiceFailureStore.failed(SubscriptionVoiceService.this, startupPhase, safeMessage);
+                publishVoiceState("Voice disconnected · " + reason);
                 notifyFailure(reason);
             }
             @Override public void status(String status) {
@@ -245,7 +274,6 @@ public final class SubscriptionVoiceService extends Service implements AgentServ
             }
         });
         started = true;
-        active = true;
         AgentService.observe(this);
     }
 
@@ -355,12 +383,13 @@ public final class SubscriptionVoiceService extends Service implements AgentServ
             PendingIntent.FLAG_UPDATE_CURRENT | PendingIntent.FLAG_IMMUTABLE);
         return new Notification.Builder(this, CHANNEL)
             .setSmallIcon(android.R.drawable.ic_btn_speak_now)
-            .setContentTitle("Pocket Agent · ChatGPT voice")
+            .setContentTitle("Pocket Agent · Codex voice")
             .setContentText(message).setOngoing(true).setContentIntent(open)
-            .addAction(new Notification.Action.Builder(null, "Stop voice", stop).build()).build();
+            .addAction(new Notification.Action.Builder(null, "Disconnect voice", stop).build()).build();
     }
 
     private void notifyStatus(String message) {
+        publishVoiceState(message);
         getSystemService(NotificationManager.class).notify(NOTIFICATION_ID, notification(message));
     }
 
@@ -381,12 +410,19 @@ public final class SubscriptionVoiceService extends Service implements AgentServ
     @Override public int onStartCommand(Intent intent, int flags, int startId) {
         if (intent == null) { stopSelf(startId); return START_NOT_STICKY; }
         if (ACTION_STOP.equals(intent.getAction())) { lifecycle.close(); stopSelf(); return START_NOT_STICKY; }
-        if (!ACTION_WAKE.equals(intent.getAction()) && !ACTION_ANNOUNCE.equals(intent.getAction())) {
+        if (!ACTION_START_CONVERSATION.equals(intent.getAction()) && !ACTION_ANNOUNCE.equals(intent.getAction())) {
             if (lifecycle.state() == SubscriptionVoiceLifecycle.State.CLOSED) stopSelf(startId);
             return START_NOT_STICKY;
         }
         VoiceAnnouncement pendingAnnouncement = null;
-        boolean wake = ACTION_WAKE.equals(intent.getAction());
+        boolean wake = ACTION_START_CONVERSATION.equals(intent.getAction());
+        if (!wake && lifecycle.state() == SubscriptionVoiceLifecycle.State.CLOSED) {
+            // A delayed announcement must never reopen a manually disconnected call.
+            AgentService.reportVoiceFailure(this, intent.getStringExtra("id"), "Voice conversation is disconnected");
+            stopSelf(startId);
+            return START_NOT_STICKY;
+        }
+        if (wake) stopService(new Intent(this, VoiceListeningService.class));
         if (!wake) {
             try { pendingAnnouncement = VoiceAnnouncement.fromIntent(intent); }
             catch (RuntimeException invalid) {
@@ -406,8 +442,10 @@ public final class SubscriptionVoiceService extends Service implements AgentServ
             if (needsMicrophone) serviceType |= ServiceInfo.FOREGROUND_SERVICE_TYPE_MICROPHONE;
             startForeground(NOTIFICATION_ID, notification("Preparing ChatGPT voice"), serviceType);
         } catch (RuntimeException denied) {
-            Log.w("PocketSubscriptionVoice", "Voice foreground service denied");
+            Log.w("PocketSubscriptionVoice", "Voice foreground service denied ("
+                + denied.getClass().getSimpleName() + ")");
             SubscriptionVoiceFailureStore.failed(this, "foreground", "Microphone permission unavailable");
+            publishVoiceState("Voice disconnected · Android could not start microphone access");
             notifyFailure("Android could not start the voice service");
             if (pendingAnnouncement != null) AgentService.reportVoiceFailure(
                 this, pendingAnnouncement.id, "Android did not permit background voice playback");
@@ -472,10 +510,12 @@ public final class SubscriptionVoiceService extends Service implements AgentServ
     @Override public void onDestroy() {
         started = false;
         active = false;
+        if (instance == this) instance = null;
         main.removeCallbacks(tick);
         AgentService.unobserve(this);
         stopInitialCapture();
         if (lifecycle != null) lifecycle.close();
+        publishVoiceState(voiceStatus);
         if (transport != null) transport.close();
         if (outputSpeech != null) outputSpeech.close();
         if (audioRoute != null) audioRoute.close();

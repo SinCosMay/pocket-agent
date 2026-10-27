@@ -12,6 +12,7 @@ final class SubscriptionVoiceLifecycle {
         void sendToPi(String turnId, String utterance);
         void sendSpeech(String delegationId, String text);
         void interruptSpeech();
+        default void interruptPi(String turnId) { }
         void status(String text);
         default boolean startInitialCapture(long epoch) { return false; }
         default void setMicrophoneEnabled(boolean enabled) { }
@@ -32,7 +33,8 @@ final class SubscriptionVoiceLifecycle {
     private State state = State.CLOSED;
     private long epoch, connectionDeadline;
     private boolean transportReady, microphoneReady, capturingInitial, speechActive;
-    private String initialTranscript;
+    private final ArrayDeque<String> pendingUserContext = new ArrayDeque<>();
+    private boolean explicitConversation;
     private boolean listenAfterSpeech = true;
     private boolean allowMicrophone;
     private String activeAnnouncementId;
@@ -64,6 +66,7 @@ final class SubscriptionVoiceLifecycle {
     void wake(long nowMs) {
         if (state != State.CLOSED && !allowMicrophone) close();
         if (state == State.CLOSED) connect(nowMs, true, true);
+        explicitConversation = state != State.CLOSED;
     }
 
     boolean announce(String id, String text, boolean listenAfter, long nowMs) {
@@ -83,7 +86,7 @@ final class SubscriptionVoiceLifecycle {
         transportReady = false;
         microphoneReady = false;
         speechActive = false;
-        initialTranscript = null;
+        pendingUserContext.clear();
         connectionDeadline = nowMs + CONNECT_MS;
         delivered.clear();
         port.status("Connecting subscription voice");
@@ -97,7 +100,7 @@ final class SubscriptionVoiceLifecycle {
         if (!connecting(id)) return;
         transportReady = true;
         if (state == State.CONNECTING) state = State.LISTENING;
-        sendInitialContext();
+        sendUserContext();
         port.setMicrophoneEnabled(allowMicrophone && !capturingInitial);
         drain();
     }
@@ -106,12 +109,13 @@ final class SubscriptionVoiceLifecycle {
         if (id != epoch || state == State.CLOSED || !capturingInitial) return;
         capturingInitial = false;
         if (text != null && !text.trim().isEmpty()) {
-            initialTranscript = text.trim();
+            String transcript = text.trim();
             // Dispatch immediately, even if the voice connection is still starting.
             // AgentService durably queues this like an ordinary chat request.
-            submit(null, initialTranscript);
+            submit(null, transcript);
+            if (state != State.CLOSED) pendingUserContext.addLast(transcript);
         }
-        sendInitialContext();
+        sendUserContext();
         if (transportReady) port.setMicrophoneEnabled(allowMicrophone);
         drain();
     }
@@ -125,11 +129,19 @@ final class SubscriptionVoiceLifecycle {
         drain();
     }
 
-    private void sendInitialContext() {
-        if (transportReady && initialTranscript != null) {
-            port.sendUserContext(initialTranscript);
-            initialTranscript = null;
-        }
+    private void sendUserContext() {
+        while (transportReady && !pendingUserContext.isEmpty())
+            port.sendUserContext(pendingUserContext.removeFirst());
+    }
+
+    /** Typed requests use the same main-thread delivery as spoken requests. */
+    boolean typed(String text) {
+        if (state == State.CLOSED || !explicitConversation || text == null || text.trim().isEmpty()) return false;
+        if (!submit(null, text.trim())) return false;
+        pendingUserContext.addLast(text.trim());
+        sendUserContext();
+        drain();
+        return true;
     }
 
     /** Voice activity interrupts playback, never an accepted Pi task. */
@@ -160,16 +172,19 @@ final class SubscriptionVoiceLifecycle {
                 !delivered.add(requestId)) return;
         if (delivered.size() > 512) delivered.remove(delivered.iterator().next());
         if (state == State.SPEAKING) interruptPlayback();
-        // A complete new request is queued behind existing work. Noise, barge-in,
-        // stopping voice, and network loss must not abort the main agent.
+        // Confirmed new input supersedes the old conversational response, as in
+        // voice.ind. VAD alone only mutes playback. Scoped cancellation leaves
+        // background workers and unrelated main/chat requests alone.
+        while (!turns.isEmpty()) port.interruptPi(turns.removeFirst().id);
+        if (state == State.CLOSED) return;
         submit(requestId, transcript.trim());
         drain();
     }
 
-    private void submit(String delegationId, String text) {
+    private boolean submit(String delegationId, String text) {
         if (turns.size() >= MAX_PENDING_TURNS) {
             failed(epoch, "Voice request queue is full; use the chat to continue");
-            return;
+            return false;
         }
         PiTurn turn = new PiTurn(delegationId);
         turns.addLast(turn);
@@ -177,6 +192,7 @@ final class SubscriptionVoiceLifecycle {
         port.status(transportReady ? "Pi is working · voice stays connected"
             : "Pi is working · connecting voice");
         port.sendToPi(turn.id, text);
+        return state != State.CLOSED;
     }
 
     void piDelta(String id, String text) {
@@ -225,7 +241,7 @@ final class SubscriptionVoiceLifecycle {
             port.sendSpeech(null, announcement.text);
         } else {
             state = turns.isEmpty() ? State.LISTENING : State.WAITING_PI;
-            port.status(turns.isEmpty() ? "Listening · Stop voice to finish"
+            port.status(turns.isEmpty() ? "Listening · Disconnect voice to finish"
                 : "Pi is working · voice stays connected");
         }
     }
@@ -234,7 +250,7 @@ final class SubscriptionVoiceLifecycle {
         if (id != epoch || state != State.SPEAKING) return;
         activeAnnouncementId = null;
         state = State.LISTENING;
-        if (!listenAfterSpeech && announcements.isEmpty() && turns.isEmpty()) close();
+        if (!explicitConversation && !listenAfterSpeech && announcements.isEmpty() && turns.isEmpty()) close();
         else drain();
     }
 
@@ -275,7 +291,8 @@ final class SubscriptionVoiceLifecycle {
         transportReady = false;
         microphoneReady = false;
         capturingInitial = false;
-        initialTranscript = null;
+        pendingUserContext.clear();
+        explicitConversation = false;
         // Detach voice delivery. Accepted Pi work continues in AgentService and
         // its results remain in the main chat. Only explicit task controls stop it.
         turns.clear();

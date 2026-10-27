@@ -61,6 +61,7 @@
 # Release instrumentation directly exercises persisted local wake tuning.
 -keep class dev.pocket.agent.WakeWordSettings { *; }
 -keep class dev.pocket.agent.SubscriptionVoiceFailureStore { *; }
+-keep class dev.pocket.agent.SubscriptionVoiceSettings { *; }
 -keep class dev.pocket.agent.SubscriptionVoiceContext { *; }
 -keep class dev.pocket.agent.SubscriptionVoiceAudioRoute { *; }
 -keep class dev.pocket.agent.SubscriptionVoiceOutputSpeech** { *; }
