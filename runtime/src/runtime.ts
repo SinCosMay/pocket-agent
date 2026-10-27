@@ -173,7 +173,7 @@ export class PocketRuntime {
     queueMicrotask(()=>{void this.pump();this.tickAutonomy();});
   }
   call(method:string,args:any):any {
-    const serialized=method.startsWith('store.save')||method==='autonomy.save'||method==='autonomy.notify'?this.redactJson(args):JSON.stringify(args);
+    const serialized=method.startsWith('store.save')||method==='autonomy.save'||method==='autonomy.notify'||method==='voice.request'?this.redactJson(args):JSON.stringify(args);
     return this.callSerialized(method,serialized);
   }
   private callSerialized(method:string,serialized:string):any {

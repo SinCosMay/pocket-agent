@@ -217,16 +217,22 @@ public final class MainActivity extends Activity implements AgentService.Observe
             return;
         }
         if (AgentService.isStopping()) { toast("Wait for the agent to finish stopping, then start voice"); return; }
-        if (pendingVoiceInvitation != null) {
-            boolean accepted = VoiceConversationInvitation.accept(this, pendingVoiceInvitation);
-            pendingVoiceInvitation = null;
-            if (!accepted) { toast("Voice invitation is no longer available"); return; }
-        } else VoiceConversationInvitation.cancel(this, "manually_started");
         try {
-            startForegroundService(SubscriptionVoiceSettings.conversationIntent(this));
+            if (pendingVoiceInvitation != null) {
+                if (!VoiceConversationInvitation.startAccepted(this, pendingVoiceInvitation,
+                        () -> startForegroundService(SubscriptionVoiceSettings.conversationIntent(this)))) {
+                    pendingVoiceInvitation = null;
+                    toast("Voice invitation is no longer available"); return;
+                }
+                pendingVoiceInvitation = null;
+            } else {
+                startForegroundService(SubscriptionVoiceSettings.conversationIntent(this));
+                VoiceConversationInvitation.cancel(this, "manually_started");
+            }
             if (Build.VERSION.SDK_INT >= 33 && checkSelfPermission(Manifest.permission.POST_NOTIFICATIONS) != PackageManager.PERMISSION_GRANTED)
                 toast("Voice notifications are off; use Disconnect voice in the app to finish");
         } catch (RuntimeException denied) {
+            android.util.Log.w("PocketVoice", "Android could not start the voice service", denied);
             voiceConversationStatus.setText("Android could not start voice · check microphone access");
         }
     }

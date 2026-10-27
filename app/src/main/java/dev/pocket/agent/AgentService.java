@@ -130,9 +130,9 @@ public final class AgentService extends Service {
                     } else {
                         JSONObject outcome = VoiceConversationInvitation.request(this, Json.obj(
                             "threadId", VoiceConversationInvitation.currentThread(this),
-                            "message", "Would you like to continue this conversation by voice?"));
-                        if (!"pending".equals(outcome.optString("status"))) reportVoiceFailure(this, request.id,
-                            "Voice was not started; continue in chat (" + outcome.optString("status") + ")");
+                            "message", request.message));
+                        if ("notification_failed".equals(outcome.optString("status"))) reportVoiceFailure(this, request.id,
+                            "Android could not display the voice invitation; continue in chat");
                     }
                 } catch (Exception failure) {
                     Log.w("PocketVoice", "Agent-initiated speech could not be started", failure);

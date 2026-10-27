@@ -46,7 +46,6 @@ public final class VoiceInvitationDeviceTest {
         boolean notificationsGranted = Build.VERSION.SDK_INT < 33 || context.checkSelfPermission(Manifest.permission.POST_NOTIFICATIONS) == PackageManager.PERMISSION_GRANTED;
         android.app.UiAutomation ui = InstrumentationRegistry.getInstrumentation().getUiAutomation();
         if (Build.VERSION.SDK_INT >= 33) ui.grantRuntimePermission(context.getPackageName(), Manifest.permission.POST_NOTIFICATIONS);
-        assertFalse("Run offline invitation tests before microphone tests", microphoneGranted);
         try (StateStore store = new StateStore(context)) {
             JSONObject durable = store.loadDurable(), snapshot = store.load();
             try {
@@ -55,6 +54,8 @@ public final class VoiceInvitationDeviceTest {
                 store.saveDurable(Json.obj("mainThreadId", THREAD));
                 store.save(Json.obj("mainThreadId", THREAD));
                 check.run(context, store);
+                assertEquals("Invitations must preserve the existing microphone permission", microphoneGranted,
+                    context.checkSelfPermission(Manifest.permission.RECORD_AUDIO) == PackageManager.PERMISSION_GRANTED);
             } finally {
                 manager.cancel(VoiceConversationInvitation.NOTIFICATION_ID);
                 if (!hadChannel) manager.deleteNotificationChannel(VoiceConversationInvitation.CHANNEL);
@@ -75,6 +76,7 @@ public final class VoiceInvitationDeviceTest {
     }
     @Test public void silentInvitationNeedsNoMicrophoneAndCoalescesRequests() throws Exception {
         fixture((context, store) -> {
+            int microphonePermission = context.checkSelfPermission(Manifest.permission.RECORD_AUDIO);
             JSONObject first = request(context), second = request(context);
             assertEquals("pending", first.getString("status"));
             assertEquals(first.getString("id"), second.getString("id"));
@@ -94,7 +96,7 @@ public final class VoiceInvitationDeviceTest {
             assertEquals("Accept", notice.actions[0].title.toString());
             assertEquals("Decline", notice.actions[1].title.toString());
             assertFalse(SubscriptionVoiceService.isActive());
-            assertEquals(PackageManager.PERMISSION_DENIED, context.checkSelfPermission(Manifest.permission.RECORD_AUDIO));
+            assertEquals(microphonePermission, context.checkSelfPermission(Manifest.permission.RECORD_AUDIO));
             notice.actions[1].actionIntent.send();
             long until = SystemClock.elapsedRealtime() + 3000;
             while ("pending".equals(VoiceConversationInvitation.pending(context).optString("status")) && SystemClock.elapsedRealtime() < until)
@@ -122,7 +124,47 @@ public final class VoiceInvitationDeviceTest {
             JSONObject expired = VoiceConversationInvitation.pending(context).put("expiresAt", System.currentTimeMillis() - 1);
             assertTrue(context.getSharedPreferences("voice_response_preferences", Context.MODE_PRIVATE).edit()
                 .putString("invitation", expired.toString()).commit());
+            assertEquals("expired", VoiceConversationInvitation.preferences(context).getString("invitationStatus"));
             assertFalse(VoiceConversationInvitation.accept(context, next));
+        });
+    }
+    @Test public void failedStartPreservesInvitationForRetry() throws Exception {
+        fixture((context, store) -> {
+            String id = request(context).getString("id");
+            try {
+                VoiceConversationInvitation.startAccepted(context, id, () -> { throw new SecurityException("synthetic start rejection"); });
+                fail("Expected the service start to fail");
+            } catch (SecurityException expected) { }
+            assertTrue(VoiceConversationInvitation.canAccept(context, id));
+            assertEquals("pending", VoiceConversationInvitation.preferences(context).getString("invitationStatus"));
+            assertTrue(java.util.Arrays.stream(context.getSystemService(NotificationManager.class).getActiveNotifications())
+                .anyMatch(item -> item.getId() == VoiceConversationInvitation.NOTIFICATION_ID));
+            int[] starts = {0};
+            assertTrue(VoiceConversationInvitation.startAccepted(context, id, () -> starts[0]++));
+            assertEquals("accepted", VoiceConversationInvitation.preferences(context).getString("invitationStatus"));
+            assertFalse(VoiceConversationInvitation.startAccepted(context, id, () -> starts[0]++));
+            assertEquals(1, starts[0]);
+            assertFalse(SubscriptionVoiceService.isActive());
+        });
+    }
+    @Test public void dismissalIsSeparateFromDeclineAndPreservesLegacyAnnouncementText() throws Exception {
+        fixture((context, store) -> {
+            String message = "Legacy result: " + new String(new char[600]).replace('\0', 'x');
+            String id = VoiceConversationInvitation.request(context, Json.obj("threadId", THREAD, "message", message)).getString("id");
+            Notification notice = VoiceConversationInvitation.notification(context, VoiceConversationInvitation.pending(context));
+            assertEquals(message, notice.extras.getCharSequence(Notification.EXTRA_BIG_TEXT).toString());
+            assertNotEquals(notice.actions[1].actionIntent, notice.deleteIntent);
+            notice.deleteIntent.send();
+            long until = SystemClock.elapsedRealtime() + 3000;
+            while ("pending".equals(VoiceConversationInvitation.pending(context).optString("status")) && SystemClock.elapsedRealtime() < until)
+                SystemClock.sleep(30);
+            assertEquals("dismissed", VoiceConversationInvitation.preferences(context).getString("invitationStatus"));
+            JSONObject next = request(context);
+            assertEquals("pending", next.getString("status"));
+            assertNotEquals(id, next.getString("id"));
+            VoiceConversationInvitation.dismiss(context, id);
+            assertEquals(next.getString("id"), VoiceConversationInvitation.pending(context).getString("id"));
+            assertEquals("pending", VoiceConversationInvitation.preferences(context).getString("invitationStatus"));
         });
     }
     @Test public void textPreferenceCancelsOffersAndNoAccountNeverClaimsAConnection() throws Exception {

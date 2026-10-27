@@ -817,6 +817,17 @@ test('only message and voice-invitation communication tools are registered with 
  await assert.rejects(message.execute('empty',{message:' '}),/1..2000/);
 });
 
+test('voice invitation text is credential-redacted before crossing the native persistence boundary',async()=>{
+ const bridge=new Bridge();
+ bridge.credentials.apiKey='synthetic-invitation-secret';
+ bridge.credentials.mcpServers=[{id:'invitation-test',headers:[{name:'X-Key',value:'escaped-"secret'}]}];
+ const runtime=new PocketRuntime(bridge);
+ const invite=runtime.main.agent.state.tools.find((tool:any)=>tool.name==='request_voice_conversation');
+ await invite.execute('redacted-invite',{message:'Discuss synthetic-invitation-secret and escaped-"secret?'});
+ assert.deepEqual(bridge.tools.at(-1),{method:'voice.request',owner:'main',threadId:runtime.state().mainThreadId,
+   message:'Discuss [redacted] and [redacted]?'});
+});
+
 test('input source is retained and model-visible independently of voice output ownership',async()=>{
  const bridge=new Bridge(),runtime=new PocketRuntime(bridge);
  const voiceSessionId='11111111-2222-4333-8444-555555555555';
