@@ -19,7 +19,9 @@ import android.graphics.Typeface;
 import android.os.Build;
 import android.os.Bundle;
 import android.provider.Settings;
+import android.text.Editable;
 import android.text.InputType;
+import android.text.TextWatcher;
 import android.view.Gravity;
 import android.view.View;
 import android.widget.ArrayAdapter;
@@ -48,14 +50,13 @@ public final class MainActivity extends Activity implements AgentService.Observe
     private String deferredUserMessage;
     private Spinner modelPicker;
     private Spinner reasoningPicker;
+    private String renderedReasoningEffort = CredentialStore.DEFAULT_REASONING_EFFORT;
     private String modelRequestId;
     private String mcpRequestId;
     private String[] modelIds = {};
     private final java.util.Map<String, String[]> modelReasoningEfforts = new java.util.HashMap<>();
     private final java.util.Map<String, String> modelDefaultReasoningEfforts = new java.util.HashMap<>();
     private static final String[] REASONING_EFFORTS = {"minimal", "low", "medium", "high", "xhigh", "max"};
-    private static final String[] DEFAULT_REASONING_CHOICES = {"minimal", "low", "medium", "high", "xhigh"};
-    private static final String[] CODEX_REASONING_CHOICES = {"low", "medium", "high", "xhigh"};
     private StateStore store;
     private static final int IMPORT_CODEX = 90;
     private final ExecutorService accountFiles = Executors.newSingleThreadExecutor();
@@ -77,6 +78,7 @@ public final class MainActivity extends Activity implements AgentService.Observe
         });
         LinearLayout toolbar = row(); TextView title = text("Pocket Agent"); title.setTextSize(22); title.setTypeface(null, Typeface.BOLD);
         toolbar.addView(title, new LinearLayout.LayoutParams(0, -2, 1));
+        toolbar.addView(button("Activity", this::autonomyActivity));
         toolbar.addView(button("Settings", this::settings)); root.addView(toolbar);
         status = text("Stopped · Send starts the runtime"); root.addView(status);
         LinearLayout historyActions = row();
@@ -111,11 +113,15 @@ public final class MainActivity extends Activity implements AgentService.Observe
         }); controls.addView(send, new LinearLayout.LayoutParams(0, -2, 1));
         controls.addView(button("Stop response", () -> command(json("action", "stop_main"))));
         controls.addView(button("Stop all", () -> {
+            AutonomyStore.requestEnabled(this,false,error->runOnUiThread(()->toast("Could not persist automation pause")));
+            RuntimeHost shared=RuntimeOwner.peekHost();if(shared!=null)shared.dispatch(json("action","stop_all"));
             if (AgentService.isRunning()) startService(new Intent(this, AgentService.class).setAction(AgentService.ACTION_STOP));
         })); root.addView(controls);
         root.addView(button("Stop voice listening", () -> startService(new Intent(this,
             VoiceListeningService.class).setAction(VoiceListeningService.ACTION_STOP))));
         setContentView(root);
+        AutonomyScheduler.arm(this);
+        if(getIntent().getBooleanExtra("openAutonomy",false))root.post(this::autonomyActivity);
     }
     @Override protected void onStart() {
         super.onStart(); AgentService.observe(this); state = store.load(); render();
@@ -147,7 +153,7 @@ public final class MainActivity extends Activity implements AgentService.Observe
             modelIds = new String[models.length() + 1];
             modelReasoningEfforts.clear();
             modelDefaultReasoningEfforts.clear();
-            labels[0] = "Select discovered main model";
+            labels[0] = "Manual model ID (edit field above)";
             for (int i = 0; i < models.length(); i++) {
                 JSONObject entry = models.optJSONObject(i);
                 String id = entry == null ? "" : entry.optString("id");
@@ -161,8 +167,8 @@ public final class MainActivity extends Activity implements AgentService.Observe
                         String effort = levels.optString(j);
                         if (isReasoningEffort(effort) && !supported.contains(effort)) supported.add(effort);
                     }
-                    if (!supported.isEmpty()) modelReasoningEfforts.put(id, supported.toArray(new String[0]));
-                }
+                    modelReasoningEfforts.put(id, supported.toArray(new String[0]));
+                } else modelReasoningEfforts.put(id, new String[0]);
                 String defaultEffort = entry == null ? "" : entry.optString("defaultReasoningLevel");
                 if (isReasoningEffort(defaultEffort)) modelDefaultReasoningEfforts.put(id, defaultEffort);
             }
@@ -307,7 +313,7 @@ public final class MainActivity extends Activity implements AgentService.Observe
             debug.put("mainInterrupted", snapshot.optBoolean("mainInterrupted"));
             debug.put("mainTurns", snapshot.optInt("mainTurns"));
             debug.put("lastError", snapshot.opt("lastError"));
-            debug.put("mainSystemPrompt", snapshot.optString("mainSystemPrompt"));
+            debug.put("personalInstructions", snapshot.optString("personalInstructions"));
             debug.put("mainMessages", snapshot.optJSONArray("messages") == null ? new JSONArray() : snapshot.optJSONArray("messages"));
             debug.put("tasks", snapshot.optJSONArray("tasks") == null ? new JSONArray() : snapshot.optJSONArray("tasks"));
             debug.put("workerMessages", snapshot.optJSONObject("workerMessages") == null ? new JSONObject() : snapshot.optJSONObject("workerMessages"));
@@ -330,7 +336,7 @@ public final class MainActivity extends Activity implements AgentService.Observe
         Intent service = new Intent(this, AgentService.class).setAction(AgentService.ACTION_COMMAND).putExtra("command", command.toString());
         startForegroundService(service);
     }
-    private boolean activeWork() { return AgentService.isRunning() && (state.optBoolean("busy") || state.optBoolean("active")); }
+    private boolean activeWork() { return RuntimeOwner.peekHost()!=null && (state.optBoolean("busy") || state.optBoolean("active")); }
     private static boolean isReasoningEffort(String value) {
         for (String candidate : REASONING_EFFORTS) if (candidate.equals(value)) return true;
         return false;
@@ -384,23 +390,38 @@ public final class MainActivity extends Activity implements AgentService.Observe
     }
     static String reasoningPreferenceAfterSelection(String mode, String selectedModel,
             String selectedEffort, String preferred, String[] advertised,
-            String verifiedModel, String[] verifiedLevels) {
+            String verifiedModel, String[] verifiedLevels, boolean explicitManualChoice) {
         if (mode.equals("openai") || mode.equals("codex")) return selectedEffort;
         if (mode.equals(CredentialStore.CODEX_ACCOUNT)
-                && (containsReasoningEffort(advertised, selectedEffort)
-                || hasPersistedReasoningProof(selectedModel, selectedEffort, verifiedModel, verifiedLevels)))
-            return selectedEffort;
+                && (explicitManualChoice || containsReasoningEffort(advertised, selectedEffort)
+                || hasPersistedReasoningProof(selectedModel, selectedEffort, verifiedModel, verifiedLevels))) return selectedEffort;
         return preferred;
     }
+    static String[] reasoningChoices(boolean manualModel, String[] advertised,
+            String modelId, String verifiedModel, String[] verifiedLevels) {
+        if (manualModel) return REASONING_EFFORTS.clone();
+        if (advertised != null) return advertised.length > 0 ? advertised
+                : new String[]{CredentialStore.DEFAULT_REASONING_EFFORT};
+        if (hasPersistedReasoningModelProof(modelId, verifiedModel, verifiedLevels)) return verifiedLevels;
+        return new String[]{CredentialStore.DEFAULT_REASONING_EFFORT};
+    }
+    /** Matches Save's blank-key retention and fixed-provider endpoint semantics. */
+    static boolean matchesSavedConnection(JSONObject saved, String mode, String endpoint, String enteredKey) {
+        String savedMode = saved.optString("authMode");
+        boolean sameMode = mode.equals(savedMode)
+                || (mode.equals("openai") && savedMode.equals("api-key"))
+                || (mode.equals("codex") && (savedMode.equals("codexRelay") || savedMode.equals("codex-relay")));
+        if (!sameMode) return false;
+        if (mode.equals(CredentialStore.CODEX_ACCOUNT) || mode.equals("scripted")) return true;
+        boolean fixed = mode.equals(CredentialStore.OPENCODE) || mode.equals(CredentialStore.NEBIUS);
+        String key = enteredKey.trim();
+        return (fixed || endpoint.trim().equals(saved.optString("endpoint")))
+                && (key.isEmpty() || key.equals(saved.optString("apiKey")));
+    }
     private void populateReasoningPicker(Spinner picker, String modelId, String preferred,
-            boolean codexAccount, boolean codexLike, String verifiedModel, String[] verifiedLevels) {
-        String[] advertised = modelReasoningEfforts.get(modelId);
-        String[] fallback = codexLike ? CODEX_REASONING_CHOICES : DEFAULT_REASONING_CHOICES;
-        String[] values;
-        if (advertised != null && advertised.length > 0) values = advertised;
-        else if (codexAccount && modelId.equals(verifiedModel) && verifiedLevels.length > 0) values = verifiedLevels;
-        else if (codexAccount) values = new String[]{CredentialStore.DEFAULT_REASONING_EFFORT};
-        else values = fallback;
+            boolean manualModel, String verifiedModel, String[] verifiedLevels) {
+        String[] values = reasoningChoices(manualModel, modelReasoningEfforts.get(modelId),
+                modelId, verifiedModel, verifiedLevels);
         String[] labels = new String[values.length];
         int selection = -1;
         for (int i = 0; i < values.length; i++) {
@@ -408,29 +429,93 @@ public final class MainActivity extends Activity implements AgentService.Observe
             if (values[i].equals(preferred)) selection = i;
         }
         if (selection < 0) {
-            String advertisedDefault = modelDefaultReasoningEfforts.get(modelId);
-            if (advertisedDefault != null) {
-                for (int i = 0; i < values.length; i++) if (advertisedDefault.equals(values[i])) { selection = i; break; }
-            }
+            for (int i = 0; i < values.length; i++) if (CredentialStore.DEFAULT_REASONING_EFFORT.equals(values[i])) { selection = i; break; }
         }
         if (selection < 0) {
-            for (int i = 0; i < values.length; i++) if (CredentialStore.DEFAULT_REASONING_EFFORT.equals(values[i])) { selection = i; break; }
+            String advertisedDefault = modelDefaultReasoningEfforts.get(modelId);
+            for (int i = 0; i < values.length; i++) if (values[i].equals(advertisedDefault)) { selection = i; break; }
         }
         picker.setTag(values);
         picker.setAdapter(new ArrayAdapter<>(this, android.R.layout.simple_spinner_dropdown_item, labels));
         picker.setSelection(Math.max(0, selection));
+        renderedReasoningEffort = values[Math.max(0, selection)];
+    }
+    private void autonomyActivity() {
+        AutonomyScheduler.execute(()->{
+            try(AutonomyStore automation=new AutonomyStore(this)) {
+                JSONObject saved=automation.load(),status=automation.status();
+                runOnUiThread(()->{if(!isFinishing()&&!isDestroyed())showAutonomyActivity(saved,status);});
+            } catch(Exception error){
+                android.util.Log.w("PocketAutonomy","Could not load background activity: "+error.getClass().getSimpleName());
+                runOnUiThread(()->toast("Could not load background activity"));
+            }
+        });
+    }
+    private void showAutonomyActivity(JSONObject saved,JSONObject status) {
+        LinearLayout panel=column();panel.setPadding(dp(18),dp(8),dp(18),dp(12));
+        CheckBox enabled=new CheckBox(this);enabled.setText("Allow scheduled and autonomous work");enabled.setChecked(AutonomyStore.enabled(this));
+        enabled.setOnCheckedChangeListener((button,checked)->{
+            AutonomyStore.requestEnabled(this,checked,error->runOnUiThread(()->toast("Could not update automation")));
+            if(!checked){RuntimeHost shared=RuntimeOwner.peekHost();if(shared!=null)shared.dispatch(json("action","stop_autonomy"));}
+        });panel.addView(enabled);
+        panel.addView(text("Android may delay background runs. Runs use the phone's network and provider connection. Stop all pauses future automation. Quiet hours: 10 PM–8 AM on this phone."));
+        try {
+            String startupIssue=status.optString("lastFailure");if(!startupIssue.isEmpty())panel.addView(text(startupIssue));
+            JSONArray decisions=saved.getJSONArray("decisions");
+            panel.addView(text("Needs your input"));boolean pending=false;
+            for(int i=0;i<decisions.length();i++) {
+                JSONObject decision=decisions.getJSONObject(i);if(!"pending".equals(decision.optString("status")))continue;pending=true;
+                panel.addView(text(decision.optString("question")));
+                if("approval".equals(decision.optString("kind"))) {
+                    panel.addView(text("Allow these phone tools for the next run of this task (expires in one hour): "+decision.optJSONArray("tools")));
+                    panel.addView(button("Approve next run",()->answerDecision(decision,true,"Approved the listed phone tools for the next run")));
+                    panel.addView(button("Decline",()->answerDecision(decision,false,"Declined")));
+                } else {
+                    EditText answer=new EditText(this);answer.setHint("Your answer");panel.addView(answer);
+                    panel.addView(button("Send answer",()->{String value=answer.getText().toString().trim();if(!value.isEmpty())answerDecision(decision,true,value);}));
+                }
+            }
+            if(!pending)panel.addView(text("No pending questions"));
+            panel.addView(text("Schedules"));JSONArray schedules=saved.getJSONArray("schedules");
+            if(schedules.length()==0)panel.addView(text("Ask the assistant to schedule work or save a follow-up."));
+            for(int i=0;i<schedules.length();i++) {
+                JSONObject schedule=schedules.getJSONObject(i);String id=schedule.getString("id");boolean active=schedule.optBoolean("enabled");
+                panel.addView(text(schedule.optString("title")+" · "+(active?"Active":"Paused or finished")+"\nNext: "+schedule.optString("nextRunAt","—")));
+                panel.addView(button(active?"Pause schedule":"Resume schedule",()->command(Json.obj("action","automation_control","tool","schedule","args",json("action",active?"pause":"resume","id",id)))));
+            }
+            panel.addView(text("Run history"));JSONArray runs=saved.getJSONArray("runs");
+            if(runs.length()==0)panel.addView(text("No background runs yet"));
+            for(int i=runs.length()-1;i>=Math.max(0,runs.length()-20);i--) {
+                JSONObject run=runs.getJSONObject(i);panel.addView(text(run.optString("status")+" · "+run.optString("source")+"\n"+run.optString("output","Waiting for a result")));
+            }
+            panel.addView(text("Results"));JSONArray results=saved.getJSONArray("notifications");
+            for(int i=results.length()-1;i>=Math.max(0,results.length()-20);i--) {
+                JSONObject result=results.getJSONObject(i);panel.addView(text(result.optString("title")+"\n"+result.optString("message")));
+            }
+        } catch(Exception error){android.util.Log.w("PocketAutonomy","Could not render background activity: "+error.getClass().getSimpleName());panel.addView(text("Could not load background activity"));}
+        ScrollView scroll=new ScrollView(this);scroll.addView(panel);
+        new AlertDialog.Builder(this).setTitle("Background activity").setView(scroll).setPositiveButton("Close",null).setNeutralButton("Refresh",(dialog,which)->autonomyActivity()).show();
+    }
+    private void answerDecision(JSONObject decision,boolean approved,String answer) {
+        AutonomyScheduler.execute(()->{
+            try(AutonomyStore automation=new AutonomyStore(this)) {
+                automation.incoming(Json.obj("id","decision:"+decision.getString("id"),"type","decision","decisionId",decision.getString("id"),"approved",approved,"answer",answer));
+                runOnUiThread(()->toast("Response saved. The task will continue when background work can run."));
+            } catch(Exception error){android.util.Log.w("PocketAutonomy","Could not save decision: "+error.getClass().getSimpleName());runOnUiThread(()->toast("Could not save the response"));}
+        });
     }
     private void settings() {
+        if(activeWork()){toast("Stop active work before changing settings");return;}
         CredentialStore credentials = new CredentialStore(this); final JSONObject saved;
         try { saved = credentials.get(); } catch (Exception e) { toast("Unable to read protected credentials"); return; }
         LinearLayout panel = column(); panel.setPadding(dp(20), dp(4), dp(20), dp(8));
-        panel.addView(text("Main system prompt"));
-        EditText mainPrompt = new EditText(this); mainPrompt.setText(state.optString("mainSystemPrompt")); mainPrompt.setHint("Built-in default will be used if left blank");
+        panel.addView(text("Personal instructions"));
+        EditText mainPrompt = new EditText(this); mainPrompt.setText(state.optString("personalInstructions")); mainPrompt.setHint("Preferences such as tone, priorities, and how to address you");
         mainPrompt.setMinLines(5); mainPrompt.setMaxLines(12); mainPrompt.setGravity(Gravity.TOP | Gravity.START);
         mainPrompt.setInputType(InputType.TYPE_CLASS_TEXT | InputType.TYPE_TEXT_FLAG_MULTI_LINE | InputType.TYPE_TEXT_FLAG_CAP_SENTENCES); panel.addView(mainPrompt);
-        panel.addView(text("This controls the main agent only. Worker prompts stay unchanged."));
-        panel.addView(button("Reset to built-in default", () -> {
-            mainPrompt.setText(""); mainPrompt.setHint("Built-in default selected; tap Save");
+        panel.addView(text("Optional preferences for your assistant. App operating instructions are managed separately."));
+        panel.addView(button("Clear personal instructions", () -> {
+            mainPrompt.setText(""); mainPrompt.setHint("No personal instructions; tap Save");
         }));
         panel.addView(text("Provider")); Spinner mode = new Spinner(this);
         String[] names = {"Scripted model (local validation)", "API key (HTTPS)", "OpenCode Free (Console key)", "Nebius Token Factory", "Codex emulator relay (development)", "Codex account (ChatGPT)"};
@@ -453,30 +538,42 @@ public final class MainActivity extends Activity implements AgentService.Observe
         final String[] preferredReasoning = {saved.optString("preferredReasoningEffort", savedActiveReasoning)};
         final String savedReasoningModel = saved.optString("reasoningEffortModel");
         final String[] savedReasoningLevels = reasoningEfforts(saved.optJSONArray("reasoningEfforts"));
-        populateReasoningPicker(reasoning, model.getText().toString(),
-                selected == 5 ? savedActiveReasoning : preferredReasoning[0],
-                selected == 5, selected == 4 || selected == 5, savedReasoningModel, savedReasoningLevels);
+        final String savedModelSource = saved.optString("modelSource",
+                savedReasoningModel.isEmpty() ? "manual" : "catalog");
+        final String[] modelSource = {savedModelSource};
+        final boolean[] savedProofApplies = {true};
+        final boolean[] changingModel = {false};
+        final boolean[] manualModelEdited = {false};
+        final String[] sourceBeforeConnectionEdit = {savedModelSource};
+        final String[] modelBeforeConnectionEdit = {model.getText().toString().trim()};
+        populateReasoningPicker(reasoning, model.getText().toString(), savedActiveReasoning,
+                modelSource[0].equals("manual"), savedReasoningModel, savedReasoningLevels);
         panel.addView(reasoning);
         TextView reasoningHelp = text("");
         panel.addView(reasoningHelp);
         Spinner picker = new Spinner(this);
         modelPicker = picker;
-        picker.setAdapter(new ArrayAdapter<>(this, android.R.layout.simple_spinner_dropdown_item, new String[]{"Tap Discover models to choose"}));
+        picker.setAdapter(new ArrayAdapter<>(this, android.R.layout.simple_spinner_dropdown_item, new String[]{"Manual model ID · or Discover models"}));
         picker.setOnItemSelectedListener(new AdapterView.OnItemSelectedListener() {
             @Override public void onItemSelected(AdapterView<?> parent, View view, int position, long id) {
-                if (position > 0 && position < modelIds.length && modelIds[position] != null) {
+                if (savedProofApplies[0] && position > 0 && position < modelIds.length && modelIds[position] != null) {
                     String selectedMode = modes[mode.getSelectedItemPosition()];
                     String currentModel = model.getText().toString().trim();
                     preferredReasoning[0] = reasoningPreferenceAfterSelection(selectedMode, currentModel,
                             selectedReasoningEffort(reasoning), preferredReasoning[0],
-                            modelReasoningEfforts.get(currentModel), savedReasoningModel, savedReasoningLevels);
+                            modelReasoningEfforts.get(currentModel), savedReasoningModel, savedReasoningLevels,
+                            modelSource[0].equals("manual") && (manualModelEdited[0]
+                                    || !selectedReasoningEffort(reasoning).equals(renderedReasoningEffort)));
+                    changingModel[0] = true;
                     model.setText(modelIds[position]);
+                    changingModel[0] = false;
+                    modelSource[0] = "catalog";
+                    manualModelEdited[0] = false;
                     String pickerPreference = selectedMode.equals(CredentialStore.CODEX_ACCOUNT)
                             ? selectedReasoningEffort(reasoning) : preferredReasoning[0];
                     populateReasoningPicker(reasoning, modelIds[position], pickerPreference,
-                            selectedMode.equals(CredentialStore.CODEX_ACCOUNT),
-                            selectedMode.equals("codex") || selectedMode.equals(CredentialStore.CODEX_ACCOUNT),
-                            savedReasoningModel, savedReasoningLevels);
+                            false, savedProofApplies[0] ? savedReasoningModel : "",
+                            savedProofApplies[0] ? savedReasoningLevels : new String[0]);
                 }
             }
             @Override public void onNothingSelected(AdapterView<?> parent) { }
@@ -543,8 +640,8 @@ public final class MainActivity extends Activity implements AgentService.Observe
             reasoning.setAlpha(reasoningProvider ? 1.0f : 0.45f);
             reasoningHelp.setText(reasoningProvider
                     ? account
-                            ? "Codex account uses only reasoning levels verified for the selected model. A temporary low fallback does not replace your saved preference for other compatible providers."
-                            : "Discovered models narrow this list to reasoning levels advertised by the provider. For an editable model ID, support can vary by model."
+                            ? "Defaults to low. Edit the model ID for manual effort selection, or choose a discovered model to use its catalog reasoning levels."
+                            : "Defaults to low. Manual model IDs allow manual effort selection; discovered models use their catalog reasoning levels."
                     : "This provider does not expose the OpenAI/Codex reasoning-effort control. The saved value is kept for compatible providers.");
             boolean sameProvider = selectedMode.equals(auth)
                     || (selectedMode.equals("openai") && auth.equals("api-key"))
@@ -553,6 +650,9 @@ public final class MainActivity extends Activity implements AgentService.Observe
             secretPanel.setVisibility(account ? View.GONE : View.VISIBLE);
             accountPanel.setVisibility(account ? View.VISIBLE : View.GONE);
             secret.setHint(openCode ? "OpenCode Console service-account key (required)" : nebius ? "Nebius API key (required)" : "API key / relay token (blank keeps saved value)");
+            changingModel[0] = true;
+            modelSource[0] = sameProvider ? savedModelSource : "manual";
+            manualModelEdited[0] = false;
             if (sameProvider) {
                 if (!account) endpoint.setText(saved.optString("endpoint", endpoint.getText().toString()));
                 model.setText(saved.optString("model", model.getText().toString()));
@@ -562,9 +662,18 @@ public final class MainActivity extends Activity implements AgentService.Observe
             else if (selectedMode.equals("codex")) { endpoint.setText("http://10.0.2.2:8787/v1"); model.setText(CredentialStore.CODEX_MODEL); }
             else if (selectedMode.equals("openai")) { endpoint.setText("https://api.openai.com/v1"); model.setText("gpt-4.1-mini"); }
             else { endpoint.setText("https://api.openai.com/v1"); model.setText("scripted"); }
-            String pickerPreference = account ? selectedReasoningEffort(reasoning) : preferredReasoning[0];
+            changingModel[0] = false;
+            boolean sameConnection = matchesSavedConnection(saved, selectedMode,
+                    endpoint.getText().toString(), secret.getText().toString());
+            savedProofApplies[0] = sameConnection;
+            if (!sameConnection) modelSource[0] = "manual";
+            sourceBeforeConnectionEdit[0] = modelSource[0];
+            modelBeforeConnectionEdit[0] = model.getText().toString().trim();
+            picker.setEnabled(sameConnection);
+            String pickerPreference = sameProvider ? savedActiveReasoning : preferredReasoning[0];
             populateReasoningPicker(reasoning, model.getText().toString(), pickerPreference,
-                    account, account || selectedMode.equals("codex"), savedReasoningModel, savedReasoningLevels);
+                    modelSource[0].equals("manual"), sameConnection ? savedReasoningModel : "",
+                    sameConnection ? savedReasoningLevels : new String[0]);
         };
         final int[] lastProvider = {selected};
         mode.setOnItemSelectedListener(new AdapterView.OnItemSelectedListener() {
@@ -574,14 +683,18 @@ public final class MainActivity extends Activity implements AgentService.Observe
                     String currentModel = model.getText().toString().trim();
                     preferredReasoning[0] = reasoningPreferenceAfterSelection(previousMode, currentModel,
                             selectedReasoningEffort(reasoning), preferredReasoning[0],
-                            modelReasoningEfforts.get(currentModel), savedReasoningModel, savedReasoningLevels);
+                            modelReasoningEfforts.get(currentModel), savedReasoningModel, savedReasoningLevels,
+                            modelSource[0].equals("manual") && (manualModelEdited[0]
+                                    || !selectedReasoningEffort(reasoning).equals(renderedReasoningEffort)));
+                    changingModel[0] = true;
                     secret.setText("");
+                    changingModel[0] = false;
                     modelRequestId = null;
                     modelIds = new String[0];
                     modelReasoningEfforts.clear();
                     modelDefaultReasoningEfforts.clear();
                     picker.setAdapter(new ArrayAdapter<>(MainActivity.this, android.R.layout.simple_spinner_dropdown_item,
-                            new String[]{"Tap Discover models to choose"}));
+                            new String[]{"Manual model ID · or Discover models"}));
                     picker.setSelection(0);
                 }
                 lastProvider[0] = position;
@@ -590,6 +703,47 @@ public final class MainActivity extends Activity implements AgentService.Observe
             @Override public void onNothingSelected(AdapterView<?> parent) { }
         });
         renderProviderFields.accept(selected);
+        model.addTextChangedListener(new TextWatcher() {
+            @Override public void beforeTextChanged(CharSequence value, int start, int count, int after) { }
+            @Override public void onTextChanged(CharSequence value, int start, int before, int count) { }
+            @Override public void afterTextChanged(Editable value) {
+                if (changingModel[0]) return;
+                String effort = selectedReasoningEffort(reasoning);
+                modelSource[0] = "manual";
+                manualModelEdited[0] = true;
+                picker.setSelection(0);
+                populateReasoningPicker(reasoning, value.toString().trim(), effort,
+                        true, "", new String[0]);
+            }
+        });
+        TextWatcher connectionChanges = new TextWatcher() {
+            @Override public void beforeTextChanged(CharSequence value, int start, int count, int after) { }
+            @Override public void onTextChanged(CharSequence value, int start, int before, int count) { }
+            @Override public void afterTextChanged(Editable value) {
+                if (changingModel[0]) return;
+                String effort = selectedReasoningEffort(reasoning);
+                String currentModel = model.getText().toString().trim();
+                boolean sameConnection = matchesSavedConnection(saved, modes[mode.getSelectedItemPosition()],
+                        endpoint.getText().toString(), secret.getText().toString());
+                if (sameConnection == savedProofApplies[0]) return;
+                if (!sameConnection) {
+                    sourceBeforeConnectionEdit[0] = modelSource[0];
+                    modelBeforeConnectionEdit[0] = currentModel;
+                    modelSource[0] = "manual";
+                    modelRequestId = null;
+                } else if (!manualModelEdited[0] && currentModel.equals(modelBeforeConnectionEdit[0])) {
+                    modelSource[0] = sourceBeforeConnectionEdit[0];
+                }
+                // Keep the original connection's catalog cached, but unavailable while edits
+                // change its identity. Reverting the endpoint/key restores that catalog.
+                savedProofApplies[0] = sameConnection;
+                picker.setEnabled(sameConnection);
+                populateReasoningPicker(reasoning, currentModel, effort, modelSource[0].equals("manual"),
+                        sameConnection ? savedReasoningModel : "", sameConnection ? savedReasoningLevels : new String[0]);
+            }
+        };
+        endpoint.addTextChangedListener(connectionChanges);
+        secret.addTextChangedListener(connectionChanges);
         if (BuildConfig.DEVELOPMENT_TOOLS) panel.addView(button("Development MCP and ngrok", () ->
             startActivity(new Intent().setClassName(this, "dev.pocket.agent.DevToolsActivity"))));
         panel.addView(button("Accessibility settings", () -> startActivity(new Intent(Settings.ACTION_ACCESSIBILITY_SETTINGS))));
@@ -760,26 +914,19 @@ public final class MainActivity extends Activity implements AgentService.Observe
                     String selectedModel = model.getText().toString().trim();
                     String selectedEffort = selectedReasoningEffort(reasoning);
                     String[] advertised = modelReasoningEfforts.get(selectedModel);
-                    boolean persistedModelProof = hasPersistedReasoningModelProof(selectedModel,
+                    boolean persistedModelProof = savedProofApplies[0] && hasPersistedReasoningModelProof(selectedModel,
                             savedReasoningModel, savedReasoningLevels);
-                    String[] verifiedLevels = advertised != null && advertised.length > 0
-                            ? advertised : persistedModelProof ? savedReasoningLevels : null;
+                    String[] verifiedLevels = modelSource[0].equals("manual") ? null
+                            : advertised != null ? advertised : persistedModelProof ? savedReasoningLevels : null;
                     preferredReasoning[0] = reasoningPreferenceAfterSelection(selectedMode, selectedModel,
                             selectedEffort, preferredReasoning[0], advertised,
-                            savedReasoningModel, savedReasoningLevels);
-                    JSONObject config = json("authMode", selectedMode, "model", selectedModel, "reasoningEffort", selectedEffort,
+                            savedReasoningModel, savedReasoningLevels,
+                            modelSource[0].equals("manual") && (manualModelEdited[0]
+                                    || !selectedEffort.equals(renderedReasoningEffort)));
+                    JSONObject config = json("authMode", selectedMode, "model", selectedModel, "modelSource", modelSource[0], "reasoningEffort", selectedEffort,
                             "preferredReasoningEffort", preferredReasoning[0]);
-                    if (selectedMode.equals(CredentialStore.CODEX_ACCOUNT)) {
-                        if (!CredentialStore.DEFAULT_REASONING_EFFORT.equals(selectedEffort)
-                                && !containsReasoningEffort(verifiedLevels, selectedEffort)) {
-                            toast("Discover this model before using that reasoning effort");
-                            return;
-                        }
-                        if (verifiedLevels != null) {
-                            config.put("reasoningEffortModel", selectedModel);
-                            config.put("reasoningEfforts", reasoningEffortsJson(verifiedLevels));
-                        }
-                    }
+                    config.put("reasoningEffortModel", modelSource[0].equals("catalog") ? selectedModel : "");
+                    config.put("reasoningEfforts", reasoningEffortsJson(verifiedLevels));
                     if (!selectedMode.equals(CredentialStore.CODEX_ACCOUNT)) {
                         config.put("endpoint", endpoint.getText().toString().trim());
                         String savedMode = saved.optString("authMode");
@@ -791,15 +938,12 @@ public final class MainActivity extends Activity implements AgentService.Observe
                         config.put("apiKey", entered.isEmpty() && sameProvider ? saved.optString("apiKey") : entered);
                     }
                     String prompt = mainPrompt.getText().toString().trim();
-                    if (prompt.length() > 50000) { toast("Main system prompt must be 50000 characters or fewer"); return; }
+                    if (prompt.length() > 50000) { toast("Personal instructions must be 50000 characters or fewer"); return; }
                     credentials.save(config); invalidateAccountOperations();
-                    if (AgentService.isRunning()) {
-                        JSONObject configure = json("action", "configure");
-                        if (prompt.isEmpty()) configure.put("resetSystemPrompt", true); else configure.put("systemPrompt", prompt);
-                        command(configure);
-                    } else {
-                        store.saveMainSystemPrompt(prompt); state = store.load(); render();
-                    }
+                    // Serialize settings through the runtime owner, including when its previous
+                    // isolate is closing, so a late checkpoint cannot overwrite these preferences.
+                    JSONObject configure=json("action","configure","personalInstructions",prompt);
+                    command(configure);
                     dialog.dismiss(); toast("Settings saved");
                 } catch (Exception error) { toast(error instanceof IllegalArgumentException ? error.getMessage() : "Could not save connection"); }
             });

@@ -1,11 +1,18 @@
 package dev.pocket.agent;
 
 import android.content.Context;
+import android.content.Intent;
+import android.view.View;
+import android.view.ViewGroup;
+import android.widget.EditText;
+import android.widget.Spinner;
+import android.widget.TextView;
 import android.util.Base64;
 import androidx.test.ext.junit.runners.AndroidJUnit4;
 import androidx.test.platform.app.InstrumentationRegistry;
 import java.io.ByteArrayInputStream;
 import java.nio.charset.StandardCharsets;
+import java.util.concurrent.atomic.AtomicReference;
 import org.json.JSONArray;
 import org.json.JSONObject;
 import org.junit.Assume;
@@ -160,20 +167,23 @@ public class CodexAuthDeviceTest {
             System.out.println("CODEX_AUTH_RESULT="+new JSONObject().put("case","rotationCompareAndSaveRejectsStaleAndSignedOut").put("synthetic",true).put("rotationSaved",true).put("staleRejected",true).put("signedOutRefreshRejected",true));
         } finally { first.save(saved); }
     }
-    @Test public void reasoningPreferenceDistinguishesVerifiedLowFromForcedLow() throws Exception {
+    @Test public void reasoningPreferenceRemembersExplicitSelections() throws Exception {
         String[] verified=new String[]{"low","medium","high"};
         assertEquals("Verified Codex low must become the global preference","low",
                 MainActivity.reasoningPreferenceAfterSelection("codex-account","gpt-6-luna","low","high",
-                        verified,"",new String[0]));
+                        verified,"",new String[0],false));
         assertEquals("Persisted verified Codex low must become the global preference","low",
                 MainActivity.reasoningPreferenceAfterSelection("codex-account","gpt-6-luna","low","high",
-                        null,"gpt-6-luna",verified));
-        assertEquals("Unverified forced low must preserve the prior preference","high",
+                        null,"gpt-6-luna",verified,false));
+        assertEquals("Explicit manual low must become the preference","low",
                 MainActivity.reasoningPreferenceAfterSelection("codex-account","gpt-6-luna","low","high",
-                        null,"",new String[0]));
+                        null,"",new String[0],true));
         assertEquals("Compatible provider selection must become the global preference","high",
                 MainActivity.reasoningPreferenceAfterSelection("openai","gpt-5","high","low",
-                        null,"",new String[0]));
+                        null,"",new String[0],false));
+        assertEquals("Saving an unchanged low fallback must preserve the prior preference","high",
+                MainActivity.reasoningPreferenceAfterSelection("codex-account","gpt-6-luna","low","high",
+                        null,"",new String[0],false));
         Assume.assumeTrue("Synthetic account tests require an emulator",CredentialStore.isEmulator());
         CredentialStore credentials=new CredentialStore(context());JSONObject saved=credentials.get();
         try {
@@ -193,6 +203,172 @@ public class CodexAuthDeviceTest {
             assertEquals("Forced Codex low must not erase the global preference","high",clamped.optString("preferredReasoningEffort"));
             assertFalse("Unverified Codex model must not gain reasoning proof",clamped.has("reasoningEffortModel"));
         } finally { credentials.save(saved); }
+    }
+
+    @Test public void reasoningChoicesFollowManualOrCatalogSelection() {
+        String[] catalog={"medium","high"};
+        assertArrayEquals(new String[]{"minimal","low","medium","high","xhigh","max"},
+                MainActivity.reasoningChoices(true,catalog,"listed","listed",catalog));
+        assertArrayEquals(catalog,MainActivity.reasoningChoices(false,catalog,"listed","",new String[0]));
+        assertArrayEquals(catalog,MainActivity.reasoningChoices(false,null,"listed","listed",catalog));
+        assertArrayEquals(new String[]{"low"},MainActivity.reasoningChoices(false,new String[0],"listed","listed",catalog));
+        assertArrayEquals(new String[]{"low"},MainActivity.reasoningChoices(false,null,"other","listed",catalog));
+    }
+    @Test public void manualReasoningSurvivesReopenAndRefreshWhileCatalogRemainsRestricted() throws Exception {
+        Assume.assumeTrue("Synthetic account tests require an emulator",CredentialStore.isEmulator());
+        CredentialStore credentials=new CredentialStore(context());JSONObject saved=credentials.get();
+        try {
+            credentials.save(account("manual-refresh","manual"));
+            assertEquals("low",credentials.get().getString("reasoningEffort"));
+            credentials.save(new JSONObject().put("authMode","codex-account").put("model","gpt-6-luna")
+                    .put("modelSource","manual").put("reasoningEffort","max"));
+            JSONObject reopened=new CredentialStore(context()).get();
+            assertEquals("manual",reopened.getString("modelSource"));
+            assertEquals("max",reopened.getString("reasoningEffort"));
+            assertFalse(reopened.has("reasoningEfforts"));
+            JSONObject rotated=credentials.updateCodex(account("manual-refresh-next","manual-next")
+                    .put("oldRefreshToken","manual-refresh"));
+            assertEquals("manual",rotated.getString("modelSource"));
+            assertEquals("max",rotated.getString("reasoningEffort"));
+
+            JSONObject catalog=new JSONObject().put("authMode","codex-account").put("model","gpt-6-luna")
+                    .put("modelSource","catalog").put("reasoningEffort","medium")
+                    .put("reasoningEffortModel","gpt-6-luna").put("reasoningEfforts",new JSONArray().put("medium").put("high"));
+            credentials.save(catalog);
+            assertEquals("catalog",new CredentialStore(context()).get().getString("modelSource"));
+            for(String effort:new String[]{"low","max"}) {
+                try { credentials.save(new JSONObject(catalog.toString()).put("reasoningEffort",effort));
+                    fail("Catalog accepted unsupported effort: "+effort);
+                } catch(IllegalArgumentException expected) { /* Catalog levels remain authoritative. */ }
+            }
+            // Editing the same model ID manually must clear its old catalog restriction.
+            credentials.save(new JSONObject().put("authMode","codex-account").put("model","gpt-6-luna")
+                    .put("modelSource","manual").put("reasoningEffort","max"));
+            assertEquals("max",new CredentialStore(context()).get().getString("reasoningEffort"));
+            assertFalse(credentials.get().has("reasoningEfforts"));
+        } finally { credentials.save(saved); }
+    }
+
+    @Test public void catalogProofCannotCrossEndpointOrCredentialChanges() throws Exception {
+        Assume.assumeTrue("Synthetic credential tests require an emulator",CredentialStore.isEmulator());
+        CredentialStore credentials=new CredentialStore(context());JSONObject saved=credentials.get();
+        try {
+            JSONObject base=new JSONObject().put("authMode","openai").put("endpoint","https://a.example.test/v1")
+                    .put("apiKey","synthetic-key-a").put("model","shared-model").put("modelSource","manual").put("reasoningEffort","low");
+            JSONObject catalog=new JSONObject(base.toString()).put("modelSource","catalog").put("reasoningEffort","high")
+                    .put("reasoningEffortModel","shared-model").put("reasoningEfforts",new JSONArray().put("medium").put("high"));
+            for(String field:new String[]{"endpoint","apiKey"}) {
+                credentials.save(base);credentials.save(catalog);
+                JSONObject changed=new JSONObject(catalog.toString()).put(field,
+                        field.equals("endpoint")?"https://b.example.test/v1":"synthetic-key-b");
+                for(boolean explicitProof:new boolean[]{true,false}) {
+                    JSONObject attempt=new JSONObject(changed.toString());
+                    if(!explicitProof){attempt.remove("reasoningEffortModel");attempt.remove("reasoningEfforts");}
+                    try {credentials.save(attempt);fail("Stale catalog proof crossed "+field);}
+                    catch(IllegalArgumentException expected) { /* A new connection requires fresh metadata. */ }
+                }
+                changed.put("modelSource","manual").put("reasoningEffort","low");
+                credentials.save(changed);
+                JSONObject reopened=new CredentialStore(context()).get();
+                assertEquals("manual",reopened.getString("modelSource"));
+                assertEquals("low",reopened.getString("reasoningEffort"));
+                assertFalse(reopened.has("reasoningEfforts"));
+            }
+        } finally {credentials.save(saved);}
+    }
+
+    private static View findDialogControl(View root,String value,boolean inputOnly) {
+        if(root instanceof TextView && (!inputOnly || root instanceof EditText)) {
+            TextView text=(TextView)root;
+            if(value.contentEquals(text.getText()) || (text.getHint()!=null && value.contentEquals(text.getHint()))) return root;
+        }
+        if(root instanceof ViewGroup) {
+            ViewGroup group=(ViewGroup)root;
+            for(int i=0;i<group.getChildCount();i++) {
+                View found=findDialogControl(group.getChildAt(i),value,inputOnly);
+                if(found!=null)return found;
+            }
+        }
+        return null;
+    }
+    private static Spinner settingsSpinner(MainActivity activity,String name) throws Exception {
+        java.lang.reflect.Field field=MainActivity.class.getDeclaredField(name);
+        field.setAccessible(true);return (Spinner)field.get(activity);
+    }
+    private static String pickedEffort(Spinner reasoning) {
+        return ((String[])reasoning.getTag())[reasoning.getSelectedItemPosition()];
+    }
+    private interface MainAction { void run() throws Exception; }
+    /** Keeps UI failures on the instrumentation thread so JUnit reports them normally. */
+    private static void runOnMainChecked(MainAction action) throws Exception {
+        AtomicReference<Throwable> failure=new AtomicReference<>();
+        InstrumentationRegistry.getInstrumentation().runOnMainSync(()->{
+            try {action.run();} catch(Throwable error) {failure.set(error);}
+        });
+        Throwable error=failure.get();
+        if(error instanceof Error)throw (Error)error;
+        if(error instanceof Exception)throw (Exception)error;
+        if(error!=null)throw new AssertionError(error);
+    }
+    @Test public void mainThreadAssertionIsReportedOnInstrumentationThread() throws Exception {
+        AssertionError expected=new AssertionError("Synthetic UI assertion");
+        try {
+            runOnMainChecked(()->{throw expected;});
+            fail("UI assertion did not propagate to the test thread");
+        } catch(AssertionError actual) {assertSame(expected,actual);}
+    }
+    @Test public void revertingConnectionEditsRestoresCatalogAndPreservesSelectedEffort() throws Exception {
+        Assume.assumeTrue("Synthetic credential tests require an emulator",CredentialStore.isEmulator());
+        CredentialStore credentials=new CredentialStore(context());JSONObject saved=credentials.get();
+        android.app.Instrumentation instrumentation=InstrumentationRegistry.getInstrumentation();
+        MainActivity activity=null;
+        try {
+            JSONObject base=new JSONObject().put("authMode","openai").put("endpoint","https://a.example.test/v1")
+                    .put("apiKey","synthetic-ui-key").put("model","shared-model").put("modelSource","manual").put("reasoningEffort","low");
+            credentials.save(base);
+            credentials.save(new JSONObject(base.toString()).put("modelSource","catalog").put("reasoningEffort","high")
+                    .put("reasoningEffortModel","shared-model").put("reasoningEfforts",new JSONArray().put("medium").put("high")));
+            activity=(MainActivity)instrumentation.startActivitySync(new Intent(context(),MainActivity.class).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK));
+            MainActivity current=activity;
+            runOnMainChecked(()->{
+                java.lang.reflect.Method settings=MainActivity.class.getDeclaredMethod("settings");
+                settings.setAccessible(true);settings.invoke(current);
+            });
+            instrumentation.waitForIdleSync();
+            Spinner models=settingsSpinner(current,"modelPicker"),reasoning=settingsSpinner(current,"reasoningPicker");
+            View root=models.getRootView();
+            EditText endpoint=(EditText)findDialogControl(root,"https://a.example.test/v1",true);
+            EditText key=(EditText)findDialogControl(root,"API key / relay token (blank keeps saved value)",true);
+            assertNotNull(endpoint);assertNotNull(key);
+            for(boolean changeKey:new boolean[]{true,false}) {
+                EditText field=changeKey?key:endpoint;
+                runOnMainChecked(()->field.setText(changeKey?"temporary-ui-key":"https://b.example.test/v1"));
+                instrumentation.waitForIdleSync();
+                runOnMainChecked(()->{
+                    assertEquals("Connection edits must retain the selected effort","high",pickedEffort(reasoning));
+                    assertFalse("Old catalog must be unavailable for a changed connection",models.isEnabled());
+                    assertArrayEquals(new String[]{"minimal","low","medium","high","xhigh","max"},(String[])reasoning.getTag());
+                    field.setText(changeKey?"":"https://a.example.test/v1");
+                });
+                instrumentation.waitForIdleSync();
+                runOnMainChecked(()->{
+                    assertEquals("high",pickedEffort(reasoning));
+                    assertTrue("Restored connection must recover its catalog",models.isEnabled());
+                    assertArrayEquals(new String[]{"medium","high"},(String[])reasoning.getTag());
+                });
+            }
+            runOnMainChecked(()->{
+                View save=findDialogControl(root,"Save",false);assertNotNull(save);save.performClick();
+            });
+            JSONObject reopened=new CredentialStore(context()).get();
+            assertEquals("catalog",reopened.getString("modelSource"));
+            assertEquals("high",reopened.getString("reasoningEffort"));
+            assertEquals("synthetic-ui-key",reopened.getString("apiKey"));
+            assertEquals(new JSONArray().put("medium").put("high").toString(),reopened.getJSONArray("reasoningEfforts").toString());
+        } finally {
+            if(activity!=null){MainActivity current=activity;runOnMainChecked(current::finish);}
+            credentials.save(saved);
+        }
     }
 
 }
