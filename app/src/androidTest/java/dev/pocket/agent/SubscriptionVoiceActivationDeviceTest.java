@@ -248,6 +248,9 @@ public final class SubscriptionVoiceActivationDeviceTest {
         List<SubscriptionVoiceAudioRoute.Device> available = new ArrayList<>();
         final List<Integer> selections = new ArrayList<>();
         Runnable changed;
+        Runnable recheck;
+        long now;
+        int rejectedId = -1;
         boolean reject, cleared, unobserved;
         void devices(int... types) {
             available.clear();
@@ -261,11 +264,13 @@ public final class SubscriptionVoiceActivationDeviceTest {
         @Override public boolean select(int id) {
             selections.add(id);
             // Deliberately asynchronous: Android has not confirmed the new route yet.
-            return !reject;
+            return !reject && id != rejectedId;
         }
         @Override public void clear() { cleared = true; }
         @Override public void observe(Runnable value) { changed = value; }
-        @Override public void unobserve() { unobserved = true; changed = null; }
+        @Override public void unobserve() { unobserved = true; changed = null; recheck = null; }
+        @Override public long nowMs() { return now; }
+        @Override public void recheckAfter(long delayMs) { recheck = changed; }
     }
 
     @Test public void liveHeadsetChangesKeepOneRouteOwnerAndFallBackToSpeaker() {
@@ -287,7 +292,11 @@ public final class SubscriptionVoiceActivationDeviceTest {
             platform.current = bluetooth;
             platform.devices(speaker, bluetooth, usb);
             assertEquals(List.of(speaker, bluetooth, usb), platform.selections);
+            platform.current = usb;
+            platform.changed.run();
             platform.devices(speaker, bluetooth); // Unplug USB while voice is active.
+            platform.current = bluetooth;
+            platform.changed.run();
             platform.devices(speaker); // Disconnect Bluetooth while voice is active.
             assertEquals(List.of(speaker, bluetooth, usb, bluetooth, speaker), platform.selections);
             Runnable lateCallback = platform.changed;
@@ -296,6 +305,59 @@ public final class SubscriptionVoiceActivationDeviceTest {
             assertEquals(5, platform.selections.size());
             assertTrue(platform.unobserved && platform.cleared);
             assertEquals(AudioManager.MODE_NORMAL, platform.mode);
+        } finally { route.close(); }
+    }
+
+    @Test public void confirmedRouteCanRecoverFromDriftAndUnconfirmedRequestsRetry() {
+        FakeRoutePlatform platform = new FakeRoutePlatform();
+        int speaker = AudioDeviceInfo.TYPE_BUILTIN_SPEAKER;
+        platform.devices(speaker, AudioDeviceInfo.TYPE_BUILTIN_EARPIECE);
+        SubscriptionVoiceAudioRoute route = new SubscriptionVoiceAudioRoute(platform);
+        try {
+            assertTrue(route.start());
+            platform.changed.run();
+            assertEquals(List.of(speaker), platform.selections); // Pending, no duplicate request.
+            platform.current = speaker;
+            platform.changed.run(); // Confirm the first request.
+            platform.current = AudioDeviceInfo.TYPE_BUILTIN_EARPIECE;
+            platform.changed.run(); // Android moved away while speaker remained available.
+            assertEquals(List.of(speaker, speaker), platform.selections);
+            platform.changed.run();
+            assertEquals(2, platform.selections.size());
+            platform.now = 30_001;
+            platform.recheck.run(); // A request that never confirms cannot suppress recovery forever.
+            assertEquals(List.of(speaker, speaker, speaker), platform.selections);
+        } finally { route.close(); }
+        assertNull(platform.recheck);
+    }
+
+    @Test public void rejectedHeadsetFallsBackWithoutEndingTheVoiceRoute() {
+        FakeRoutePlatform platform = new FakeRoutePlatform();
+        int usb = AudioDeviceInfo.TYPE_USB_HEADSET;
+        int bluetooth = AudioDeviceInfo.TYPE_BLUETOOTH_SCO;
+        int speaker = AudioDeviceInfo.TYPE_BUILTIN_SPEAKER;
+        platform.devices(usb, speaker, bluetooth);
+        platform.rejectedId = usb;
+        SubscriptionVoiceAudioRoute route = new SubscriptionVoiceAudioRoute(platform);
+        try {
+            assertTrue(route.start());
+            assertEquals(List.of(usb, bluetooth), platform.selections);
+            platform.current = bluetooth;
+            platform.changed.run();
+            platform.selections.clear();
+            platform.devices(usb, speaker);
+            assertEquals(List.of(usb, speaker), platform.selections);
+            assertEquals(AudioManager.MODE_IN_COMMUNICATION, platform.mode);
+            assertFalse(platform.unobserved || platform.cleared);
+        } finally { route.close(); }
+        // Also cover a rejected headset present before startup, with only speaker fallback.
+        platform = new FakeRoutePlatform();
+        platform.devices(usb, speaker);
+        platform.rejectedId = usb;
+        route = new SubscriptionVoiceAudioRoute(platform);
+        try {
+            assertTrue(route.start());
+            assertEquals(List.of(usb, speaker), platform.selections);
         } finally { route.close(); }
     }
 

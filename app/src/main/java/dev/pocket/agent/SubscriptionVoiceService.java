@@ -93,6 +93,9 @@ public final class SubscriptionVoiceService extends Service implements AgentServ
         @Override public void onDelegation(long epoch, String id, String text) {
             main.post(() -> { if (started) lifecycle.delegated(epoch, id, text); });
         }
+        @Override public void onAnnouncementAccepted(long epoch, String id) {
+            main.post(() -> { if (started) lifecycle.announcementAccepted(epoch, id); });
+        }
         @Override public void onMicrophoneReady(long epoch) {
             main.post(() -> {
                 if (!started || lifecycle.epoch() != epoch
@@ -222,6 +225,9 @@ public final class SubscriptionVoiceService extends Service implements AgentServ
                 if (!ensureAudioRoute()) return;
                 if (lifecycle.microphoneAllowed()) transport.sendSpeech(delegationId, text);
                 else outputSpeech.speak(lifecycle.epoch(), text);
+            }
+            @Override public void sendAnnouncement(String id, String text) {
+                if (ensureAudioRoute()) transport.sendAnnouncement(id, text);
             }
             @Override public void connectionReadyCue() {
                 playTone(android.media.ToneGenerator.TONE_PROP_ACK, 220);

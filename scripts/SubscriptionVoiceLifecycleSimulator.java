@@ -17,6 +17,10 @@ public final class SubscriptionVoiceLifecycleSimulator {
         @Override public void sendUserContext(String text) { calls.add("context:" + text); }
         @Override public void sendToPi(String turnId, String text) { calls.add("pi:" + turnId + ":" + text); }
         @Override public void sendSpeech(String id, String text) { calls.add("speech:" + id + ":" + text); }
+        @Override public void sendAnnouncement(String id, String text) {
+            calls.add("speech:null:" + text);
+            calls.add("announcement-send:" + id);
+        }
         @Override public void connectionReadyCue() { calls.add("connection-ready-cue"); }
         @Override public void status(String text) { }
         @Override public void failure(String reason) { calls.add("failure:" + reason); }
@@ -188,8 +192,37 @@ public final class SubscriptionVoiceLifecycleSimulator {
         check(p.count("speech:") == 3, "announcement playback blocked follow-up delivery");
         check(s.state() == SubscriptionVoiceLifecycle.State.LISTENING,
             "native announcements left the call gated on playback");
+        s.announcementAccepted(1, "hello");
+        s.announcementAccepted(1, "bye");
         s.close();
         check(p.count("failed:") == 0, "sent native context falsely claimed playback failure");
+    }
+
+    private static void nativeAnnouncementReceiptsSurviveAsyncFailureAndFenceOldEpochs() {
+        FakePort p = new FakePort();
+        SubscriptionVoiceLifecycle s = new SubscriptionVoiceLifecycle(p);
+        s.wake(0); connectedAndRecording(s, 1, 100);
+        s.announce("queued", "Disconnect before the worker sends this", false, 101);
+        s.close(); s.close();
+        s.announcementAccepted(1, "queued");
+        check(p.count("failed:queued") == 1, "unsent native announcement did not fail exactly once");
+        s.wake(200); connectedAndRecording(s, 2, 300);
+        s.announce("queued", "Reused ID on a new session", false, 301);
+        s.announcementAccepted(1, "queued"); // Must not acknowledge the new session.
+        s.failed(2, "Unable to send voice announcement");
+        check(p.count("failed:queued") == 2, "stale receipt hid a new session's send failure");
+        s.wake(400); connectedAndRecording(s, 3, 500);
+        for (int i = 0; i < 8; i++)
+            check(s.announce("pending-" + i, "Pending send", false, 501), "pending bound rejected too early");
+        check(!s.announce("overflow", "Overflow", false, 502), "pending sends bypassed the queue bound");
+        check(!s.announce("pending-0", "Duplicate", false, 502), "duplicate pending ID accepted");
+        s.announcementAccepted(3, "pending-0");
+        check(s.announce("after-receipt", "Accepted", false, 503), "receipt did not release pending capacity");
+        s.announcementAccepted(3, "after-receipt");
+        s.close();
+        check(p.count("failed:pending-0") == 0 && p.count("failed:after-receipt") == 0,
+            "transport-accepted context was reported as an unsent failure");
+        check(p.count("failed:pending-") == 7, "close lost a pending per-announcement failure");
     }
 
     private static void outputOnlyAnnouncement() {
@@ -263,10 +296,11 @@ public final class SubscriptionVoiceLifecycleSimulator {
         nativeDuplexNeverWaitsForPlaybackCallbacks();
         disconnectOnlyDetachesVoice();
         nativeAnnouncementsDoNotBlockUserRequests();
+        nativeAnnouncementReceiptsSurviveAsyncFailureAndFenceOldEpochs();
         outputOnlyAnnouncement();
         explicitCallSurvivesNoListenAnnouncement();
         typedMainThreadRequestsJoinVoiceConversation();
         connectionCueWaitsForActualRecordingAndFencesOldCallbacks();
-        System.out.println("Subscription voice lifecycle simulator: 11 scenarios PASSED");
+        System.out.println("Subscription voice lifecycle simulator: 12 scenarios PASSED");
     }
 }

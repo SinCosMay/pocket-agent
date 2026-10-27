@@ -12,6 +12,7 @@ final class SubscriptionVoiceTransport implements AutoCloseable {
         void onConnected(long epoch);
         void onDelegation(long epoch, String id, String text);
         default void onMicrophoneReady(long epoch) {}
+        default void onAnnouncementAccepted(long epoch, String id) {}
         void onError(long epoch, String safeMessage);
         void onDisconnected(long epoch);
     }
@@ -48,6 +49,9 @@ final class SubscriptionVoiceTransport implements AutoCloseable {
                     @Override public void onMicrophoneReady(long id) {
                         if (matches(id)) callback.onMicrophoneReady(id);
                     }
+                    @Override public void onAnnouncementAccepted(long id, String announcementId) {
+                        if (matches(id)) callback.onAnnouncementAccepted(id, announcementId);
+                    }
                     @Override public void onError(long id, String safeMessage) {
                         if (!matches(id)) return;
                         try { callback.onError(id, safeMessage); }
@@ -70,6 +74,11 @@ final class SubscriptionVoiceTransport implements AutoCloseable {
     synchronized void sendSpeech(String delegationId, String text) {
         if (!disposed && transport != null)
             transport.sendSpeech(activeEpoch, delegationId, text);
+    }
+
+    synchronized void sendAnnouncement(String id, String text) {
+        if (!disposed && transport != null)
+            transport.sendAnnouncement(activeEpoch, id, text);
     }
 
     synchronized void setMicrophoneEnabled(boolean enabled) {

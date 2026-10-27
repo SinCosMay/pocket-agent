@@ -6,6 +6,7 @@ import android.media.AudioDeviceInfo;
 import android.media.AudioManager;
 import android.os.Handler;
 import android.os.Looper;
+import android.os.SystemClock;
 import android.util.Log;
 import java.util.ArrayList;
 import java.util.List;
@@ -26,6 +27,8 @@ final class SubscriptionVoiceAudioRoute implements AutoCloseable {
         void clear();
         void observe(Runnable changed);
         void unobserve();
+        default long nowMs() { return SystemClock.elapsedRealtime(); }
+        void recheckAfter(long delayMs);
     }
 
     private static final class AndroidPlatform implements Platform {
@@ -34,6 +37,7 @@ final class SubscriptionVoiceAudioRoute implements AutoCloseable {
         AudioDeviceCallback devicesCallback;
         AudioManager.OnCommunicationDeviceChangedListener routeCallback;
         Runnable refresh;
+        Runnable routeRecheck;
         AndroidPlatform(Context context) { audio = context.getSystemService(AudioManager.class); }
         @Override public int mode() { return audio.getMode(); }
         @Override public void mode(int mode) { audio.setMode(mode); }
@@ -55,6 +59,7 @@ final class SubscriptionVoiceAudioRoute implements AutoCloseable {
         @Override public void clear() { audio.clearCommunicationDevice(); }
         @Override public void observe(Runnable changed) {
             refresh = changed;
+            routeRecheck = changed::run;
             devicesCallback = new AudioDeviceCallback() {
                 @Override public void onAudioDevicesAdded(AudioDeviceInfo[] devices) { refreshDevices(); }
                 @Override public void onAudioDevicesRemoved(AudioDeviceInfo[] devices) { refreshDevices(); }
@@ -74,11 +79,18 @@ final class SubscriptionVoiceAudioRoute implements AutoCloseable {
         }
         @Override public void unobserve() {
             if (refresh != null) main.removeCallbacks(refresh);
+            if (routeRecheck != null) main.removeCallbacks(routeRecheck);
             if (devicesCallback != null) audio.unregisterAudioDeviceCallback(devicesCallback);
             if (routeCallback != null) audio.removeOnCommunicationDeviceChangedListener(routeCallback);
             devicesCallback = null;
             routeCallback = null;
             refresh = null;
+            routeRecheck = null;
+        }
+        @Override public void recheckAfter(long delayMs) {
+            if (routeRecheck == null) return;
+            main.removeCallbacks(routeRecheck);
+            main.postDelayed(routeRecheck, delayMs);
         }
     }
 
@@ -86,6 +98,8 @@ final class SubscriptionVoiceAudioRoute implements AutoCloseable {
     private boolean started;
     private int previousMode;
     private int requestedDeviceId = -1;
+    private long requestDeadline;
+    private static final long ROUTE_REQUEST_MS = 30_000;
 
     SubscriptionVoiceAudioRoute(Context context) {
         this(new AndroidPlatform(context));
@@ -124,20 +138,32 @@ final class SubscriptionVoiceAudioRoute implements AutoCloseable {
 
     private boolean selectRoute() {
         int current = platform.currentDeviceId();
-        Device best = null;
-        for (Device device : platform.devices()) {
-            int rank = priority(device.type);
-            if (rank == Integer.MAX_VALUE) continue;
-            if (best == null || rank < priority(best.type)
-                    || (rank == priority(best.type) && device.id == current)) best = device;
+        // A request is only pending until Android confirms it. Keeping a confirmed
+        // ID here forever would prevent recovery if Android later drops the route.
+        if (current == requestedDeviceId) requestedDeviceId = -1;
+        List<Device> candidates = new ArrayList<>(platform.devices());
+        candidates.sort((a, b) -> {
+            int rank = Integer.compare(priority(a.type), priority(b.type));
+            if (rank != 0) return rank;
+            return Integer.compare(a.id == current ? 0 : 1, b.id == current ? 0 : 1);
+        });
+        for (Device device : candidates) {
+            if (priority(device.type) == Integer.MAX_VALUE) continue;
+            if (device.id == current) {
+                requestedDeviceId = -1;
+                return true;
+            }
+            // Avoid repeated requests while an asynchronous change is in flight,
+            // but retry after a bounded interval if Android never confirms it.
+            if (device.id == requestedDeviceId && platform.nowMs() < requestDeadline) return true;
+            if (!platform.select(device.id)) continue;
+            requestedDeviceId = device.id;
+            requestDeadline = platform.nowMs() + ROUTE_REQUEST_MS;
+            platform.recheckAfter(ROUTE_REQUEST_MS);
+            return true;
         }
-        if (best == null) return false;
-        // setCommunicationDevice is asynchronous. Avoid repeatedly submitting the
-        // same request while Android is changing both input and output together.
-        if (best.id == requestedDeviceId) return true;
-        if (!platform.select(best.id)) return false;
-        requestedDeviceId = best.id;
-        return true;
+        requestedDeviceId = -1;
+        return false;
     }
 
     private static int priority(int type) {

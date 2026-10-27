@@ -11,6 +11,7 @@ public final class SubscriptionVoiceStartupSimulator {
         @Override public void close(long epoch) { }
         @Override public void sendToPi(String turnId, String utterance) { }
         @Override public void sendSpeech(String delegationId, String text) { }
+        @Override public void sendAnnouncement(String id, String text) { }
         @Override public void status(String text) { statuses.add(text); }
         @Override public void failure(String safeMessage) { statuses.add("FAILURE: " + safeMessage); }
         @Override public void announcementFailed(String id, String reason) { }

@@ -81,6 +81,7 @@ final class SubscriptionWebRtcTransport implements AutoCloseable {
         void onConnected(long epoch);
         void onDelegation(long epoch, String delegationId, String userText);
         default void onMicrophoneReady(long epoch) {}
+        default void onAnnouncementAccepted(long epoch, String id) {}
         void onDisconnected(long epoch);
         void onError(long epoch, String safeMessage);
     }
@@ -226,6 +227,14 @@ final class SubscriptionWebRtcTransport implements AutoCloseable {
     }
 
     void sendSpeech(long epoch, String delegationId, String text) {
+        sendSpeech(epoch, delegationId, text, null);
+    }
+
+    void sendAnnouncement(long epoch, String id, String text) {
+        sendSpeech(epoch, null, text, id);
+    }
+
+    private void sendSpeech(long epoch, String delegationId, String text, String announcementId) {
         if (text == null || text.trim().isEmpty() || text.length() > MAX_SPEECH_CHARS) return;
         worker.post(() -> {
             Session session = current;
@@ -236,8 +245,11 @@ final class SubscriptionWebRtcTransport implements AutoCloseable {
                     message = contextAppend("session.context.append", null, text);
                     // Client delegation sessions speak appended context once
                     // input audio is active; response.create is rejected here.
-                    if (!send(session, message))
+                    if (!send(session, message)) {
                         fail(session, "Unable to send voice announcement");
+                    } else if (announcementId != null) {
+                        onMain(session, () -> listener.onAnnouncementAccepted(session.epoch, announcementId));
+                    }
                 } else {
                     if (!session.delegations.contains(delegationId)
                             || !session.pendingSpeech.add(delegationId)) return;

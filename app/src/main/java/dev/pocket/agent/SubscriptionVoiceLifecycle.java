@@ -11,6 +11,7 @@ final class SubscriptionVoiceLifecycle {
         void close(long epoch);
         void sendToPi(String turnId, String utterance);
         void sendSpeech(String delegationId, String text);
+        void sendAnnouncement(String id, String text);
         default void connectionReadyCue() { }
         void status(String text);
         default boolean startInitialCapture(long epoch) { return false; }
@@ -29,6 +30,7 @@ final class SubscriptionVoiceLifecycle {
     private final ArrayDeque<Announcement> announcements = new ArrayDeque<>();
     private final ArrayDeque<PiTurn> turns = new ArrayDeque<>();
     private final LinkedHashSet<String> delivered = new LinkedHashSet<>();
+    private final LinkedHashSet<String> pendingAnnouncements = new LinkedHashSet<>();
     private State state = State.CLOSED;
     private long epoch, connectionDeadline;
     private boolean transportReady, microphoneReady, capturingInitial;
@@ -70,8 +72,10 @@ final class SubscriptionVoiceLifecycle {
 
     boolean announce(String id, String text, boolean listenAfter, long nowMs) {
         if (id == null || id.isEmpty() || text == null || text.trim().isEmpty() ||
-                text.length() > 800 || announcements.size() >= MAX_ANNOUNCEMENTS ||
+                text.length() > 800 || announcements.size() + pendingAnnouncements.size() >= MAX_ANNOUNCEMENTS ||
+                pendingAnnouncements.contains(id) || id.equals(activeAnnouncementId) ||
                 (state != State.CLOSED && !allowMicrophone && listenAfter)) return false;
+        for (Announcement queued : announcements) if (id.equals(queued.id)) return false;
         announcements.addLast(new Announcement(id, text.trim(), listenAfter));
         if (state == State.CLOSED) connect(nowMs, listenAfter, false);
         else drain();
@@ -210,7 +214,8 @@ final class SubscriptionVoiceLifecycle {
             }
             while (!announcements.isEmpty()) {
                 Announcement announcement = announcements.removeFirst();
-                port.sendSpeech(null, announcement.text);
+                pendingAnnouncements.add(announcement.id);
+                port.sendAnnouncement(announcement.id, announcement.text);
                 if (state == State.CLOSED) return;
             }
             state = turns.isEmpty() ? State.LISTENING : State.WAITING_PI;
@@ -250,6 +255,12 @@ final class SubscriptionVoiceLifecycle {
         else drain();
     }
 
+    /** Transport queue acceptance only; never a claim of audible playback. */
+    void announcementAccepted(long id, String announcementId) {
+        if (id != epoch || state == State.CLOSED) return;
+        pendingAnnouncements.remove(announcementId);
+    }
+
     void tick(long nowMs) {
         if (state != State.CLOSED && !transportReady && nowMs >= connectionDeadline)
             failed(epoch, "Voice connection timed out");
@@ -284,6 +295,9 @@ final class SubscriptionVoiceLifecycle {
         }
         while (!announcements.isEmpty())
             port.announcementFailed(announcements.removeFirst().id, "Subscription speech queue closed before playback");
+        for (String id : pendingAnnouncements)
+            port.announcementFailed(id, "Voice disconnected before announcement send was confirmed");
+        pendingAnnouncements.clear();
         delivered.clear();
         port.close(oldEpoch);
         port.status("Voice disconnected · tasks continue in chat");
