@@ -1,3 +1,4 @@
+import {emptyAutonomy} from '../src/autonomy.js';
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import {DisplayPool} from '../src/display-pool.js';
@@ -28,6 +29,8 @@ class Bridge implements NativeBridge {
         result={isError:true,code:'NOT_READY',message:'Shizuku not running'};
       else result={status:args.name==='phone_screen'?'acquired':'ok',owner:args.owner,display_id:args.name==='phone_screen'?this.calls.length:undefined};
     }
+    if(method==='autonomy.load')result=emptyAutonomy();
+    if(method==='autonomy.status')result={enabled:false};
     return JSON.stringify({ok:true,result});
   }
   emit(_event:string):void{}

@@ -14,7 +14,10 @@ export class MobileSession {
     const current=modelFor(config,credentials);
     const selected=selectedModel===`${current.provider}/${current.id}`
       ? current : selectedModel ? modelFor(config,credentials,selectedModel) : current;
-    this.agent=new Agent({streamFn:makeStream(config,credentials,owner,reasoning,supportedReasoning),initialState:{
+    // An explicit worker model is a catalog selection even when its ID matches
+    // the manually configured main model. Omitted models inherit main's source.
+    this.agent=new Agent({streamFn:makeStream(config,credentials,owner,reasoning,supportedReasoning,
+      selectedModel === undefined ? credentials.modelSource : 'catalog'),initialState:{
       model:selected,systemPrompt,tools,messages,
     },toolExecution:'sequential',sessionId:owner,
       beforeToolCall:()=>{if(++this.calls>MOBILE_SESSION_BUDGET.toolCallsPerGeneration)throw new Error(`Mobile tool-call budget reached (${MOBILE_SESSION_BUDGET.toolCallsPerGeneration} per generation); saved context was retained`);return undefined;},

@@ -187,13 +187,13 @@ public class LifecycleDeviceTest {
         RuntimeHost h = scriptedHost();
         try {
             String custom = "Device-test custom main prompt";
-            command(h, action("set_system_prompt").put("text", custom));
-            until("custom system prompt saved", 5000, () -> custom.equals(view().optString("mainSystemPrompt")));
+            command(h, action("set_personal_instructions").put("text", custom));
+            until("personal instructions saved", 5000, () -> custom.equals(view().optString("personalInstructions")));
             command(h, action("send").put("text", "hello before fresh thread"));
             until("main turn completed", 10000, () -> !view().optBoolean("active") && view().optJSONArray("messages").length() > 0);
             command(h, action("new_main"));
             until("fresh main state saved", 5000, () -> view().optJSONArray("messages").length() == 0 && view().optInt("mainTurns") == 0);
-            assertEquals("New main thread must retain the selected prompt", custom, view().optString("mainSystemPrompt"));
+            assertEquals("New main thread must retain the personal instructions", custom, view().optString("personalInstructions"));
 
             Activity activity = resumedActivity(); assertNotNull(activity);
             AtomicReference<View> fresh = new AtomicReference<>(), copy = new AtomicReference<>(), jump = new AtomicReference<>();

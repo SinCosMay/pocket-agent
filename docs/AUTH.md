@@ -9,6 +9,18 @@ Select **Codex account** in Settings. There is no API key, custom endpoint, PC
 relay, ngrok or MCP connection to configure. Choose a model available to your
 account; emulator acceptance uses `gpt-6-luna`.
 
+After saving the connection, use **Discover models** to load its catalog. Codex
+catalogs include large instruction fields, so discovery allows up to 4 MiB while
+other provider catalogs retain their 512 KiB limit. The app keeps only model IDs,
+names and reasoning metadata.
+
+Reasoning defaults to **low**. Editing the model ID enables manual effort
+selection, including maximum effort. Choosing a model from the discovered list
+limits the picker to that model's advertised reasoning levels. If low is not
+supported, the picker uses its advertised default (or first supported level).
+Models without usable reasoning metadata offer low as a fallback. The model's
+selection source and supported levels survive saving, reopening and token refresh.
+
 - **Sign in** uses the Codex device-code flow. Open the official verification
   page in the system browser and approve the displayed code with your existing
   ChatGPT account. Device-code login may need enabling in ChatGPT security or

@@ -27,6 +27,10 @@ export function scriptedStream(owner='main'): StreamFn {
           call={name:'memory_save',arguments:{key:value.slice(0,split),content:value.slice(split+1,split+801),category:'preference',scope:'global',confirmed:true}};
         } else if(owner==='main'&&text.startsWith('memory fixture recall ')) {
           call={name:'memory_search',arguments:{query:text.slice('memory fixture recall '.length)}};
+        } else if(owner==='main'&&text.startsWith('history fixture search ')) {
+          call={name:'history_search',arguments:{query:text.slice('history fixture search '.length)}};
+        } else if(owner==='main'&&text.startsWith('history fixture read ')) {
+          call={name:'history_read',arguments:{id:Number(text.slice('history fixture read '.length))}};
         } else if(text.startsWith('[Worker completion]')) answer=`Worker finished: ${text.slice(20)}`;
         else if(owner==='main' && /\b(delegate|long|worker|fixture|nested)\b/i.test(text)) {
           call={name:'subagent',arguments:{action:'spawn',spawns:[{agent:'phone-operator',label:'Complete phone fixture',prompt:text}]}};

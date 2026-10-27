@@ -16,7 +16,8 @@ android {
     compileSdk = 36
     ndkVersion = "27.2.12479018"
     defaultConfig {
-        applicationId = "dev.pocket.agent"
+        applicationId = if (providers.gradleProperty("isolatedDeviceValidation").isPresent)
+            "dev.pocket.agent.historyvalidation" else "dev.pocket.agent"
         minSdk = 31
         targetSdk = 36
         versionCode = 9
@@ -52,12 +53,13 @@ android {
     }
     sourceSets.getByName("development").jniLibs.srcDir(layout.buildDirectory.dir("generated/ngrok-jni").get().asFile)
     splits { abi { isEnable=true; reset(); include("arm64-v8a", "x86_64"); isUniversalApk=true } }
-    testBuildType = if (providers.gradleProperty("devEmulatorTest").isPresent) "development" else if (providers.gradleProperty("voiceEmulatorTest").isPresent) "debug" else "release"
+    testBuildType = if (providers.gradleProperty("isolatedDeviceValidation").isPresent) "debug" else if (providers.gradleProperty("devEmulatorTest").isPresent) "development" else if (providers.gradleProperty("voiceEmulatorTest").isPresent) "debug" else "release"
     lint { textReport=true; textOutput=file("build/reports/lint-results-release.txt") }
     packaging { jniLibs { useLegacyPackaging = true }; resources { excludes += "META-INF/DEPENDENCIES" } }
 }
 dependencies {
     implementation(project(":android-platform"))
+    implementation("androidx.work:work-runtime:2.10.5")
     implementation("com.caoccao.javet:javet-node-android-i18n:6.0.2")
     implementation("com.squareup.okhttp3:okhttp:4.12.0")
     implementation("io.github.webrtc-sdk:android:150.7871.01")

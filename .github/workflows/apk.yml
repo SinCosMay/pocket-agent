@@ -3,13 +3,23 @@ on:
   push:
     branches: [main, 'feat/**', 'fix/**']
   workflow_dispatch:
+    inputs:
+      isolated_history:
+        description: Build an isolated debug APK pair for USB history validation
+        required: false
+        default: false
+        type: boolean
 permissions:
   contents: read
 concurrency:
   group: apk-${{ github.ref }}
   cancel-in-progress: true
 jobs:
+  history-device:
+    if: inputs.isolated_history == true
+    uses: ./.github/workflows/history-device.yml
   build:
+    if: inputs.isolated_history != true
     runs-on: ubuntu-24.04
     timeout-minutes: 35
     env:
@@ -79,26 +89,25 @@ jobs:
           emulator-options: -no-window -gpu swiftshader_indirect -no-snapshot -noaudio -no-boot-anim
           script: |
             set -e
-            ./gradlew --no-daemon :app:connectedReleaseAndroidTest -Pandroid.testInstrumentationRunnerArguments.class=dev.pocket.agent.VoicePipelineDeviceTest
-            ./gradlew --no-daemon :app:connectedReleaseAndroidTest -Pandroid.testInstrumentationRunnerArguments.class=dev.pocket.agent.VoiceAssistantDeviceTest
-            ./gradlew --no-daemon :app:connectedReleaseAndroidTest -Pandroid.testInstrumentationRunnerArguments.class=dev.pocket.agent.SubscriptionVoiceActivationDeviceTest
-            ./gradlew --no-daemon :app:connectedReleaseAndroidTest -Pandroid.testInstrumentationRunnerArguments.class=dev.pocket.agent.SubscriptionVoiceContextDeviceTest
-            ./gradlew --no-daemon :app:connectedReleaseAndroidTest -Pandroid.testInstrumentationRunnerArguments.class=dev.pocket.agent.LifecycleDeviceTest#mainThreadPromptAndDebugControlsWorkOnDevice
-            adb install -r fixture/build/outputs/apk/debug/fixture-debug.apk
-            ./gradlew --no-daemon :app:connectedReleaseAndroidTest -Pandroid.testInstrumentationRunnerArguments.class=dev.pocket.agent.RuntimeDeviceTest#physicalDisplayCanLaunchObserveAndActWithoutVirtualLease
+            mkdir -p emulator-diagnostics
+            cp app/build/outputs/apk/release/app-x86_64-release.apk emulator-diagnostics/Pocket-Agent-x86_64.apk
+            cp app/build/outputs/apk/androidTest/release/*.apk emulator-diagnostics/Pocket-Agent-tests.apk
+            cp fixture/build/outputs/apk/debug/*.apk emulator-diagnostics/Pocket-Agent-fixture.apk
+            python3 scripts/emulator_test.py --serial "$(adb get-serialno)" --artifacts emulator-diagnostics --fresh --diagnostics --class AutonomyDeviceTest --class VoicePipelineDeviceTest --class VoiceAssistantDeviceTest --class SubscriptionVoiceActivationDeviceTest --class SubscriptionVoiceContextDeviceTest --case 'LifecycleDeviceTest#mainThreadPromptAndDebugControlsWorkOnDevice' --case 'RuntimeDeviceTest#physicalDisplayCanLaunchObserveAndActWithoutVirtualLease'
+            ./gradlew --no-daemon :app:connectedReleaseAndroidTest -Pandroid.testInstrumentationRunnerArguments.class=dev.pocket.agent.CodexAuthDeviceTest
             adb uninstall dev.pocket.agent || true
             adb uninstall dev.pocket.agent.test || true
             # PhoneTargetDeviceTest exercises the same hidden WindowManager IME policy used by
             # the privileged Shizuku shell UserService. Enable non-SDK access only on this
             # disposable emulator so instrumentation can reach that platform API too.
             adb shell settings put global hidden_api_policy 1
-            ./gradlew --no-daemon -PvoiceEmulatorTest :app:connectedDebugAndroidTest -Pandroid.testInstrumentationRunnerArguments.class=dev.pocket.agent.PhoneTargetDeviceTest
-            ./gradlew --no-daemon -PvoiceEmulatorTest :app:connectedDebugAndroidTest -Pandroid.testInstrumentationRunnerArguments.class=dev.pocket.agent.CrashResilienceDeviceTest
+            timeout 300 ./gradlew --no-daemon -PvoiceEmulatorTest :app:connectedDebugAndroidTest -Pandroid.testInstrumentationRunnerArguments.class=dev.pocket.agent.PhoneTargetDeviceTest
+            timeout 300 ./gradlew --no-daemon -PvoiceEmulatorTest :app:connectedDebugAndroidTest -Pandroid.testInstrumentationRunnerArguments.class=dev.pocket.agent.CrashResilienceDeviceTest
             adb shell settings delete global hidden_api_policy
-            ./gradlew --no-daemon :android-platform:connectedDebugAndroidTest -Pandroid.testInstrumentationRunnerArguments.class=dev.pocket.android.NativeAndroidApisTest#unavailableTraversalChildFailsClosed
+            timeout 300 ./gradlew --no-daemon :android-platform:connectedDebugAndroidTest -Pandroid.testInstrumentationRunnerArguments.class=dev.pocket.android.NativeAndroidApisTest#unavailableTraversalChildFailsClosed
             adb uninstall dev.pocket.agent || true
             adb uninstall dev.pocket.agent.test || true
-            ./gradlew --no-daemon -PdevEmulatorTest :app:connectedDevelopmentAndroidTest -Pandroid.testInstrumentationRunnerArguments.class=dev.pocket.agent.DevBridgeDeviceTest
+            timeout 300 ./gradlew --no-daemon -PdevEmulatorTest :app:connectedDevelopmentAndroidTest -Pandroid.testInstrumentationRunnerArguments.class=dev.pocket.agent.DevBridgeDeviceTest
       - name: Upload emulator test report
         if: always()
         uses: actions/upload-artifact@v6
@@ -107,6 +116,8 @@ jobs:
           path: |
             app/build/outputs/androidTest-results/connected/
             android-platform/build/outputs/androidTest-results/connected/
+            emulator-diagnostics/*.txt
+            emulator-diagnostics/emulator-results.json
           if-no-files-found: ignore
       - name: Collect provenance and signed APKs
         run: |

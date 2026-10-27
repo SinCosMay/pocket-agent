@@ -26,6 +26,7 @@ public final class AgentService extends Service {
     private static volatile AgentService instance;
     private final Handler main = new Handler(Looper.getMainLooper());
     private RuntimeHost host;
+    private RuntimeOwner runtimeLease;
     private volatile boolean stopping;
     private java.util.concurrent.CompletableFuture<Void> startup;
     public static void observe(Observer observer) { observers.add(observer); }
@@ -40,7 +41,7 @@ public final class AgentService extends Service {
         Notification notification = notification();
         if (Build.VERSION.SDK_INT >= 34) startForeground(1, notification, ServiceInfo.FOREGROUND_SERVICE_TYPE_SPECIAL_USE);
         else startForeground(1, notification);
-        host = new RuntimeHost(this, this::publish); startup = host.start();
+        runtimeLease=RuntimeOwner.acquire(this); host=runtimeLease.host; startup=runtimeLease.ready;
     }
     private Notification notification() {
         PendingIntent open = PendingIntent.getActivity(this, 0, new Intent(this, MainActivity.class), PendingIntent.FLAG_UPDATE_CURRENT | PendingIntent.FLAG_IMMUTABLE);
@@ -53,6 +54,8 @@ public final class AgentService extends Service {
         if (intent == null) return START_NOT_STICKY;
         if (ACTION_STOP.equals(intent.getAction())) {
             stopping = true;
+            AutonomyStore.requestEnabled(this,false,error->Log.w("PocketAgent","Could not persist automation pause",error));
+            if(host!=null)host.dispatch(Json.obj("action","stop_all"));
             WakeWordService.disableImmediately(this);
             stopService(new Intent(this, WakeWordService.class));
             stopService(new Intent(this, VoiceListeningService.class));
@@ -107,6 +110,14 @@ public final class AgentService extends Service {
         } catch (Exception error) { Log.w("PocketVoice", "Could not report speech failure", error); }
     }
 
+    static void publishShared(Context context,JSONObject event) {
+        AgentService service=instance;
+        if(service!=null){service.publish(event);return;}
+        new Handler(Looper.getMainLooper()).post(()->{
+            if("voice_announce".equals(event.optString("type"))){reportVoiceFailure(context,event.optString("id"),"Background speech requires an active voice session");return;}
+            for(Observer observer:observers)try{observer.onAgentEvent(event);}catch(Throwable ignored){}
+        });
+    }
     private void publish(JSONObject event) {
         main.post(() -> {
             if (stopping && "voice_announce".equals(event.optString("type"))) return;
@@ -128,7 +139,7 @@ public final class AgentService extends Service {
     }
     @Override public void onDestroy() {
         stopping = true;
-        instance = null; if (host != null) host.close(); stopForeground(STOP_FOREGROUND_REMOVE);
+        instance = null; if (runtimeLease != null) runtimeLease.close(); stopForeground(STOP_FOREGROUND_REMOVE);
         try { publish(new JSONObject().put("type", "stopped")); } catch (Exception ignored) { }
         super.onDestroy();
     }

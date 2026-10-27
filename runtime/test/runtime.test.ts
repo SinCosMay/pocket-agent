@@ -1,3 +1,4 @@
+import {emptyAutonomy} from '../src/autonomy.js';
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import {PocketRuntime,NativeBridge,DEFAULT_MAIN_PROMPT} from '../src/runtime.js';
@@ -5,6 +6,7 @@ import {delay} from '../src/scripted.js';
 import {AssistantMessageEventStream,validateToolArguments} from '@earendil-works/pi-ai';
 import {toolResult,MobileSubagentParams,nativeTools} from '../src/tools.js';
 import {SubagentParams,parseSubagentInvocation} from '../vendor/pi9/schema.js';
+import {memoryTools} from '../src/memory.js';
 
 class Bridge implements NativeBridge {
  state:any={};events:any[]=[];tools:any[]=[];credentials:any={authMode:'scripted'};
@@ -14,7 +16,9 @@ class Bridge implements NativeBridge {
   if(method==='store.load')result=this.state;
   if(method==='store.save'){this.state=structuredClone(args.state);result={saved:true};}
   if(method==='tool'){this.tools.push(args);result={available:true,operation_prefix:'20741-0123456789abcdef',owner:args.owner};}
-  return JSON.stringify({ok:true,result});
+  if(method==='autonomy.load')result=emptyAutonomy();
+    if(method==='autonomy.status')result={enabled:false};
+    return JSON.stringify({ok:true,result});
  }
  emit(json:string):void {this.events.push(JSON.parse(json));}
 }
@@ -354,25 +358,28 @@ test('fixture never retries unknown mutations or stale errors without a pre-disp
  }
 });
 
-test('custom main system prompt persists through turns, restart and provider reconfiguration',async()=>{
+test('personal instructions supplement the core and persist through turns, restart and provider reconfiguration',async()=>{
  const bridge=new Bridge(),runtime=new PocketRuntime(bridge);
  const custom='You are the custom main Pocket Agent. Keep replies concise and verified.';
- command(runtime,{action:'set_system_prompt',text:custom});
- assert.equal(runtime.state().mainSystemPrompt,custom);
+ command(runtime,{action:'set_personal_instructions',text:custom});
+ assert.equal(runtime.state().personalInstructions,custom);
  assert.match(runtime.main.agent.state.systemPrompt,/custom main Pocket Agent/);
  command(runtime,{action:'send',text:'hello custom prompt'});
  await until(()=>!runtime.state().active);
  assert.match(String((runtime.main.messages[0] as any).content),/custom main Pocket Agent/,'memory injection must preserve the custom main prompt');
  bridge.credentials={authMode:'scripted',model:'scripted'};
  command(runtime,{action:'configure'});
- assert.equal(runtime.state().mainSystemPrompt,custom);
+ assert.equal(runtime.state().personalInstructions,custom);
  assert.match(runtime.main.agent.state.systemPrompt,/custom main Pocket Agent/,'provider rebuild must reuse the custom prompt');
  const restored=new PocketRuntime(bridge);
- assert.equal(restored.state().mainSystemPrompt,custom,'durable state restores the custom prompt');
+ assert.equal(restored.state().personalInstructions,custom,'durable state restores the custom prompt');
  assert.match(restored.main.agent.state.systemPrompt,/custom main Pocket Agent/);
- command(restored,{action:'set_system_prompt',reset:true});
- assert.equal(restored.state().mainSystemPrompt,DEFAULT_MAIN_PROMPT);
- assert.equal(bridge.state.mainSystemPrompt,DEFAULT_MAIN_PROMPT,'reset persists the built-in default');
+ command(restored,{action:'set_personal_instructions',reset:true});
+ assert.equal(restored.state().personalInstructions,'');
+ assert.ok(restored.main.agent.state.systemPrompt.startsWith(DEFAULT_MAIN_PROMPT));
+ assert.equal('mainSystemPrompt' in restored.state(),false);
+ assert.equal('defaultMainSystemPrompt' in restored.state(),false);
+ assert.equal(bridge.state.personalInstructions,'','reset clears only personal preferences');
 });
 
 test('reasoning effort survives restart and provider reconfiguration while invalid stored values fall back to low',()=>{
@@ -415,8 +422,8 @@ test('retained workers persist model-bound reasoning proof, keep it on same-prov
 test('paused main with retained inbox can still apply provider and prompt settings',()=>{
  const bridge=new Bridge(),runtime=new PocketRuntime(bridge),internal=runtime as any;
  internal.mainPaused=true;internal.inbox=[{type:'user',text:'retained while context is full'}];
- command(runtime,{action:'configure',systemPrompt:'Prompt updated while paused'});
- assert.equal(runtime.state().mainSystemPrompt,'Prompt updated while paused');
+ command(runtime,{action:'configure',personalInstructions:'Prompt updated while paused'});
+ assert.equal(runtime.state().personalInstructions,'Prompt updated while paused');
  assert.equal(runtime.state().mainPaused,true);assert.equal(internal.inbox.length,1,'settings must not discard paused queued work');
 });
 
@@ -446,12 +453,156 @@ test('new main thread clears old main delivery but retains a resumable worker',a
  assert.equal(rejected.ok,false);assert.match(rejected.error,/Stop active work/);
 });
 
+
+test('main history identity survives restart and rotates only on a fresh main thread',()=>{
+ const bridge=new Bridge(),first=new PocketRuntime(bridge);
+ const original=first.state().mainThreadId;
+ assert.match(original,/^[a-f0-9-]{36}$/);
+ assert.equal(bridge.state.mainThreadId,original);
+ const restored=new PocketRuntime(bridge);
+ assert.equal(restored.state().mainThreadId,original);
+ command(restored,{action:'new_main'});
+ assert.notEqual(restored.state().mainThreadId,original);
+ assert.equal(bridge.state.mainThreadId,restored.state().mainThreadId);
+});
+
+test('a rejected main reset preserves the queued inbox, receipts, and history identity',async()=>{
+ class FailingBridge extends Bridge {
+  fail=false;
+  override call(method:string,json:string):string {
+   if(this.fail&&method.startsWith('store.save'))throw new Error('synthetic archive failure');
+   return super.call(method,json);
+  }
+ }
+ const bridge=new FailingBridge(),runtime=new PocketRuntime(bridge),internal=runtime as any;
+ command(runtime,{action:'send',text:'delegate delay=20'});
+ await until(()=>runtime.state().tasks.length>0&&!runtime.busy);internal.mainPaused=true;
+ await until(()=>runtime.state().tasks[0]?.status==='completed',8000);
+ const id=runtime.state().tasks[0].conversationId;
+ internal.inbox.push({type:'user',text:'queued before reset'});
+ const before={inbox:structuredClone(internal.inbox),delivered:[...internal.delivered],thread:runtime.state().mainThreadId,
+  receipt:runtime.runtime.conversation(id).generations.at(-1)!.receipts.model};
+ bridge.fail=true;
+ assert.equal(JSON.parse(runtime.dispatch(JSON.stringify({action:'new_main'}))).ok,false);
+ assert.deepEqual(internal.inbox,before.inbox);assert.deepEqual([...internal.delivered],before.delivered);
+ assert.equal(runtime.state().mainThreadId,before.thread);
+ assert.equal(runtime.runtime.conversation(id).generations.at(-1)!.receipts.model,before.receipt);
+ bridge.fail=false;command(runtime,{action:'new_main'});
+});
+test('archive identities survive restore but are never reused with a short worker ID',async()=>{
+ const bridge=new Bridge(),runtime=new PocketRuntime(bridge);
+ const started=runtime.startTasks([{kind:'spawn',agent:'researcher',label:'Read capabilities',prompt:'Read capabilities'}],{initiatedBy:'user'});
+ const id=started.starts[0].conversationId;
+ await until(()=>runtime.state().tasks[0]?.status==='completed');
+ const owner=runtime.historyOwner(id);assert.notEqual(owner,id);runtime.save();
+ const restored=new PocketRuntime(bridge);assert.equal(restored.historyOwner(id),owner);
+ await restored.runtime.removeConversations([id]);restored.cleanupRemoved();restored.save();
+ const next=new PocketRuntime(bridge);
+ const replacement=(next as any).createSession(id);
+ assert.notEqual(next.historyOwner(id),owner);assert.notEqual(next.historyOwner(id),id);replacement.dispose();
+});
+test('queued workers persist archive identities before session creation and cannot inherit legacy archives',async()=>{
+ class LegacyArchiveBridge extends Bridge {
+  legacyOwner='';historyOwners:string[]=[];
+  override call(method:string,json:string):string {
+   const args=JSON.parse(json);
+   if(method==='history.search') {
+    this.historyOwners.push(args.owner);
+    return JSON.stringify({ok:true,result:{messages:args.owner===this.legacyOwner?[{id:17,text:'Private old worker transcript'}]:[]}});
+   }
+   return super.call(method,json);
+  }
+ }
+ const bridge=new LegacyArchiveBridge(),runtime=new PocketRuntime(bridge,{maxExecuting:1,maxConversations:12});
+ const started=runtime.startTasks([
+  {kind:'spawn',agent:'researcher',label:'Busy worker',prompt:'Read capabilities delay=30000'},
+  {kind:'spawn',agent:'researcher',label:'Queued worker',prompt:'Read capabilities'},
+ ],{initiatedBy:'user'});
+ const queued=started.starts[1].conversationId;
+ assert.ok(!(runtime as any).sessions.has(queued));runtime.save();
+ const checkpoint=structuredClone(bridge.state),owner=checkpoint.workerHistoryOwners[queued];
+ assert.ok(owner);assert.notEqual(owner,queued);
+ await (runtime as any).stopAll();
+ const restoredBridge=new LegacyArchiveBridge();restoredBridge.state=checkpoint;restoredBridge.legacyOwner=queued;
+ const restored=new PocketRuntime(restoredBridge);
+ assert.equal(restored.historyOwner(queued),owner);
+ const result=await memoryTools(restored,queued).find(t=>t.name==='history_search').execute('read',{query:'Private'});
+ assert.deepEqual(result.details.messages,[]);assert.equal(restoredBridge.historyOwners.at(-1),owner);
+ // An incomplete mapping from an earlier archive-aware build fails closed too.
+ delete checkpoint.workerHistoryOwners[queued];
+ const incompleteBridge=new LegacyArchiveBridge();incompleteBridge.state=checkpoint;incompleteBridge.legacyOwner=queued;
+ const incomplete=new PocketRuntime(incompleteBridge);
+ assert.notEqual(incomplete.historyOwner(queued),queued);
+ const denied=await memoryTools(incomplete,queued).find(t=>t.name==='history_search').execute('read',{query:'Private'});
+ assert.deepEqual(denied.details.messages,[]);
+});
+test('malformed archive owner maps cannot restore a recycled legacy worker scope',async()=>{
+ class LegacyArchiveBridge extends Bridge {
+  legacyOwner='';
+  override call(method:string,json:string):string {
+   const args=JSON.parse(json);
+   if(method==='history.search')return JSON.stringify({ok:true,result:{messages:args.owner===this.legacyOwner?[{id:17,text:'Private old worker transcript'}]:[]}});
+   return super.call(method,json);
+  }
+ }
+ const seed=new Bridge(),runtime=new PocketRuntime(seed);
+ const started=runtime.startTasks([{kind:'spawn',agent:'researcher',label:'Retained worker',prompt:'Read capabilities'}],{initiatedBy:'user'});
+ const id=started.starts[0].conversationId;await until(()=>runtime.state().tasks[0]?.status==='completed');
+ runtime.save();const checkpoint=structuredClone(seed.state);checkpoint.mainPaused=true;
+ for(const invalid of [null,false,0,'',[],7,'legacy',{}]) {
+  const bridge=new LegacyArchiveBridge();bridge.legacyOwner=id;
+  bridge.state={...structuredClone(checkpoint),workerHistoryOwners:invalid};
+  const restored=new PocketRuntime(bridge);
+  assert.notEqual(restored.historyOwner(id),id,`Malformed map ${JSON.stringify(invalid)} must fail closed`);
+  const denied=await memoryTools(restored,id).find(t=>t.name==='history_search').execute('read',{query:'Private'});
+  assert.deepEqual(denied.details.messages,[]);
+ }
+ const legacy=new LegacyArchiveBridge();legacy.state=structuredClone(checkpoint);delete legacy.state.workerHistoryOwners;
+ assert.equal(new PocketRuntime(legacy).historyOwner(id),id,'Only checkpoints predating the owner map keep the legacy scope');
+});
+test('checkpoint redaction preserves archive identities for direct and chunked lookup while hiding message secrets',async()=>{
+ class ArchiveBridge extends Bridge {
+  pending='';chunks=0;
+  override call(method:string,json:string):string {
+   const args=JSON.parse(json);
+   if(method==='store.save.begin'){this.pending='';return JSON.stringify({ok:true,result:true});}
+   if(method==='store.save.chunk'){this.pending+=args.chunk;this.chunks++;return JSON.stringify({ok:true,result:true});}
+   if(method==='store.save.commit'){this.state=JSON.parse(this.pending);return JSON.stringify({ok:true,result:true});}
+   if(method==='history.search')return JSON.stringify({ok:true,result:{messages:Object.values(this.state.workerHistoryOwners??{}).includes(args.owner)?[{id:1,text:'Own archived receipt'}]:[]}});
+   return super.call(method,json);
+  }
+ }
+ const bridge=new ArchiveBridge();
+ bridge.credentials={authMode:'scripted',mcpServers:[{id:'version',name:'Version',url:'https://example.test/mcp',enabled:false,authMode:'headers',headers:[{name:'X-Version',value:'4'}]}]};
+ const runtime=new PocketRuntime(bridge);
+ const started=runtime.startTasks([{kind:'spawn',agent:'researcher',label:'Archive reader',prompt:'Read capabilities'}],{initiatedBy:'user'});
+ const id=started.starts[0].conversationId;await until(()=>runtime.state().tasks[0]?.status==='completed');
+ const owner=runtime.historyOwner(id),mainThread=runtime.state().mainThreadId;
+ assert.ok(owner.includes('4'),'UUID v4 supplies the short header collision');
+ bridge.credentials={...bridge.credentials,mcpServers:[...bridge.credentials.mcpServers,
+  {id:'worker-id',name:'Worker ID',url:'https://example.test/mcp',enabled:false,authMode:'headers',headers:[{name:'X-Worker',value:id}]}]};
+ command(runtime,{action:'mcp_reload'});runtime.save();
+ assert.equal(bridge.state.workerHistoryOwners[id],owner);assert.equal(bridge.state.mainThreadId,mainThread);
+ assert.equal(bridge.state.workers[0].conversationId,id);
+ const direct=await memoryTools(runtime,id).find(t=>t.name==='history_search').execute('direct',{query:'receipt'});
+ assert.equal(direct.details.messages[0].text,'Own archived receipt');
+ runtime.main.agent.state.messages.push({role:'user',timestamp:Date.now(),content:'z'.repeat(1600000)+` worker=${id} secret=4`} as any);
+ assert.equal(runtime.save(),true);assert.ok(bridge.chunks>0);
+ assert.equal(bridge.state.workerHistoryOwners[id],owner);assert.equal(bridge.state.mainThreadId,mainThread);
+ assert.equal(bridge.state.workers[0].conversationId,id);
+ assert.ok(bridge.state.mainMessages.at(-1).content.endsWith('worker=[redacted] secret=[redacted]'));
+ const restored=new PocketRuntime(bridge);assert.equal(restored.historyOwner(id),owner);
+ assert.equal(restored.state().tasks[0].conversationId,id);
+ const chunked=await memoryTools(restored,id).find(t=>t.name==='history_search').execute('chunked',{query:'receipt'});
+ assert.equal(chunked.details.messages[0].text,'Own archived receipt');
+});
+
 test('fresh-main startup intent discards persisted main work before automatic resume',()=>{
  const bridge=new Bridge();
  bridge.state={freshMainRequested:true,mainSystemPrompt:'Persisted custom prompt',mainMessages:[{role:'user',content:[{type:'text',text:'old main request'}],timestamp:1}],inbox:[{type:'user',text:'old queued request'}],mainTurns:9,mainPaused:true,busy:true,lastError:'old failure',observationPending:['old observation']};
  const runtime=new PocketRuntime(bridge),state=runtime.state();
  assert.deepEqual(state.messages,[]);assert.equal(state.mainTurns,0);assert.equal(state.mainPaused,false);assert.equal(state.mainInterrupted,false);assert.equal(state.lastError,null);
- assert.equal(state.mainSystemPrompt,'Persisted custom prompt');assert.deepEqual((runtime as any).inbox,[]);assert.deepEqual((runtime as any).observationPending,[]);
+ assert.equal(state.personalInstructions,'Persisted custom prompt');assert.deepEqual((runtime as any).inbox,[]);assert.deepEqual((runtime as any).observationPending,[]);
  assert.equal(bridge.state.freshMainRequested,undefined,'startup intent is consumed by the first durable checkpoint');
  assert.deepEqual(bridge.state.mainMessages.filter((m:any)=>m.role==='user'||m.role==='assistant'),[]);
 });
@@ -707,5 +858,54 @@ test('a discovered worker model is pinned across execution and restore without c
    assert.equal(restored.sessions.get(task.conversationId)?.agent.state.model.id,'main-strong','live credential changes drop the old worker model');
    assert.equal(restored.state().tasks[0].requestedConfig.model,undefined,'live worker state clears the stale model');
    assert.equal(bridge.state.workers[0].requestedConfig.model,undefined,'saved worker state cannot restore the old provider model');
+ } finally {globalThis.fetch=originalFetch;}
+});
+
+
+test('list_models delivers a large Codex catalog with reasoning metadata and omits provider instructions',async()=>{
+ const originalFetch=globalThis.fetch;
+ const expiry=Date.now()+3600000,accountId='catalog-account';
+ const token=[Buffer.from('{}').toString('base64url'),Buffer.from(JSON.stringify({exp:Math.floor(expiry/1000),
+   'https://api.openai.com/auth':{chatgpt_account_id:accountId}})).toString('base64url'),'signature'].join('.');
+ const bridge=new Bridge();bridge.credentials={authMode:'codex-account',model:'main-model',accessToken:token,
+   refreshToken:'catalog-refresh',accountId,expiresAt:expiry};
+ globalThis.fetch=(async()=>Response.json({models:[{slug:'catalog-model',base_instructions:'x'.repeat(600*1024),
+   default_reasoning_level:'medium',supported_reasoning_levels:[{effort:'low'},{effort:'medium'},{effort:'high'}]}]})) as typeof fetch;
+ try {
+   const runtime=new PocketRuntime(bridge);
+   command(runtime,{action:'list_models',requestId:'large-catalog'});
+   await until(()=>bridge.events.some(e=>e.type==='models'&&e.requestId==='large-catalog'));
+   const event=bridge.events.find(e=>e.type==='models'&&e.requestId==='large-catalog');
+   assert.equal(event.error,undefined);
+   assert.deepEqual(event.models,[{id:'catalog-model',name:'catalog-model',supportedReasoningLevels:['low','medium','high'],defaultReasoningLevel:'medium'}]);
+   assert.equal(runtime.state().provider.model,'main-model');
+   assert.equal(runtime.state().provider.reasoningEffort,'low');
+   assert.ok(JSON.stringify(event).length<500);
+ } finally {globalThis.fetch=originalFetch;}
+});
+
+
+test('explicit same-ID catalog workers keep their reasoning restriction through configure and restart',async()=>{
+ const originalFetch=globalThis.fetch;
+ const bridge=new Bridge();bridge.credentials={authMode:'openai',endpoint:'https://provider.example.test/v1',apiKey:'worker-source-key',
+   model:'shared-model',modelSource:'manual',reasoningEffort:'max',providerRevision:'worker-source-provider'};
+ const efforts:string[]=[];
+ globalThis.fetch=(async(input,init)=>{
+   if(String(input).endsWith('/models'))return Response.json({data:[{id:'shared-model',supported_reasoning_levels:['low','high']}]});
+   efforts.push(JSON.parse(String(init?.body)).reasoning.effort);
+   const event={type:'response.completed',response:{id:'source-response',status:'completed',output:[],usage:{input_tokens:1,output_tokens:0,total_tokens:1,input_tokens_details:{cached_tokens:0}}}};
+   return new Response('event: response.completed\ndata: '+JSON.stringify(event)+'\n\n',{headers:{'content-type':'text/event-stream'}});
+ }) as typeof fetch;
+ try {
+   const runtime=new PocketRuntime(bridge);await runtime.refreshModels();
+   const handle=runtime.startTasks([{kind:'spawn',agent:'researcher',label:'Catalog source',prompt:'Read state',model:'shared-model',thinking:'max'}],{initiatedBy:'user'});
+   assert.equal(handle.starts[0].ok,true);await handle.completion;
+   await until(()=>runtime.state().tasks[0]?.status==='completed');
+   const id=runtime.state().tasks[0].conversationId;
+   command(runtime,{action:'configure'});
+   await runtime.sessions.get(id)!.prompt('After settings save');
+   const restored=new PocketRuntime(bridge);
+   await restored.sessions.get(id)!.prompt('After restart');
+   assert.deepEqual(efforts,['low','low','low']);
  } finally {globalThis.fetch=originalFetch;}
 });

@@ -129,3 +129,35 @@ test('Nebius discovery uses its fixed OpenAI-compatible endpoint and bearer key'
  });
  assert.deepEqual(models,[{id:'zai-org/GLM-5.3-Flash',name:'zai-org/GLM-5.3-Flash'}]);
 });
+
+
+test('Codex catalogs larger than 512 KiB are accepted with or without Content-Length, but remain bounded',async()=>{
+ const payload=JSON.stringify({models:[{slug:'codex-large',base_instructions:'x'.repeat(600*1024),
+   supported_reasoning_levels:[{effort:'low'},{effort:'high'}]}]});
+ for(const declared of [true,false]) {
+   const models=await discoverProviderModels({mode:'codex-account'},accountCredentials(),async()=>new Response(payload,{
+     headers:declared?{'content-length':String(Buffer.byteLength(payload))}:{},
+   }));
+   assert.deepEqual(models,[{id:'codex-large',name:'codex-large',supportedReasoningLevels:['low','high']}]);
+ }
+ for(const declared of [true,false]) {
+   let cancelled=false;
+   const response=new Response(new ReadableStream({
+     start(controller){controller.enqueue(new Uint8Array(4*1024*1024+1));},
+     cancel(){cancelled=true;},
+   }),{headers:declared?{'content-length':String(4*1024*1024+1)}:{}});
+   await assert.rejects(()=>discoverProviderModels({mode:'codex-account'},accountCredentials(),async()=>response),/size limit/);
+   assert.equal(cancelled,true);
+ }
+ // The larger Codex allowance must not relax arbitrary API-key providers.
+ await assert.rejects(()=>discoverProviderModels(base,credentials,async()=>new Response(payload)),/size limit/);
+});
+
+test('OpenAI-compatible catalogs preserve advertised reasoning choices without inventing levels',async()=>{
+ const models=await discoverProviderModels(base,credentials,async()=>json({data:[
+   {id:'custom-model',supported_reasoning_levels:['low','high','high','unknown'],default_reasoning_level:'high'},
+   {id:'no-metadata'},
+ ]}));
+ assert.deepEqual(models,[{id:'custom-model',name:'custom-model',supportedReasoningLevels:['low','high'],defaultReasoningLevel:'high'},
+   {id:'no-metadata',name:'no-metadata'}]);
+});
