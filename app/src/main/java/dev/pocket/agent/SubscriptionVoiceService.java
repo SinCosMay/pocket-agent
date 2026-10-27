@@ -93,23 +93,6 @@ public final class SubscriptionVoiceService extends Service implements AgentServ
         @Override public void onDelegation(long epoch, String id, String text) {
             main.post(() -> { if (started) lifecycle.delegated(epoch, id, text); });
         }
-        @Override public void onPlaybackFinished(long epoch) {
-            main.post(() -> { if (started) lifecycle.playbackFinished(epoch, SystemClock.elapsedRealtime()); });
-        }
-        @Override public void onActivity(long epoch) {
-            main.post(() -> { if (started) lifecycle.activity(epoch, SystemClock.elapsedRealtime()); });
-        }
-        @Override public void onTranscript(long epoch, String text) {
-            main.post(() -> {
-                if (started) lifecycle.transcriptActivity(epoch, text, SystemClock.elapsedRealtime());
-            });
-        }
-        @Override public void onSpeechStarted(long epoch) {
-            main.post(() -> { if (started) lifecycle.speechStarted(epoch, SystemClock.elapsedRealtime()); });
-        }
-        @Override public void onSpeechStopped(long epoch) {
-            main.post(() -> { if (started) lifecycle.speechStopped(epoch, SystemClock.elapsedRealtime()); });
-        }
         @Override public void onMicrophoneReady(long epoch) {
             main.post(() -> {
                 if (!started || lifecycle.epoch() != epoch
@@ -129,11 +112,6 @@ public final class SubscriptionVoiceService extends Service implements AgentServ
         @Override public void onDisconnected(long epoch) {
             main.post(() -> { if (started) lifecycle.disconnected(epoch); });
         }
-        @Override public void onInterrupted(long epoch) {
-            main.post(() -> {
-                if (started) lifecycle.inputInterrupted(epoch, SystemClock.elapsedRealtime());
-            });
-        }
     };
 
     @Override public void onCreate() {
@@ -148,7 +126,7 @@ public final class SubscriptionVoiceService extends Service implements AgentServ
         audioRoute = new SubscriptionVoiceAudioRoute(this);
         outputSpeech = new SubscriptionVoiceOutputSpeech(this, new SubscriptionVoiceOutputSpeech.Listener() {
             @Override public void ready(long epoch) { callbacks.onConnected(epoch); }
-            @Override public void finished(long epoch) { callbacks.onPlaybackFinished(epoch); }
+            @Override public void finished(long epoch) { lifecycle.playbackFinished(epoch, SystemClock.elapsedRealtime()); }
             @Override public void failed(long epoch) { callbacks.onError(epoch, "Phone speech audio unavailable"); }
         });
         lifecycle = new SubscriptionVoiceLifecycle(new SubscriptionVoiceLifecycle.Port() {
@@ -163,7 +141,7 @@ public final class SubscriptionVoiceService extends Service implements AgentServ
                 }
             }
             @Override public void setMicrophoneEnabled(boolean enabled) {
-                if (enabled && !ensureSpeakerRoute()) return;
+                if (enabled && !ensureAudioRoute()) return;
                 transport.setMicrophoneEnabled(enabled);
                 if (microphoneStartTimeout != null) main.removeCallbacks(microphoneStartTimeout);
                 if (enabled && !lifecycle.microphoneStarted()) {
@@ -241,17 +219,12 @@ public final class SubscriptionVoiceService extends Service implements AgentServ
                 }
             }
             @Override public void sendSpeech(String delegationId, String text) {
-                if (!ensureSpeakerRoute()) return;
+                if (!ensureAudioRoute()) return;
                 if (lifecycle.microphoneAllowed()) transport.sendSpeech(delegationId, text);
                 else outputSpeech.speak(lifecycle.epoch(), text);
             }
-            @Override public void interruptSpeech() { transport.interruptSpeech(); }
             @Override public void connectionReadyCue() {
                 playTone(android.media.ToneGenerator.TONE_PROP_ACK, 220);
-            }
-            @Override public void interruptPi(String turnId) {
-                try { sendPi(new JSONObject().put("action", "stop_main").put("voiceSessionId", turnId)); }
-                catch (org.json.JSONException invalid) { throw new IllegalStateException(invalid); }
             }
             @Override public void announcementFailed(String id, String reason) {
                 AgentService.reportVoiceFailure(SubscriptionVoiceService.this, id, reason);
@@ -345,9 +318,9 @@ public final class SubscriptionVoiceService extends Service implements AgentServ
         initialSpeech = null;
     }
 
-    private boolean ensureSpeakerRoute() {
+    private boolean ensureAudioRoute() {
         if (audioRoute.start()) return true;
-        lifecycle.failed(lifecycle.epoch(), "Phone speaker audio route unavailable");
+        lifecycle.failed(lifecycle.epoch(), "Voice audio route unavailable");
         return false;
     }
 

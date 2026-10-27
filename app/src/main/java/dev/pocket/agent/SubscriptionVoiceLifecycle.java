@@ -11,8 +11,6 @@ final class SubscriptionVoiceLifecycle {
         void close(long epoch);
         void sendToPi(String turnId, String utterance);
         void sendSpeech(String delegationId, String text);
-        void interruptSpeech();
-        default void interruptPi(String turnId) { }
         default void connectionReadyCue() { }
         void status(String text);
         default boolean startInitialCapture(long epoch) { return false; }
@@ -33,7 +31,7 @@ final class SubscriptionVoiceLifecycle {
     private final LinkedHashSet<String> delivered = new LinkedHashSet<>();
     private State state = State.CLOSED;
     private long epoch, connectionDeadline;
-    private boolean transportReady, microphoneReady, capturingInitial, speechActive;
+    private boolean transportReady, microphoneReady, capturingInitial;
     private final ArrayDeque<String> pendingUserContext = new ArrayDeque<>();
     private boolean explicitConversation;
     private boolean listenAfterSpeech = true;
@@ -86,7 +84,6 @@ final class SubscriptionVoiceLifecycle {
         allowMicrophone = microphone;
         transportReady = false;
         microphoneReady = false;
-        speechActive = false;
         pendingUserContext.clear();
         connectionDeadline = nowMs + CONNECT_MS;
         delivered.clear();
@@ -146,39 +143,12 @@ final class SubscriptionVoiceLifecycle {
         return true;
     }
 
-    /** Voice activity interrupts playback, never an accepted Pi task. */
-    void transcriptActivity(long id, String text, long nowMs) {
-        if (id != epoch || !allowMicrophone || state == State.CLOSED ||
-                text == null || text.trim().isEmpty()) return;
-        if (state == State.SPEAKING) inputInterrupted(id, nowMs);
-    }
-
-    void activity(long id, long nowMs) { /* Silence does not close an explicit voice session. */ }
-
-    void speechStarted(long id, long nowMs) {
-        if (id != epoch || !allowMicrophone || state == State.CLOSED) return;
-        speechActive = true;
-        inputInterrupted(id, nowMs);
-    }
-
-    void speechStopped(long id, long nowMs) {
-        if (id != epoch || !allowMicrophone || state == State.CLOSED) return;
-        speechActive = false;
-        drain();
-    }
-
     void delegated(long id, String requestId, String transcript) {
         if (id != epoch || !transportReady || state == State.CLOSED ||
                 requestId == null || requestId.isEmpty() ||
                 transcript == null || transcript.trim().isEmpty() ||
                 !delivered.add(requestId)) return;
         if (delivered.size() > 512) delivered.remove(delivered.iterator().next());
-        if (state == State.SPEAKING) interruptPlayback();
-        // Confirmed new input supersedes the old conversational response, as in
-        // voice.ind. VAD alone only mutes playback. Scoped cancellation leaves
-        // background workers and unrelated main/chat requests alone.
-        while (!turns.isEmpty()) port.interruptPi(turns.removeFirst().id);
-        if (state == State.CLOSED) return;
         submit(requestId, transcript.trim());
         drain();
     }
@@ -217,7 +187,7 @@ final class SubscriptionVoiceLifecycle {
     }
 
     private void drain() {
-        if (state == State.CLOSED || state == State.SPEAKING || !transportReady) return;
+        if (state == State.CLOSED || !transportReady) return;
         if (capturingInitial) {
             port.status("Listening to your first request");
             return;
@@ -226,7 +196,31 @@ final class SubscriptionVoiceLifecycle {
             port.status("Starting voice microphone");
             return;
         }
-        if (!speechActive && !turns.isEmpty() && turns.peekFirst().finished) {
+        if (allowMicrophone) {
+            // The native live session owns speech and turn-taking. Forward each
+            // completed result even if another result is still being spoken;
+            // do not wait for audio deltas, silence, VAD, or local playback IDs.
+            for (PiTurn turn : new java.util.ArrayList<>(turns)) {
+                if (!turn.finished) continue;
+                turns.remove(turn);
+                String text = turn.output.toString().trim();
+                port.sendSpeech(turn.delegationId, text.isEmpty()
+                    ? "I couldn't complete that request." : text);
+                if (state == State.CLOSED) return;
+            }
+            while (!announcements.isEmpty()) {
+                Announcement announcement = announcements.removeFirst();
+                port.sendSpeech(null, announcement.text);
+                if (state == State.CLOSED) return;
+            }
+            state = turns.isEmpty() ? State.LISTENING : State.WAITING_PI;
+            port.status(turns.isEmpty() ? "Listening · you can speak during replies"
+                : "Pi is working · you can keep talking");
+            return;
+        }
+        // Output-only system TTS has real utterance-completion callbacks.
+        if (state == State.SPEAKING) return;
+        if (!turns.isEmpty() && turns.peekFirst().finished) {
             PiTurn turn = turns.removeFirst();
             String text = turn.output.toString().trim();
             state = State.SPEAKING;
@@ -234,7 +228,7 @@ final class SubscriptionVoiceLifecycle {
             port.status("Speaking");
             port.sendSpeech(turn.delegationId, text.isEmpty()
                 ? "I couldn't complete that request." : text);
-        } else if (!speechActive && !announcements.isEmpty()) {
+        } else if (!announcements.isEmpty()) {
             Announcement announcement = announcements.removeFirst();
             activeAnnouncementId = announcement.id;
             state = State.SPEAKING;
@@ -254,20 +248,6 @@ final class SubscriptionVoiceLifecycle {
         state = State.LISTENING;
         if (!explicitConversation && !listenAfterSpeech && announcements.isEmpty() && turns.isEmpty()) close();
         else drain();
-    }
-
-    private void interruptPlayback() {
-        port.interruptSpeech();
-        if (activeAnnouncementId != null) {
-            port.announcementFailed(activeAnnouncementId, "Announcement interrupted before playback completion");
-            activeAnnouncementId = null;
-        }
-        state = turns.isEmpty() ? State.LISTENING : State.WAITING_PI;
-    }
-
-    void inputInterrupted(long id, long nowMs) {
-        if (id != epoch || state == State.CLOSED) return;
-        if (state == State.SPEAKING) interruptPlayback();
     }
 
     void tick(long nowMs) {
@@ -305,7 +285,6 @@ final class SubscriptionVoiceLifecycle {
         while (!announcements.isEmpty())
             port.announcementFailed(announcements.removeFirst().id, "Subscription speech queue closed before playback");
         delivered.clear();
-        speechActive = false;
         port.close(oldEpoch);
         port.status("Voice disconnected · tasks continue in chat");
     }

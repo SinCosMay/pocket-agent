@@ -20,8 +20,8 @@ android {
             "dev.pocket.agent.historyvalidation" else "dev.pocket.agent"
         minSdk = 31
         targetSdk = 36
-        versionCode = 10
-        versionName = "0.1.10-voice-conversation.1"
+        versionCode = 11
+        versionName = "0.1.11-voice-duplex.1"
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
         buildConfigField("boolean", "DEVELOPMENT_TOOLS", "false")
     }

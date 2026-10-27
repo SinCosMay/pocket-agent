@@ -17,8 +17,6 @@ public final class SubscriptionVoiceLifecycleSimulator {
         @Override public void sendUserContext(String text) { calls.add("context:" + text); }
         @Override public void sendToPi(String turnId, String text) { calls.add("pi:" + turnId + ":" + text); }
         @Override public void sendSpeech(String id, String text) { calls.add("speech:" + id + ":" + text); }
-        @Override public void interruptSpeech() { calls.add("interrupt-speech"); }
-        @Override public void interruptPi(String id) { calls.add("interrupt-pi:" + id); }
         @Override public void connectionReadyCue() { calls.add("connection-ready-cue"); }
         @Override public void status(String text) { }
         @Override public void failure(String reason) { calls.add("failure:" + reason); }
@@ -137,29 +135,30 @@ public final class SubscriptionVoiceLifecycleSimulator {
             "late callbacks resurrected disconnected voice");
     }
 
-    private static void confirmedBargeInSupersedesOnlyOldVoiceTurns() {
+    private static void nativeDuplexNeverWaitsForPlaybackCallbacks() {
         FakePort p = new FakePort();
         SubscriptionVoiceLifecycle s = new SubscriptionVoiceLifecycle(p);
         s.wake(0); connectedAndRecording(s, 1, 100);
         s.delegated(1, "a", "Perform a long task");
-        s.speechStarted(1, 200);
-        s.inputInterrupted(1, 201);
-        s.transcriptActivity(1, "And check the calendar", 300);
-        check(s.state() == SubscriptionVoiceLifecycle.State.WAITING_PI, "raw speech detached Pi result delivery");
-        check(p.count("interrupt-pi:") == 0, "VAD or partial transcript cancelled a task");
         s.delegated(1, "b", "Also check the calendar");
-        check(p.count("pi:") == 2, "new complete request was lost");
-        check(p.has("interrupt-pi:" + p.turn(0)) && p.count("interrupt-pi:") == 1,
-            "confirmed replacement did not cancel exactly the prior voice response");
+        check(p.count("pi:") == 2, "overlapping complete request was lost");
+        // A slow task must not block a newer result or require cancellation.
         s.piDelta(p.turn(1), "Second result."); s.piFinished(p.turn(1));
+        check(p.has("speech:b:Second result."), "new result waited for an older task");
         s.piDelta(p.turn(0), "First result."); s.piFinished(p.turn(0));
-        check(p.count("speech:") == 0, "speech output started while VAD said user was speaking");
-        s.speechStopped(1, 1000);
-        check(!p.has("speech:a:First result."), "late interrupted output was spoken");
-        check(p.has("speech:b:Second result."), "queued result was lost or used wrong delegation ID");
-        s.playbackFinished(1, 3000);
-        s.tick(3_600_000);
-        check(s.state() == SubscriptionVoiceLifecycle.State.LISTENING, "task completion closed voice");
+        check(p.has("speech:a:First result."), "accepted task lost its result");
+        // No VAD, output_audio.delta, turn.done or playback callback arrives.
+        s.delegated(1, "c", "Follow up while the previous reply is speaking");
+        s.piDelta(p.turn(2), "Third result."); s.piFinished(p.turn(2));
+        s.piFinished(p.turn(2));
+        check(p.has("speech:c:Third result.") && p.count("speech:") == 3,
+            "follow-up reply was blocked or duplicated by playback state");
+        s.tick(86_400_000);
+        check(s.state() == SubscriptionVoiceLifecycle.State.LISTENING,
+            "live speech or silence closed the native session");
+        check(p.count("mic:true") == 1 && p.count("mic:false") == 0,
+            "reply delivery paused or restarted the live microphone");
+        s.close();
     }
 
     private static void disconnectOnlyDetachesVoice() {
@@ -171,28 +170,26 @@ public final class SubscriptionVoiceLifecycleSimulator {
         s.disconnected(1);
         check(s.state() == SubscriptionVoiceLifecycle.State.CLOSED && p.count("close:") == 1,
             "network failure didn't release voice resources");
-        check(p.count("interrupt-pi:") == 0, "disconnect cancelled accepted work");
         s.wake(200); connectedAndRecording(s, 2, 300);
         s.microphoneReady(1);
         s.piDelta(turn, "Old result"); s.piFinished(turn);
         check(p.count("speech:") == 0, "old task result leaked into reopened voice session");
     }
 
-    private static void announcementsAndBargeIn() {
+    private static void nativeAnnouncementsDoNotBlockUserRequests() {
         FakePort p = new FakePort();
         SubscriptionVoiceLifecycle s = new SubscriptionVoiceLifecycle(p);
         check(!s.announce("empty", " ", true, 0), "empty speech accepted");
-        s.announce("hello", "Hello user", true, 0); connectedAndRecording(s, 1, 100);
-        check(p.count("capture:") == 0, "announcement started initial speech recognizer");
-        s.announce("bye", "Goodbye", false, 101);
-        s.playbackFinished(1, 200); s.playbackFinished(1, 300);
-        check(s.state() == SubscriptionVoiceLifecycle.State.CLOSED, "no-listen announcement stayed open");
-        s.announce("interrupted", "Reminder", true, 400); connectedAndRecording(s, 2, 500);
-        s.transcriptActivity(2, "Stop", 600);
-        check(p.has("failed:interrupted") && p.count("interrupt-speech") == 1,
-            "barge-in failed to interrupt playback");
-        s.tick(3_600_000);
-        check(s.state() == SubscriptionVoiceLifecycle.State.LISTENING, "pause after barge-in closed microphone");
+        s.wake(0); connectedAndRecording(s, 1, 100);
+        s.announce("hello", "Hello user", true, 101);
+        s.announce("bye", "Goodbye", false, 102);
+        s.delegated(1, "followup", "Keep talking");
+        s.piDelta(p.turn(0), "Follow-up accepted."); s.piFinished(p.turn(0));
+        check(p.count("speech:") == 3, "announcement playback blocked follow-up delivery");
+        check(s.state() == SubscriptionVoiceLifecycle.State.LISTENING,
+            "native announcements left the call gated on playback");
+        s.close();
+        check(p.count("failed:") == 0, "sent native context falsely claimed playback failure");
     }
 
     private static void outputOnlyAnnouncement() {
@@ -237,7 +234,7 @@ public final class SubscriptionVoiceLifecycleSimulator {
         check(p.has("speech:null:Main thread result."), "typed main-thread reply was not spoken");
         s.close();
         s.piDelta(p.turn(0), "late result"); s.piFinished(p.turn(0));
-        check(!s.typed("After disconnect") && p.count("interrupt-pi:") == 0,
+        check(!s.typed("After disconnect"),
             "disconnect stole typed input or cancelled main-thread work");
     }
 
@@ -263,9 +260,9 @@ public final class SubscriptionVoiceLifecycleSimulator {
         firstTranscriptBeforeConnection();
         connectionBeforeFirstTranscript();
         captureFailureAndConnectionTimeout();
-        confirmedBargeInSupersedesOnlyOldVoiceTurns();
+        nativeDuplexNeverWaitsForPlaybackCallbacks();
         disconnectOnlyDetachesVoice();
-        announcementsAndBargeIn();
+        nativeAnnouncementsDoNotBlockUserRequests();
         outputOnlyAnnouncement();
         explicitCallSurvivesNoListenAnnouncement();
         typedMainThreadRequestsJoinVoiceConversation();

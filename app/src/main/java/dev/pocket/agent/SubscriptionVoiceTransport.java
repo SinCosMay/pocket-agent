@@ -11,15 +11,9 @@ final class SubscriptionVoiceTransport implements AutoCloseable {
     interface Callback {
         void onConnected(long epoch);
         void onDelegation(long epoch, String id, String text);
-        void onPlaybackFinished(long epoch);
-        void onActivity(long epoch);
-        default void onSpeechStarted(long epoch) {}
-        default void onSpeechStopped(long epoch) {}
         default void onMicrophoneReady(long epoch) {}
         void onError(long epoch, String safeMessage);
         void onDisconnected(long epoch);
-        default void onInterrupted(long epoch) {}
-        default void onTranscript(long epoch, String text) {}
     }
 
     private final Context context;
@@ -51,26 +45,8 @@ final class SubscriptionVoiceTransport implements AutoCloseable {
                     @Override public void onDelegation(long id, String requestId, String transcript) {
                         if (matches(id)) callback.onDelegation(id, requestId, transcript);
                     }
-                    @Override public void onPlaybackFinished(long id) {
-                        if (matches(id)) callback.onPlaybackFinished(id);
-                    }
-                    @Override public void onActivity(long id) {
-                        if (matches(id)) callback.onActivity(id);
-                    }
-                    @Override public void onSpeechStarted(long id) {
-                        if (matches(id)) callback.onSpeechStarted(id);
-                    }
-                    @Override public void onSpeechStopped(long id) {
-                        if (matches(id)) callback.onSpeechStopped(id);
-                    }
                     @Override public void onMicrophoneReady(long id) {
                         if (matches(id)) callback.onMicrophoneReady(id);
-                    }
-                    @Override public void onInterrupted(long id) {
-                        if (matches(id)) callback.onInterrupted(id);
-                    }
-                    @Override public void onTranscript(long id, String text) {
-                        if (matches(id)) callback.onTranscript(id, text);
                     }
                     @Override public void onError(long id, String safeMessage) {
                         if (!matches(id)) return;
@@ -104,11 +80,6 @@ final class SubscriptionVoiceTransport implements AutoCloseable {
     synchronized void sendUserContext(String text) {
         if (!disposed && transport != null)
             transport.sendUserContext(activeEpoch, text);
-    }
-
-    synchronized void interruptSpeech() {
-        if (!disposed && transport != null)
-            transport.interruptSpeech(activeEpoch);
     }
 
     synchronized void close(long epoch) {

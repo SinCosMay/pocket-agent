@@ -243,6 +243,91 @@ public final class SubscriptionVoiceActivationDeviceTest {
         assertEquals(AudioManager.MODE_NORMAL, audio.getMode());
     }
 
+    private static final class FakeRoutePlatform implements SubscriptionVoiceAudioRoute.Platform {
+        int mode = AudioManager.MODE_NORMAL, current = 1;
+        List<SubscriptionVoiceAudioRoute.Device> available = new ArrayList<>();
+        final List<Integer> selections = new ArrayList<>();
+        Runnable changed;
+        boolean reject, cleared, unobserved;
+        void devices(int... types) {
+            available.clear();
+            for (int type : types) available.add(new SubscriptionVoiceAudioRoute.Device(type, type));
+            if (changed != null) changed.run();
+        }
+        @Override public int mode() { return mode; }
+        @Override public void mode(int value) { mode = value; }
+        @Override public List<SubscriptionVoiceAudioRoute.Device> devices() { return available; }
+        @Override public int currentDeviceId() { return current; }
+        @Override public boolean select(int id) {
+            selections.add(id);
+            // Deliberately asynchronous: Android has not confirmed the new route yet.
+            return !reject;
+        }
+        @Override public void clear() { cleared = true; }
+        @Override public void observe(Runnable value) { changed = value; }
+        @Override public void unobserve() { unobserved = true; changed = null; }
+    }
+
+    @Test public void liveHeadsetChangesKeepOneRouteOwnerAndFallBackToSpeaker() {
+        FakeRoutePlatform platform = new FakeRoutePlatform();
+        int speaker = AudioDeviceInfo.TYPE_BUILTIN_SPEAKER;
+        int bluetooth = AudioDeviceInfo.TYPE_BLUETOOTH_SCO;
+        int usb = AudioDeviceInfo.TYPE_USB_HEADSET;
+        platform.devices(AudioDeviceInfo.TYPE_BUILTIN_EARPIECE, speaker);
+        SubscriptionVoiceAudioRoute route = new SubscriptionVoiceAudioRoute(platform);
+        try {
+            assertTrue(route.start());
+            assertEquals(List.of(speaker), platform.selections);
+            platform.changed.run(); // Route request is still being applied.
+            assertTrue(route.start()); // Another reply must not force a new route.
+            assertEquals(1, platform.selections.size());
+            platform.current = speaker;
+            platform.devices(speaker, bluetooth);
+            assertEquals(List.of(speaker, bluetooth), platform.selections);
+            platform.current = bluetooth;
+            platform.devices(speaker, bluetooth, usb);
+            assertEquals(List.of(speaker, bluetooth, usb), platform.selections);
+            platform.devices(speaker, bluetooth); // Unplug USB while voice is active.
+            platform.devices(speaker); // Disconnect Bluetooth while voice is active.
+            assertEquals(List.of(speaker, bluetooth, usb, bluetooth, speaker), platform.selections);
+            Runnable lateCallback = platform.changed;
+            route.close();
+            lateCallback.run();
+            assertEquals(5, platform.selections.size());
+            assertTrue(platform.unobserved && platform.cleared);
+            assertEquals(AudioManager.MODE_NORMAL, platform.mode);
+        } finally { route.close(); }
+    }
+
+    @Test public void alreadyConnectedHeadsetsBeatSpeakerAtStartup() {
+        for (int headset : new int[]{AudioDeviceInfo.TYPE_WIRED_HEADSET,
+                AudioDeviceInfo.TYPE_WIRED_HEADPHONES, AudioDeviceInfo.TYPE_USB_HEADSET,
+                AudioDeviceInfo.TYPE_BLUETOOTH_SCO, AudioDeviceInfo.TYPE_BLE_HEADSET}) {
+            FakeRoutePlatform platform = new FakeRoutePlatform();
+            platform.devices(AudioDeviceInfo.TYPE_BUILTIN_SPEAKER, headset);
+            SubscriptionVoiceAudioRoute route = new SubscriptionVoiceAudioRoute(platform);
+            try {
+                assertTrue(route.start());
+                assertEquals(List.of(headset), platform.selections);
+            } finally { route.close(); }
+        }
+    }
+
+    @Test public void rejectedAudioRouteReleasesCallbacksAndDoesNotTakeOverPhoneCalls() {
+        FakeRoutePlatform platform = new FakeRoutePlatform();
+        platform.devices(AudioDeviceInfo.TYPE_BUILTIN_SPEAKER);
+        platform.reject = true;
+        SubscriptionVoiceAudioRoute route = new SubscriptionVoiceAudioRoute(platform);
+        assertFalse(route.start());
+        assertTrue(platform.unobserved && platform.cleared);
+        assertEquals(AudioManager.MODE_NORMAL, platform.mode);
+        platform.mode = AudioManager.MODE_IN_CALL;
+        platform.selections.clear();
+        assertFalse(route.start());
+        assertTrue(platform.selections.isEmpty());
+        assertEquals(AudioManager.MODE_IN_CALL, platform.mode);
+    }
+
     private static final class FakeSpeechEngine implements SubscriptionVoiceOutputSpeech.Engine {
         final TextToSpeech.OnInitListener init;
         UtteranceProgressListener progress;
