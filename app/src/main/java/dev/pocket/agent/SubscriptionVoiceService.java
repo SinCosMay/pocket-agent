@@ -140,9 +140,9 @@ public final class SubscriptionVoiceService extends Service implements AgentServ
         super.onCreate();
         instance = this;
         getSystemService(NotificationManager.class).createNotificationChannel(
-            new NotificationChannel(CHANNEL, "ChatGPT subscription voice", NotificationManager.IMPORTANCE_LOW));
+            new NotificationChannel(CHANNEL, "Codex voice", NotificationManager.IMPORTANCE_LOW));
         getSystemService(NotificationManager.class).createNotificationChannel(
-            new NotificationChannel(FAILURE_CHANNEL, "ChatGPT voice failures",
+            new NotificationChannel(FAILURE_CHANNEL, "Codex voice failures",
                 NotificationManager.IMPORTANCE_DEFAULT));
         transport = new SubscriptionVoiceTransport(getApplicationContext(), callbacks);
         audioRoute = new SubscriptionVoiceAudioRoute(this);
@@ -192,7 +192,7 @@ public final class SubscriptionVoiceService extends Service implements AgentServ
                 }
                 startupPhase = "authentication";
                 SubscriptionVoiceFailureStore.phase(SubscriptionVoiceService.this, startupPhase);
-                notifyStatus("Authorizing ChatGPT voice");
+                notifyStatus("Authorizing Codex voice");
                 // Token refresh can require HTTPS and must never block Android's main thread.
                 credentialWorker.execute(() -> {
                     SubscriptionVoiceCredentials.Token token = null;
@@ -217,7 +217,7 @@ public final class SubscriptionVoiceService extends Service implements AgentServ
                         }
                         startupPhase = "webrtc";
                         SubscriptionVoiceFailureStore.phase(SubscriptionVoiceService.this, startupPhase);
-                        notifyStatus("Connecting ChatGPT voice audio");
+                        notifyStatus("Connecting Codex voice audio");
                         try { transport.connect(epoch, ready.access, ready.account); }
                         catch (RuntimeException invalid) {
                             lifecycle.failed(epoch, "Unable to initialize native voice audio");
@@ -441,7 +441,7 @@ public final class SubscriptionVoiceService extends Service implements AgentServ
         try {
             int serviceType = ServiceInfo.FOREGROUND_SERVICE_TYPE_MEDIA_PLAYBACK;
             if (needsMicrophone) serviceType |= ServiceInfo.FOREGROUND_SERVICE_TYPE_MICROPHONE;
-            startForeground(NOTIFICATION_ID, notification("Preparing ChatGPT voice"), serviceType);
+            startForeground(NOTIFICATION_ID, notification("Preparing Codex voice"), serviceType);
         } catch (RuntimeException denied) {
             Log.w("PocketSubscriptionVoice", "Voice foreground service denied ("
                 + denied.getClass().getSimpleName() + ")");

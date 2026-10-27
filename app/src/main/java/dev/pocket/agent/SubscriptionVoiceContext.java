@@ -105,7 +105,7 @@ final class SubscriptionVoiceContext {
         return value instanceof String ? clip((String) value, limit) : "";
     }
 
-    private static String clip(String text, int limit) {
+    static String clip(String text, int limit) {
         if (text.length() <= limit) return text;
         int headEnd = (limit - TRIMMED.length()) / 2;
         int tailStart = text.length() - (limit - TRIMMED.length() - headEnd);

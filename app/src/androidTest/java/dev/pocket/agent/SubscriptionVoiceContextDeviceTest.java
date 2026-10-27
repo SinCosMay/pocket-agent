@@ -43,6 +43,22 @@ public final class SubscriptionVoiceContextDeviceTest {
         assertEquals(SubscriptionVoiceContext.BASE_INSTRUCTIONS, SubscriptionVoiceContext.instructions(null));
     }
 
+    @Test public void oversizedSubmittedTextKeepsBothEndsAndValidUnicode() {
+        String request = "opening instruction " + "\ud83d\ude42".repeat(8000) + " final requirement";
+        String excerpt = SubscriptionVoiceContext.clip(request, 8000);
+        assertTrue(excerpt.length() <= 8000);
+        assertTrue(excerpt.startsWith("opening instruction "));
+        assertTrue(excerpt.endsWith(" final requirement"));
+        assertTrue(excerpt.contains("[excerpt trimmed]"));
+        for (int i = 0; i < excerpt.length(); i++) {
+            if (Character.isHighSurrogate(excerpt.charAt(i)))
+                assertTrue(++i < excerpt.length() && Character.isLowSurrogate(excerpt.charAt(i)));
+            else assertFalse(Character.isLowSurrogate(excerpt.charAt(i)));
+        }
+        String atLimit = "a".repeat(8000);
+        assertEquals(atLimit, SubscriptionVoiceContext.clip(atLimit, 8000));
+    }
+
     @Test public void historyKeepsNewestMessagesAndBoundsEscapedUnicodeText() throws Exception {
         JSONArray messages = new JSONArray();
         for (int index = 0; index < 60; index++) messages.put(message("user", "turn-" + index));
