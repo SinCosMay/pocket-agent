@@ -573,7 +573,8 @@ export class PocketRuntime {
           const selected=modelFor(this.config,this.credentials,requested);
           const reasoning=normalizeReasoningEffort(sameProvider?c.requestedConfig?.thinking??this.config.reasoningEffort:this.config.reasoningEffort);
           const proof=this.workerReasoningProofs.get(c.conversationId);
-          session.agent.streamFunction=makeStream(this.config,this.credentials,session.owner,reasoning,proof?.model===selected.id?proof.levels:undefined);
+          session.agent.streamFunction=makeStream(this.config,this.credentials,session.owner,reasoning,
+            proof?.model===selected.id?proof.levels:undefined,requested===undefined?this.credentials.modelSource:'catalog');
           session.agent.state.model=selected;
         }
       } else if(cmd.action==='set_personal_instructions') {

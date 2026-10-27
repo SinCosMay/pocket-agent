@@ -1,4 +1,5 @@
 import test from 'node:test';
+import {MobileSession} from '../src/session.js';
 import assert from 'node:assert/strict';
 import {createServer} from 'node:http';
 import {Agent} from '@earendil-works/pi-agent-core';
@@ -455,4 +456,52 @@ test('fixed OpenCode timeout remains active while the SSE response body is stall
  } finally {
    (AbortSignal as any).timeout=originalTimeout;
  }
+});
+
+
+test('manual Codex model efforts reach the wire and catalog selections remain constrained',async()=>{
+ for(const [source,selectedModel,levels,configured,expected] of [
+   ['manual','gpt-6-luna',undefined,'high','high'],
+   ['manual','gpt-6-luna',undefined,'max','max'],
+   ['manual','gpt-6-luna',['low'],'medium','medium'],
+   ['manual','other-model',undefined,'high','low'],
+   ['catalog','gpt-6-luna',['low','medium'],'high','low'],
+   ['catalog','gpt-6-luna',['medium','high'],'low','medium'],
+   ['catalog','gpt-6-luna',undefined,'high','low'],
+ ] as const) {
+   const credentials={...accountCredential(),model:'gpt-6-luna',modelSource:source,
+     reasoningEffortModel:'gpt-6-luna',reasoningEfforts:levels?[...levels]:undefined};
+   const config:any={...accountConfig,reasoningEffort:configured};let wire:any;
+   const stream=makeStream(config,credentials,'main');
+   const agent=new Agent({streamFn:(model,context,options)=>stream(model,context,{...options,fetch:async(_input,init)=>{
+     wire=requestBody(init);return codexResponse([]);
+   }}),initialState:{model:modelFor(config,credentials,selectedModel),tools:[]}});
+   await agent.prompt('Selection source probe');
+   assert.ok(wire,JSON.stringify({source,selectedModel,levels,configured}));
+   assert.equal(wire.reasoning?.effort,expected,JSON.stringify({source,selectedModel,levels,configured}));
+ }
+});
+
+
+test('explicit same-ID worker catalog selection does not inherit manual main-model reasoning permission',async()=>{
+ const originalFetch=globalThis.fetch;
+ const credentials={...accountCredential(),model:'gpt-6-luna',modelSource:'manual' as const};
+ let wire:any;
+ globalThis.fetch=(async(_input,init)=>{wire=requestBody(init);return codexResponse([]);}) as typeof fetch;
+ try {
+   for(const [owner,selectedModel,expected] of [
+     ['main',undefined,'max'],
+     ['worker-inherited',undefined,'max'],
+     ['worker-explicit','gpt-6-luna','low'],
+     ['worker-qualified','openai-codex/gpt-6-luna','low'],
+   ] as const) {
+     const session=new MobileSession(owner,{...accountConfig,reasoningEffort:'max'},credentials,[],[],'',selectedModel,'max',['low','high']);
+     try {
+       wire=undefined;
+       await session.prompt('Model source probe');
+       assert.ok(wire,owner+' did not capture a provider request');
+       assert.equal(wire.reasoning.effort,expected,owner);
+     } finally {session.dispose();}
+   }
+ } finally {globalThis.fetch=originalFetch;}
 });
