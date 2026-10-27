@@ -152,10 +152,16 @@ public final class SubscriptionVoiceActivationDeviceTest {
             Activity activity = InstrumentationRegistry.getInstrumentation().startActivitySync(
                     new Intent(ctx, MainActivity.class).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK));
             try {
+                java.lang.reflect.Field pending = MainActivity.class.getDeclaredField("pendingVoiceInvitation");
+                pending.setAccessible(true);
                 InstrumentationRegistry.getInstrumentation().runOnMainSync(() -> {
+                    try { pending.set(activity, "11111111-2222-4333-8444-555555555555"); }
+                    catch (IllegalAccessException failure) { throw new AssertionError(failure); }
                     View start = findText(activity.getWindow().getDecorView(), "Start Codex voice");
                     assertNotNull("Main chat must expose its own Codex voice button", start);
                     assertTrue(start.performClick());
+                    try { assertNull("A manual start must clear a stale invitation attempt", pending.get(activity)); }
+                    catch (IllegalAccessException failure) { throw new AssertionError(failure); }
                 });
                 boolean found = false;
                 long until = SystemClock.elapsedRealtime() + 12_000L;

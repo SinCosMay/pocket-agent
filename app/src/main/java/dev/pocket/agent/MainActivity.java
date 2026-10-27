@@ -183,6 +183,8 @@ public final class MainActivity extends Activity implements AgentService.Observe
             return;
         }
         if (AgentService.isStopping()) { toast("Wait for the agent to finish stopping, then start voice"); return; }
+        // A direct button tap is fresh consent, independent of a retained invitation attempt.
+        pendingVoiceInvitation = null;
         requestVoiceConversation();
     }
     private void requestVoiceConversation() {

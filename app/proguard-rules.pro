@@ -62,6 +62,10 @@
 -keep class dev.pocket.agent.WakeWordSettings { *; }
 -keep class dev.pocket.agent.SubscriptionVoiceFailureStore { *; }
 -keep class dev.pocket.agent.SubscriptionVoiceSettings { *; }
+# The separately minified invitation device tests call this service status API.
+-keepclassmembers class dev.pocket.agent.SubscriptionVoiceService {
+    static boolean isActive();
+}
 -keep class dev.pocket.agent.SubscriptionVoiceContext { *; }
 -keep class dev.pocket.agent.VoiceConversationInvitation** { *; }
 -keep class dev.pocket.agent.SubscriptionVoiceAudioRoute** { *; }
