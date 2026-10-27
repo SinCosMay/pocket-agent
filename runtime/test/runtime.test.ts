@@ -6,6 +6,7 @@ import {delay} from '../src/scripted.js';
 import {AssistantMessageEventStream,validateToolArguments} from '@earendil-works/pi-ai';
 import {toolResult,MobileSubagentParams,nativeTools} from '../src/tools.js';
 import {SubagentParams,parseSubagentInvocation} from '../vendor/pi9/schema.js';
+import {memoryTools} from '../src/memory.js';
 
 class Bridge implements NativeBridge {
  state:any={};events:any[]=[];tools:any[]=[];credentials:any={authMode:'scripted'};
@@ -450,6 +451,150 @@ test('new main thread clears old main delivery but retains a resumable worker',a
  const rejected=JSON.parse(runtime.dispatch(JSON.stringify({action:'new_main'})));
  internal.busy=false;
  assert.equal(rejected.ok,false);assert.match(rejected.error,/Stop active work/);
+});
+
+
+test('main history identity survives restart and rotates only on a fresh main thread',()=>{
+ const bridge=new Bridge(),first=new PocketRuntime(bridge);
+ const original=first.state().mainThreadId;
+ assert.match(original,/^[a-f0-9-]{36}$/);
+ assert.equal(bridge.state.mainThreadId,original);
+ const restored=new PocketRuntime(bridge);
+ assert.equal(restored.state().mainThreadId,original);
+ command(restored,{action:'new_main'});
+ assert.notEqual(restored.state().mainThreadId,original);
+ assert.equal(bridge.state.mainThreadId,restored.state().mainThreadId);
+});
+
+test('a rejected main reset preserves the queued inbox, receipts, and history identity',async()=>{
+ class FailingBridge extends Bridge {
+  fail=false;
+  override call(method:string,json:string):string {
+   if(this.fail&&method.startsWith('store.save'))throw new Error('synthetic archive failure');
+   return super.call(method,json);
+  }
+ }
+ const bridge=new FailingBridge(),runtime=new PocketRuntime(bridge),internal=runtime as any;
+ command(runtime,{action:'send',text:'delegate delay=20'});
+ await until(()=>runtime.state().tasks.length>0&&!runtime.busy);internal.mainPaused=true;
+ await until(()=>runtime.state().tasks[0]?.status==='completed',8000);
+ const id=runtime.state().tasks[0].conversationId;
+ internal.inbox.push({type:'user',text:'queued before reset'});
+ const before={inbox:structuredClone(internal.inbox),delivered:[...internal.delivered],thread:runtime.state().mainThreadId,
+  receipt:runtime.runtime.conversation(id).generations.at(-1)!.receipts.model};
+ bridge.fail=true;
+ assert.equal(JSON.parse(runtime.dispatch(JSON.stringify({action:'new_main'}))).ok,false);
+ assert.deepEqual(internal.inbox,before.inbox);assert.deepEqual([...internal.delivered],before.delivered);
+ assert.equal(runtime.state().mainThreadId,before.thread);
+ assert.equal(runtime.runtime.conversation(id).generations.at(-1)!.receipts.model,before.receipt);
+ bridge.fail=false;command(runtime,{action:'new_main'});
+});
+test('archive identities survive restore but are never reused with a short worker ID',async()=>{
+ const bridge=new Bridge(),runtime=new PocketRuntime(bridge);
+ const started=runtime.startTasks([{kind:'spawn',agent:'researcher',label:'Read capabilities',prompt:'Read capabilities'}],{initiatedBy:'user'});
+ const id=started.starts[0].conversationId;
+ await until(()=>runtime.state().tasks[0]?.status==='completed');
+ const owner=runtime.historyOwner(id);assert.notEqual(owner,id);runtime.save();
+ const restored=new PocketRuntime(bridge);assert.equal(restored.historyOwner(id),owner);
+ await restored.runtime.removeConversations([id]);restored.cleanupRemoved();restored.save();
+ const next=new PocketRuntime(bridge);
+ const replacement=(next as any).createSession(id);
+ assert.notEqual(next.historyOwner(id),owner);assert.notEqual(next.historyOwner(id),id);replacement.dispose();
+});
+test('queued workers persist archive identities before session creation and cannot inherit legacy archives',async()=>{
+ class LegacyArchiveBridge extends Bridge {
+  legacyOwner='';historyOwners:string[]=[];
+  override call(method:string,json:string):string {
+   const args=JSON.parse(json);
+   if(method==='history.search') {
+    this.historyOwners.push(args.owner);
+    return JSON.stringify({ok:true,result:{messages:args.owner===this.legacyOwner?[{id:17,text:'Private old worker transcript'}]:[]}});
+   }
+   return super.call(method,json);
+  }
+ }
+ const bridge=new LegacyArchiveBridge(),runtime=new PocketRuntime(bridge,{maxExecuting:1,maxConversations:12});
+ const started=runtime.startTasks([
+  {kind:'spawn',agent:'researcher',label:'Busy worker',prompt:'Read capabilities delay=30000'},
+  {kind:'spawn',agent:'researcher',label:'Queued worker',prompt:'Read capabilities'},
+ ],{initiatedBy:'user'});
+ const queued=started.starts[1].conversationId;
+ assert.ok(!(runtime as any).sessions.has(queued));runtime.save();
+ const checkpoint=structuredClone(bridge.state),owner=checkpoint.workerHistoryOwners[queued];
+ assert.ok(owner);assert.notEqual(owner,queued);
+ await (runtime as any).stopAll();
+ const restoredBridge=new LegacyArchiveBridge();restoredBridge.state=checkpoint;restoredBridge.legacyOwner=queued;
+ const restored=new PocketRuntime(restoredBridge);
+ assert.equal(restored.historyOwner(queued),owner);
+ const result=await memoryTools(restored,queued).find(t=>t.name==='history_search').execute('read',{query:'Private'});
+ assert.deepEqual(result.details.messages,[]);assert.equal(restoredBridge.historyOwners.at(-1),owner);
+ // An incomplete mapping from an earlier archive-aware build fails closed too.
+ delete checkpoint.workerHistoryOwners[queued];
+ const incompleteBridge=new LegacyArchiveBridge();incompleteBridge.state=checkpoint;incompleteBridge.legacyOwner=queued;
+ const incomplete=new PocketRuntime(incompleteBridge);
+ assert.notEqual(incomplete.historyOwner(queued),queued);
+ const denied=await memoryTools(incomplete,queued).find(t=>t.name==='history_search').execute('read',{query:'Private'});
+ assert.deepEqual(denied.details.messages,[]);
+});
+test('malformed archive owner maps cannot restore a recycled legacy worker scope',async()=>{
+ class LegacyArchiveBridge extends Bridge {
+  legacyOwner='';
+  override call(method:string,json:string):string {
+   const args=JSON.parse(json);
+   if(method==='history.search')return JSON.stringify({ok:true,result:{messages:args.owner===this.legacyOwner?[{id:17,text:'Private old worker transcript'}]:[]}});
+   return super.call(method,json);
+  }
+ }
+ const seed=new Bridge(),runtime=new PocketRuntime(seed);
+ const started=runtime.startTasks([{kind:'spawn',agent:'researcher',label:'Retained worker',prompt:'Read capabilities'}],{initiatedBy:'user'});
+ const id=started.starts[0].conversationId;await until(()=>runtime.state().tasks[0]?.status==='completed');
+ runtime.save();const checkpoint=structuredClone(seed.state);checkpoint.mainPaused=true;
+ for(const invalid of [null,false,0,'',[],7,'legacy',{}]) {
+  const bridge=new LegacyArchiveBridge();bridge.legacyOwner=id;
+  bridge.state={...structuredClone(checkpoint),workerHistoryOwners:invalid};
+  const restored=new PocketRuntime(bridge);
+  assert.notEqual(restored.historyOwner(id),id,`Malformed map ${JSON.stringify(invalid)} must fail closed`);
+  const denied=await memoryTools(restored,id).find(t=>t.name==='history_search').execute('read',{query:'Private'});
+  assert.deepEqual(denied.details.messages,[]);
+ }
+ const legacy=new LegacyArchiveBridge();legacy.state=structuredClone(checkpoint);delete legacy.state.workerHistoryOwners;
+ assert.equal(new PocketRuntime(legacy).historyOwner(id),id,'Only checkpoints predating the owner map keep the legacy scope');
+});
+test('checkpoint redaction preserves archive identities for direct and chunked lookup while hiding message secrets',async()=>{
+ class ArchiveBridge extends Bridge {
+  pending='';chunks=0;
+  override call(method:string,json:string):string {
+   const args=JSON.parse(json);
+   if(method==='store.save.begin'){this.pending='';return JSON.stringify({ok:true,result:true});}
+   if(method==='store.save.chunk'){this.pending+=args.chunk;this.chunks++;return JSON.stringify({ok:true,result:true});}
+   if(method==='store.save.commit'){this.state=JSON.parse(this.pending);return JSON.stringify({ok:true,result:true});}
+   if(method==='history.search')return JSON.stringify({ok:true,result:{messages:Object.values(this.state.workerHistoryOwners??{}).includes(args.owner)?[{id:1,text:'Own archived receipt'}]:[]}});
+   return super.call(method,json);
+  }
+ }
+ const bridge=new ArchiveBridge();
+ bridge.credentials={authMode:'scripted',mcpServers:[{id:'version',name:'Version',url:'https://example.test/mcp',enabled:false,authMode:'headers',headers:[{name:'X-Version',value:'4'}]}]};
+ const runtime=new PocketRuntime(bridge);
+ const started=runtime.startTasks([{kind:'spawn',agent:'researcher',label:'Archive reader',prompt:'Read capabilities'}],{initiatedBy:'user'});
+ const id=started.starts[0].conversationId;await until(()=>runtime.state().tasks[0]?.status==='completed');
+ const owner=runtime.historyOwner(id),mainThread=runtime.state().mainThreadId;
+ assert.ok(owner.includes('4'),'UUID v4 supplies the short header collision');
+ bridge.credentials={...bridge.credentials,mcpServers:[...bridge.credentials.mcpServers,
+  {id:'worker-id',name:'Worker ID',url:'https://example.test/mcp',enabled:false,authMode:'headers',headers:[{name:'X-Worker',value:id}]}]};
+ command(runtime,{action:'mcp_reload'});runtime.save();
+ assert.equal(bridge.state.workerHistoryOwners[id],owner);assert.equal(bridge.state.mainThreadId,mainThread);
+ assert.equal(bridge.state.workers[0].conversationId,id);
+ const direct=await memoryTools(runtime,id).find(t=>t.name==='history_search').execute('direct',{query:'receipt'});
+ assert.equal(direct.details.messages[0].text,'Own archived receipt');
+ runtime.main.agent.state.messages.push({role:'user',timestamp:Date.now(),content:'z'.repeat(1600000)+` worker=${id} secret=4`} as any);
+ assert.equal(runtime.save(),true);assert.ok(bridge.chunks>0);
+ assert.equal(bridge.state.workerHistoryOwners[id],owner);assert.equal(bridge.state.mainThreadId,mainThread);
+ assert.equal(bridge.state.workers[0].conversationId,id);
+ assert.ok(bridge.state.mainMessages.at(-1).content.endsWith('worker=[redacted] secret=[redacted]'));
+ const restored=new PocketRuntime(bridge);assert.equal(restored.historyOwner(id),owner);
+ assert.equal(restored.state().tasks[0].conversationId,id);
+ const chunked=await memoryTools(restored,id).find(t=>t.name==='history_search').execute('chunked',{query:'receipt'});
+ assert.equal(chunked.details.messages[0].text,'Own archived receipt');
 });
 
 test('fresh-main startup intent discards persisted main work before automatic resume',()=>{

@@ -60,6 +60,7 @@ public final class MainActivity extends Activity implements AgentService.Observe
     private StateStore store;
     private static final int IMPORT_CODEX = 90;
     private final ExecutorService accountFiles = Executors.newSingleThreadExecutor();
+    private final ExecutorService historyQueries = Executors.newSingleThreadExecutor();
     private CodexAccountAuth accountFlow;
     private AlertDialog accountDialog;
     private long accountGeneration;
@@ -84,6 +85,7 @@ public final class MainActivity extends Activity implements AgentService.Observe
         historyActions.addView(button("New main thread", this::newMainThread), new LinearLayout.LayoutParams(0, -2, 1));
         historyActions.addView(button("Copy history", this::copyHistory), new LinearLayout.LayoutParams(0, -2, 1));
         root.addView(historyActions);
+        root.addView(button("Search saved conversations", this::searchHistory));
         FrameLayout transcriptFrame = new FrameLayout(this);
         messages = new ScrollView(this); transcript = text(""); transcript.setTextIsSelectable(true); transcript.setPadding(0, dp(12), 0, dp(12)); messages.addView(transcript);
         transcriptFrame.addView(messages, new FrameLayout.LayoutParams(-1, -1));
@@ -137,7 +139,7 @@ public final class MainActivity extends Activity implements AgentService.Observe
     @Override protected void onStop() { AgentService.unobserve(this); super.onStop(); }
     @Override protected void onDestroy() {
         invalidateAccountOperations();
-        accountFiles.shutdownNow(); store.close(); super.onDestroy();
+        accountFiles.shutdownNow(); historyQueries.shutdownNow(); store.close(); super.onDestroy();
     }
     @Override public void onAgentEvent(JSONObject event) {
         String type = event.optString("type");
@@ -238,6 +240,56 @@ public final class MainActivity extends Activity implements AgentService.Observe
                 if (AgentService.isRunning()) command(json("action", "new_main"));
                 else { state = store.requestFreshMain(); render(); toast("New main thread ready"); }
             }).show();
+    }
+    private void searchHistory() {
+        LinearLayout panel=column();panel.setPadding(dp(12),dp(8),dp(12),0);
+        EditText query=new EditText(this);query.setSingleLine(true);query.setHint("Words from an older chat or worker");
+        query.setFilters(new android.text.InputFilter[]{new android.text.InputFilter.LengthFilter(300)});panel.addView(query);
+        TextView results=text("");results.setTextIsSelectable(true);
+        ScrollView scroll=new ScrollView(this);scroll.addView(results);
+        AlertDialog dialog=new AlertDialog.Builder(this).setTitle("Saved conversation history").setView(panel).setPositiveButton("Close",null).create();
+        java.util.concurrent.atomic.AtomicInteger request=new java.util.concurrent.atomic.AtomicInteger();
+        java.util.function.Consumer<java.util.concurrent.Callable<String>> execute=work->{
+            int generation=request.incrementAndGet();results.setText("Reading local history…");
+            historyQueries.submit(()->{
+                String answer;
+                try {answer=work.call();}catch(Exception error){answer="Could not read local history.";}
+                String display=answer;
+                runOnUiThread(()->{if(!isDestroyed()&&dialog.isShowing()&&request.get()==generation)results.setText(display);});
+            });
+        };
+        panel.addView(button("Search (blank shows latest)",()->{
+            String words=query.getText().toString().trim();
+            execute.accept(()->{
+                try(StateStore history=new StateStore(getApplicationContext())) {
+                    JSONArray hits=history.searchHistory(words,40);
+                    if(hits.length()==0)return "No matching saved conversations.";
+                    StringBuilder display=new StringBuilder();
+                    for(int i=0;i<hits.length();i++) {
+                        JSONObject hit=hits.optJSONObject(i);if(hit==null)continue;
+                        String time=hit.optLong("timestamp")>0?java.text.DateFormat.getDateTimeInstance().format(new java.util.Date(hit.optLong("timestamp"))):"Time unavailable";
+                        String body=hit.optString("text");if(body.length()>1500)body=body.substring(0,1500)+"…";
+                        display.append("#").append(hit.optLong("id")).append(" · ").append(time).append(" · ").append(hit.optString("owner")).append(" · ").append(hit.optString("role"))
+                            .append("\n").append(body).append("\n\n");
+                    }
+                    return display.toString();
+                }
+            });
+        }));
+        EditText selected=new EditText(this);selected.setSingleLine(true);selected.setHint("Message ID to read in full");selected.setInputType(InputType.TYPE_CLASS_NUMBER);panel.addView(selected);
+        panel.addView(button("Read full message",()->{
+            final long id;
+            try {id=Long.parseLong(selected.getText().toString().trim());if(id<1)throw new NumberFormatException();}
+            catch(NumberFormatException invalid) {request.incrementAndGet();results.setText("Enter a valid archived message ID.");return;}
+            execute.accept(()->{
+                try(StateStore history=new StateStore(getApplicationContext())) {
+                    JSONObject message=history.readHistory(id,"main");
+                    return message.length()==0?"Message not found.":message.optString("text");
+                }
+            });
+        }));
+        panel.addView(scroll,new LinearLayout.LayoutParams(-1,dp(320)));
+        dialog.setOnDismissListener(ignored->request.incrementAndGet());dialog.show();
     }
     private void copyHistory() {
         ClipboardManager clipboard = getSystemService(ClipboardManager.class);

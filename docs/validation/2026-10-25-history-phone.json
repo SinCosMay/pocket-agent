@@ -1,0 +1,82 @@
+{
+  "sourceCommit": "f969afedd6b9296caed94da1235b3bb18a63b6c1",
+  "buildRun": "https://github.com/ru-aish/pocket-agent/actions/runs/40167714329",
+  "applicationId": "dev.pocket.agent.historyvalidation",
+  "device": {
+    "manufacturer": "Xiaomi",
+    "model": "22041216I",
+    "android": "14",
+    "abi": "arm64-v8a"
+  },
+  "cases": [
+    "ConversationHistoryDeviceTest#mainAndWorkerHistorySurviveResetByteCheckpointAndReopen",
+    "ConversationHistoryDeviceTest#versionOneMigrationPreservesAndArchivesExistingCheckpoint",
+    "ConversationHistoryDeviceTest#failedCheckpointRollsBackArchiveAndSearchIndex",
+    "ConversationHistoryLoopDeviceTest#realPiSearchAndReadRecoverOldThreadAfterRuntimeRestart"
+  ],
+  "uiChecks": [
+    "Search saved conversations",
+    "Search archived synthetic phrase",
+    "Read full archived message"
+  ],
+  "status": "passed",
+  "results": [
+    {
+      "case": "ConversationHistoryDeviceTest#mainAndWorkerHistorySurviveResetByteCheckpointAndReopen",
+      "passed": true,
+      "seconds": 1.058
+    },
+    {
+      "case": "ConversationHistoryDeviceTest#versionOneMigrationPreservesAndArchivesExistingCheckpoint",
+      "passed": true,
+      "seconds": 0.441
+    },
+    {
+      "case": "ConversationHistoryDeviceTest#failedCheckpointRollsBackArchiveAndSearchIndex",
+      "passed": true,
+      "seconds": 0.546
+    },
+    {
+      "case": "ConversationHistoryLoopDeviceTest#realPiSearchAndReadRecoverOldThreadAfterRuntimeRestart",
+      "passed": true,
+      "seconds": 2.878
+    }
+  ],
+  "apkSha256": {
+    "Pocket-Agent-history-arm64.apk": "2b9cf69e6a702515e95a14c9ebb0571a4580d8969811b7a7254ce3613cc4ced4",
+    "Pocket-Agent-history-tests.apk": "37cbae7b5ed10e19cdc2e0095d87141475b32f635d36413d2eb03967896bf4b9"
+  },
+  "runtimeEvidence": {
+    "verified": true,
+    "marker": "basaltarchive1792908922830",
+    "messageId": 1,
+    "oldThread": "180a359a-ccea-4c3c-a4d5-92ab4e0b25e6",
+    "nodeGate": {
+      "type": "gate",
+      "ok": true,
+      "node": "26.10.0",
+      "v8": "14.6.202.34-node.34",
+      "crypto": true,
+      "streamingReads": 2,
+      "cancelled": true,
+      "uuid": "075e6370-1934-4fc1-9aba-4a2674de433a",
+      "memory": {
+        "rss": 191746048,
+        "heapTotal": 16367616,
+        "heapUsed": 9722936,
+        "external": 4454426,
+        "arrayBuffers": 201229
+      }
+    },
+    "searchAndReadTools": true,
+    "runtimeRestart": true
+  },
+  "uiResults": {
+    "searchSavedConversations": true,
+    "readExactMessage": true,
+    "afterInstrumentationProcessExit": true
+  },
+  "originalInstallationUnchanged": true,
+  "temporaryApplicationsRemoved": true,
+  "originalInstallationUnchangedAfterCleanup": true
+}

@@ -277,7 +277,7 @@ export function subagentTool(app:any,parent?:any):any {
             try {
               if(action==='cancel') results.push({ok:true,...await r.cancelSubagent(target,caller)});
               if(action==='inspect') results.push({ok:true,...r.projectSubagent(target,caller)});
-              if(action==='remove') {results.push(...await r.removeConversations([target],caller));app.cleanupRemoved();}
+              if(action==='remove') {if(!app.save())throw new Error('Cannot remove worker until its history is archived');results.push(...await r.removeConversations([target],caller));app.cleanupRemoved();}
             } catch(e){results.push({ok:false,subagentId:target,error:String(e)});}
           } break;
         }

@@ -16,7 +16,8 @@ android {
     compileSdk = 36
     ndkVersion = "27.2.12479018"
     defaultConfig {
-        applicationId = "dev.pocket.agent"
+        applicationId = if (providers.gradleProperty("isolatedDeviceValidation").isPresent)
+            "dev.pocket.agent.historyvalidation" else "dev.pocket.agent"
         minSdk = 31
         targetSdk = 36
         versionCode = 8
@@ -52,7 +53,7 @@ android {
     }
     sourceSets.getByName("development").jniLibs.srcDir(layout.buildDirectory.dir("generated/ngrok-jni").get().asFile)
     splits { abi { isEnable=true; reset(); include("arm64-v8a", "x86_64"); isUniversalApk=true } }
-    testBuildType = if (providers.gradleProperty("devEmulatorTest").isPresent) "development" else if (providers.gradleProperty("voiceEmulatorTest").isPresent) "debug" else "release"
+    testBuildType = if (providers.gradleProperty("isolatedDeviceValidation").isPresent) "debug" else if (providers.gradleProperty("devEmulatorTest").isPresent) "development" else if (providers.gradleProperty("voiceEmulatorTest").isPresent) "debug" else "release"
     lint { textReport=true; textOutput=file("build/reports/lint-results-release.txt") }
     packaging { jniLibs { useLegacyPackaging = true }; resources { excludes += "META-INF/DEPENDENCIES" } }
 }

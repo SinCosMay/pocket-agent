@@ -281,6 +281,8 @@ public final class RuntimeHost implements AutoCloseable {
                 else switch (method) {
                     case "tool": result = tools.execute(args.getString("name"), args.optJSONObject("args") == null ? new JSONObject() : args.getJSONObject("args"), args.optString("owner", "main")); break;
                     case "memory": result = memory.run(args.getJSONObject("request"), args.getString("owner")); break;
+                    case "history.search": result = new JSONObject().put("messages",store.searchHistory(args.getString("query"),args.optInt("limit",8),args.getString("owner"))); break;
+                    case "history.read": result = new JSONObject().put("message",store.readHistory(args.getLong("id"),args.getString("owner"),args.optInt("offset",0),args.optInt("limit",4000))); break;
                     case "store.load": result = store.loadDurable(); break;
                     case "store.save": store.saveDurable(args.getJSONObject("state")); result = true; break;
                     case "store.save.begin": {

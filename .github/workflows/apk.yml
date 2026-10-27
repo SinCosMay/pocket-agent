@@ -3,13 +3,23 @@ on:
   push:
     branches: [main, 'feat/**', 'fix/**']
   workflow_dispatch:
+    inputs:
+      isolated_history:
+        description: Build an isolated debug APK pair for USB history validation
+        required: false
+        default: false
+        type: boolean
 permissions:
   contents: read
 concurrency:
   group: apk-${{ github.ref }}
   cancel-in-progress: true
 jobs:
+  history-device:
+    if: inputs.isolated_history == true
+    uses: ./.github/workflows/history-device.yml
   build:
+    if: inputs.isolated_history != true
     runs-on: ubuntu-24.04
     timeout-minutes: 35
     env:
