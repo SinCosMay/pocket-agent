@@ -159,9 +159,6 @@ final class SubscriptionWebRtcTransport implements AutoCloseable {
         final SubscriptionVoicePlaybackGate playbackGate = new SubscriptionVoicePlaybackGate();
         final LinkedHashSet<String> retiredResponseIds = new LinkedHashSet<>();
         final LinkedHashSet<String> retiredTurnIds = new LinkedHashSet<>();
-        String cancelEventId;
-        String clearEventId;
-        boolean responseActive;
         boolean finished;
         Session(long epoch) { this.epoch = epoch; }
     }
@@ -209,7 +206,6 @@ final class SubscriptionWebRtcTransport implements AutoCloseable {
         session.pendingSpeechPlayback = true;
         ++session.speechSerial;
         session.playbackGate.reset();
-        // Keep correlation IDs for any delayed cancellation acknowledgments.
         if (session.remoteAudio != null) session.remoteAudio.setEnabled(true);
     }
 
@@ -292,31 +288,18 @@ final class SubscriptionWebRtcTransport implements AutoCloseable {
         });
     }
 
-    /** Cancels the current spoken output only; never cancels the Pi task. */
+    /** Mutes the current spoken output locally; never cancels the Pi task. */
     void interruptSpeech(long epoch) {
         worker.post(() -> {
             Session session = current;
             if (!active(session) || session.epoch != epoch || !session.connectedNotified) return;
-            boolean hadAudio = session.pendingSpeechPlayback;
             retirePlayback(session);
             session.pendingSpeechPlayback = false;
             ++session.speechSerial; // Fence delayed playback-completion callbacks.
             if (session.remoteAudio != null) session.remoteAudio.setEnabled(false);
-            try {
-                if (session.responseActive || hadAudio) {
-                    String id = "voice_cancel_" + UUID.randomUUID();
-                    session.cancelEventId = id;
-                    send(session, new JSONObject()
-                        .put("type", "response.cancel").put("event_id", id));
-                    session.responseActive = false;
-                }
-                String clearId = "voice_clear_" + UUID.randomUUID();
-                session.clearEventId = clearId;
-                send(session, new JSONObject().put("type", "output_audio_buffer.clear")
-                    .put("event_id", clearId));
-            } catch (JSONException ignored) {
-                // Static event types cannot fail JSON serialization.
-            }
+            // Codex frameless voice rejects response.cancel and
+            // output_audio_buffer.clear. Barge-in mutes the local track; live
+            // input stays active so the server can handle the user's new turn.
         });
     }
 
@@ -771,9 +754,6 @@ final class SubscriptionWebRtcTransport implements AutoCloseable {
         JSONObject turn = event.optJSONObject("turn");
         boolean assistantTurnDone = "turn.done".equals(type) && turn != null
                 && "assistant".equals(turn.optString("role"));
-        if ("turn.created".equals(type) || "response.created".equals(type)
-                || "session.output_audio.delta".equals(type)
-                || "output_audio.delta".equals(type)) session.responseActive = true;
         if ("turn.created".equals(type) && session.pendingSpeechPlayback && turn != null
                 && "assistant".equals(turn.optString("role"))) {
             String id = turn.optString("id", "");
@@ -830,7 +810,6 @@ final class SubscriptionWebRtcTransport implements AutoCloseable {
                     String id = turn.optString("id", "");
                     boolean wasFinished = session.playbackGate.assistantFinished();
                     if (session.pendingSpeechPlayback && session.playbackGate.finishAssistantTurn(id)) {
-                        session.responseActive = false;
                         completeLiveOutput(session, wasFinished);
                     }
                 } else if (session.microphoneEnabled && turn != null && "user".equals(turn.optString("role"))) {
@@ -847,7 +826,6 @@ final class SubscriptionWebRtcTransport implements AutoCloseable {
                         : response.optString("id", "");
                 boolean wasFinished = session.playbackGate.assistantFinished();
                 if (session.pendingSpeechPlayback && session.playbackGate.finishResponse(doneId)) {
-                    session.responseActive = false;
                     completeLiveOutput(session, wasFinished);
                 }
                 break;
@@ -896,27 +874,6 @@ final class SubscriptionWebRtcTransport implements AutoCloseable {
             }
             case "error":
                 // Never pass provider error messages through: they may contain secrets.
-                JSONObject details = event.optJSONObject("error");
-                String code = details == null ? "" : details.optString("code", "");
-                String clientEvent = details == null ? "" : details.optString("client_event_id", "");
-                boolean wasCancel = !clientEvent.isEmpty() &&
-                    clientEvent.equals(session.cancelEventId);
-                boolean wasClear = !clientEvent.isEmpty() &&
-                    clientEvent.equals(session.clearEventId);
-                if (wasCancel && ("response_cancel_not_active".equals(code)
-                        || "response_not_active".equals(code)
-                        || "no_active_response".equals(code))) {
-                    session.cancelEventId = null;
-                    break;
-                }
-                if (wasClear && ("unsupported_event".equals(code)
-                        || "unknown_event".equals(code)
-                        || "invalid_event".equals(code))) {
-                    // This backend may not support the standard WebRTC clear
-                    // command. Remote track is already locally muted.
-                    session.clearEventId = null;
-                    break;
-                }
                 fail(session, "Subscription realtime service returned an error");
                 break;
             default:

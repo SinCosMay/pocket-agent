@@ -1,0 +1,30 @@
+{
+  "verified_at_utc": "2026-10-27T13:38:23.091872+00:00",
+  "endpoint": "https://chatgpt.com/backend-api/codex/realtime/calls?intent=quicksilver&architecture=avas",
+  "model": "gpt-live-1-codex",
+  "scope": "Synthetic text context with silent synthetic WebRTC input and muted output; no phone, real user speech, or Pi tasks.",
+  "before": {
+    "http_status": 201,
+    "rejected_events": [
+      "response.cancel",
+      "output_audio_buffer.clear"
+    ],
+    "error_codes": [
+      "invalid_value",
+      "invalid_value"
+    ],
+    "client_event_reference": "error.event_id"
+  },
+  "after": {
+    "http_status": 201,
+    "unsupported_commands_sent": false,
+    "protocol_errors": [],
+    "connection_remained_open": true
+  },
+  "conclusion": "The endpoint rejects both standard interruption commands. Removing those commands avoids that protocol failure while local audio is muted.",
+  "limits": [
+    "This is not physical microphone, audible playback, or real-task acceptance.",
+    "The unknown late turn/response creation correlation race is not resolved by this change."
+  ],
+  "official_source_reference": "https://github.com/openai/codex/blob/main/codex-rs/codex-api/src/endpoint/realtime_websocket/protocol.rs"
+}
