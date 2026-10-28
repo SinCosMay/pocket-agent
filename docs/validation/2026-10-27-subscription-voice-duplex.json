@@ -1,0 +1,42 @@
+{
+  "verified_at_utc": "2026-10-27T14:33:18.428716+00:00",
+  "endpoint": "https://chatgpt.com/backend-api/codex/realtime/calls?intent=quicksilver&architecture=avas",
+  "model": "gpt-live-1-codex",
+  "scope": "Synthetic WebAudio speech and mocked client results using the Android startup prompt; muted local output; no physical phone or real Pi tasks.",
+  "http_status": 201,
+  "delegations": 3,
+  "protocol_errors": [],
+  "connection_remained_open": true,
+  "cases": [
+    {
+      "case": "Initial spoken request",
+      "injected_seconds": 9.26,
+      "delegation_seconds": 18.38
+    },
+    {
+      "case": "Spoken interruption while assistant turn was active",
+      "injected_seconds": 21.06,
+      "new_input_seconds": 24.58,
+      "interrupted_assistant_turn_done_seconds": 25.11,
+      "next_delegation_seconds": 31.22
+    },
+    {
+      "case": "Spoken follow-up after second reply",
+      "previous_assistant_turn_done_seconds": 37.04,
+      "injected_seconds": 39.64,
+      "next_delegation_seconds": 46.38
+    }
+  ],
+  "final_rtp_packet_counts": {
+    "incoming": 1958,
+    "outgoing": 2307
+  },
+  "client_interruption_controls_sent": [],
+  "conclusion": "The native subscription session accepted input during a reply and after a reply, producing three client delegations without client-side interruption controls. The Android coordinator must not block result delivery on JSON audio-delta/playback events.",
+  "limits": [
+    "One earlier setup attempt did not connect; the successful synthetic run does not establish general connection reliability.",
+    "Muted local output and RTP counts do not prove audible speech or its exact stop time.",
+    "The test does not reproduce native Android capture, echo cancellation, headset hotplug, or real Pi task execution.",
+    "Android compilation, lifecycle regressions, and routing instrumentation run separately in GitHub Actions; physical-phone acceptance is still required."
+  ]
+}

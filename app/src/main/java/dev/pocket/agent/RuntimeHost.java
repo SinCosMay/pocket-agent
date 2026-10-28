@@ -187,7 +187,10 @@ public final class RuntimeHost implements AutoCloseable {
             try {
                 String response = runtime.getExecutor("(()=>{const value=PocketAgent.dispatch(" + JSONObject.quote(serialized) + ");return typeof value==='string'?value:JSON.stringify(value)})()").executeString();
                 runtime.await(V8AwaitMode.RunNoWait); schedulePump();
-                result.complete(response == null ? new JSONObject().put("ok", true) : new JSONObject(response));
+                JSONObject outcome = response == null ? new JSONObject().put("ok", true) : new JSONObject(response);
+                if (outcome.optBoolean("ok") && ("new_main".equals(command.optString("action")) || "stop_all".equals(command.optString("action"))))
+                    VoiceConversationInvitation.cancel(context, "chat_or_runtime_changed");
+                result.complete(outcome);
             } catch (Throwable error) {
                 handleRuntimeEntryFailure("Agent command failed",error);
                 result.completeExceptionally(error);
@@ -279,6 +282,8 @@ public final class RuntimeHost implements AutoCloseable {
                 JSONObject args = new JSONObject(argsJson); Object result;
                 if(method.startsWith("autonomy."))result=autonomy.call(method.substring(9),args);
                 else switch (method) {
+                    case "voice.preferences": result = VoiceConversationInvitation.preferences(context); break;
+                    case "voice.request": result = VoiceConversationInvitation.request(context, args); break;
                     case "tool": result = tools.execute(args.getString("name"), args.optJSONObject("args") == null ? new JSONObject() : args.getJSONObject("args"), args.optString("owner", "main")); break;
                     case "memory": result = memory.run(args.getJSONObject("request"), args.getString("owner")); break;
                     case "history.search": result = new JSONObject().put("messages",store.searchHistory(args.getString("query"),args.optInt("limit",8),args.getString("owner"))); break;

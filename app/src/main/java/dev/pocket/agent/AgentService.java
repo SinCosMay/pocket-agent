@@ -54,11 +54,13 @@ public final class AgentService extends Service {
         if (intent == null) return START_NOT_STICKY;
         if (ACTION_STOP.equals(intent.getAction())) {
             stopping = true;
+            VoiceConversationInvitation.cancel(this, "runtime_stopped");
             AutonomyStore.requestEnabled(this,false,error->Log.w("PocketAgent","Could not persist automation pause",error));
             if(host!=null)host.dispatch(Json.obj("action","stop_all"));
             WakeWordService.disableImmediately(this);
             stopService(new Intent(this, WakeWordService.class));
             stopService(new Intent(this, VoiceListeningService.class));
+            stopService(new Intent(this, SubscriptionVoiceService.class));
             stopSelf(); return START_NOT_STICKY;
         }
         if (stopping) return START_NOT_STICKY;
@@ -123,8 +125,16 @@ public final class AgentService extends Service {
             if ("voice_announce".equals(event.optString("type"))) {
                 try {
                     VoiceAnnouncement request = VoiceAnnouncement.fromEvent(event);
-                    startForegroundService(VoiceAnnouncement.intent(this, request));
-                } catch (RuntimeException failure) {
+                    if (SubscriptionVoiceService.isActive()) {
+                        startForegroundService(SubscriptionVoiceSettings.announcementIntent(this, request));
+                    } else {
+                        JSONObject outcome = VoiceConversationInvitation.request(this, Json.obj(
+                            "threadId", VoiceConversationInvitation.currentThread(this),
+                            "message", request.message));
+                        if ("notification_failed".equals(outcome.optString("status"))) reportVoiceFailure(this, request.id,
+                            "Android could not display the voice invitation; continue in chat");
+                    }
+                } catch (Exception failure) {
                     Log.w("PocketVoice", "Agent-initiated speech could not be started", failure);
                     reportVoiceFailure(this, event.optString("id"),
                         "Speech service could not start; check Pocket Agent voice permissions");

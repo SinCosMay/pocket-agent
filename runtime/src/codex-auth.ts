@@ -24,7 +24,8 @@ export interface CodexCredentialInput {
 }
 export interface CodexCredentialUpdate extends CodexCredentials { oldRefreshToken: string }
 type Updater = (update: CodexCredentialUpdate) => CodexCredentialInput | Promise<CodexCredentialInput>;
-interface AuthState { updater?: Updater; pending?: Promise<CodexCredentials>; failure?: Error; onActivity?: ()=>void; secrets: Set<string> }
+type Reader = () => CodexCredentialInput | undefined;
+interface AuthState { updater?: Updater; reader?: Reader; pending?: Promise<CodexCredentials>; failure?: Error; onActivity?: ()=>void; secrets: Set<string> }
 const states = new WeakMap<object, AuthState>();
 function authState(credentials: CodexCredentialInput): AuthState {
   let state = states.get(credentials);
@@ -33,8 +34,8 @@ function authState(credentials: CodexCredentialInput): AuthState {
     if (typeof value === 'string' && value) state.secrets.add(value);
   return state;
 }
-export function registerCodexCredentialUpdater(credentials: CodexCredentialInput, updater: Updater, onActivity?: ()=>void): void {
-  const state = authState(credentials);state.updater = updater;state.onActivity = onActivity;
+export function registerCodexCredentialUpdater(credentials: CodexCredentialInput, updater: Updater, onActivity?: ()=>void, reader?: Reader): void {
+  const state = authState(credentials);state.updater = updater;state.onActivity = onActivity;state.reader = reader;
 }
 export function hasPendingCodexRefresh(credentials: CodexCredentialInput): boolean {return !!states.get(credentials)?.pending;}
 function notifyActivity(state: AuthState): void {try {state.onActivity?.();} catch {/* Observation must not interrupt a rotated-token save. */}}
@@ -93,12 +94,36 @@ function waitForShared<T>(pending: Promise<T>, signal?: AbortSignal): Promise<T>
   });
 }
 
+/** Native voice may have already rotated a shared login. Adopt only a fresh, saved rotation. */
+function adoptPersistedRotation(credentials: CodexCredentialInput, state: AuthState, now: number): CodexCredentials | undefined {
+  if (!state.reader) return;
+  try {
+    const saved = state.reader();
+    if (!saved) return;
+    const persisted = checked(saved);
+    if (persisted.accountId !== credentials.accountId || persisted.refreshToken === credentials.refreshToken
+        || persisted.expiresAt <= now + REFRESH_MARGIN_MS) return;
+    for (const secret of authState(saved).secrets) state.secrets.add(secret);
+    Object.assign(credentials, persisted);
+    if (typeof saved.idToken === 'string') credentials.idToken = saved.idToken;
+    state.failure = undefined;
+    return persisted;
+  } catch {
+    // An unavailable or invalid saved rotation cannot authorize replay of the old token.
+    return;
+  }
+}
+
 export async function ensureCodexCredentials(credentials: CodexCredentialInput, options: {signal?: AbortSignal; fetch?: typeof fetch; now?: ()=>number} = {}): Promise<CodexCredentials> {
   if (options.signal?.aborted) throw authError('Request cancelled.');
   const state = authState(credentials);
   if (state.pending) return waitForShared(state.pending, options.signal);
-  if (state.failure) throw state.failure;
   const current = checked(credentials);const now = options.now ?? Date.now;
+  if (state.failure || current.expiresAt <= now() + REFRESH_MARGIN_MS) {
+    const persisted = adoptPersistedRotation(credentials, state, now());
+    if (persisted) return persisted;
+  }
+  if (state.failure) throw state.failure;
   if (current.expiresAt > now() + REFRESH_MARGIN_MS) return current;
   if (!state.updater) throw authError('Secure Codex credential persistence is unavailable; sign in again.');
   // The shared refresh is independent of any one conversation's cancellation.
@@ -126,6 +151,8 @@ export async function ensureCodexCredentials(credentials: CodexCredentialInput, 
       Object.assign(credentials, persisted);
       return persisted;
     } catch {
+      const persisted = adoptPersistedRotation(credentials, state, now());
+      if (persisted) return persisted;
       // A dispatched refresh may have rotated a token even when its response was
       // lost. Latch failure for this credential object instead of replaying it.
       state.failure = authError('Codex refresh could not be securely completed; sign in again. No retry was attempted.');

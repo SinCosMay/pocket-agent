@@ -770,7 +770,7 @@ public final class VoiceListeningService extends Service implements AgentService
             ? "Thinking" : "Thinking · listening for interruption");
         try {
             command(new JSONObject().put("action", "send")
-                .put("voiceSessionId", activeTurn).put("text", text));
+                .put("voiceSessionId", activeTurn).put("text", text).put("inputSource", "voice"));
         } catch (Exception failure) {
             responding = false;
             activeTurn = null;

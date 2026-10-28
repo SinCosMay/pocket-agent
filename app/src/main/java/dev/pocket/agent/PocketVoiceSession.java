@@ -19,11 +19,14 @@ public final class PocketVoiceSession extends VoiceInteractionSession {
             Toast.makeText(context, "Pocket Agent: allow microphone access in Settings", Toast.LENGTH_LONG).show();
         } else {
             try {
-                if (new VoiceCredentialStore(context).read().isEmpty()) {
+                if (SubscriptionVoiceService.isActive()) {
+                    // A separate main-chat call already owns the microphone.
+                    context.startActivity(new Intent(context, MainActivity.class)
+                        .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK));
+                } else if (new VoiceCredentialStore(context).read().isEmpty()) {
                     Toast.makeText(context, "Pocket Agent: configure Deepgram voice key", Toast.LENGTH_LONG).show();
                 } else {
-                    context.startForegroundService(new Intent(context, VoiceListeningService.class)
-                        .setAction(VoiceListeningService.ACTION_START));
+                    context.startForegroundService(SubscriptionVoiceSettings.wakeIntent(context));
                 }
             } catch (Exception error) {
                 Toast.makeText(context, "Pocket Agent: could not start background voice", Toast.LENGTH_LONG).show();
