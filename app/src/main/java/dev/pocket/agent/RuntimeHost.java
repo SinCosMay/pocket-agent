@@ -29,6 +29,7 @@ public final class RuntimeHost implements AutoCloseable {
     private final HandlerThread thread = new HandlerThread("PocketNode");
     private final Handler handler;
     private NativeTools tools;
+    private final ActiveWorkWakeLock workWakeLock;
     private NodeRuntime runtime;
     private boolean active, cleanupOnly, pumpScheduled, shutdownAcknowledged, shutdownClean;
     private int cleanupWakeMs=200;
@@ -57,6 +58,7 @@ public final class RuntimeHost implements AutoCloseable {
     public RuntimeHost(Context context, Consumer<JSONObject> listener) {
         this.context = context.getApplicationContext(); this.listener = listener;
         store = new StateStore(this.context); autonomy=new AutonomyStore(this.context); memory = new MemoryStore(this.context); credentials = new CredentialStore(this.context);
+        workWakeLock = new ActiveWorkWakeLock(this.context);
         thread.start(); handler = new Handler(thread.getLooper());
     }
     private void createRuntime() throws Exception {
@@ -77,6 +79,7 @@ public final class RuntimeHost implements AutoCloseable {
         runtime.await(V8AwaitMode.RunNoWait); schedulePump();
     }
     private void closeRuntimeOnly() {
+        workWakeLock.setActive(false);
         NodeRuntime doomed=runtime;runtime=null;
         if(doomed!=null) {
             try {doomed.setStopping(true);} catch(Throwable ignored) {}
@@ -241,6 +244,7 @@ public final class RuntimeHost implements AutoCloseable {
         } else if (type.equals("ready") || type.equals("error") || (BuildConfig.DEVELOPMENT_TOOLS && type.equals("log"))) {
             try {store.record(event);} catch(Throwable persistenceFailure) {android.util.Log.w("PocketRuntime","Runtime event persistence failed",persistenceFailure);}
         }
+        if(type.equals("state")||type.equals("activity"))workWakeLock.setActive(active&&!cleanupOnly);
         try {listener.accept(event);} catch(Throwable observerFailure) {android.util.Log.w("PocketRuntime","Runtime listener failed",observerFailure);}
         schedulePump();
     }

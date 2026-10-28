@@ -329,3 +329,18 @@ test('completed and cancelled tasks stay terminal across pause and resume attemp
     assert.equal(engine.execute('task',{action:'get',id:task.id}).status,action==='complete'?'completed':'cancelled');
   }
 });
+
+
+test('paused automation rejects new triggers and resume without persisting phantom jobs',()=>{
+  const host=new Host();const engine=new AutonomyEngine(host,()=>Date.parse('2026-10-25T00:00:00Z'));
+  const job=engine.execute('schedule',{action:'create',title:'Brief',prompt:'Read',schedule:{type:'interval',everyMs:900000}});
+  const before=engine.snapshot();host.enabled=false;
+  assert.throws(()=>engine.execute('schedule',{action:'create',title:'Blocked',prompt:'Read',schedule:{type:'interval',everyMs:900000}}),/Automation is paused/);
+  assert.throws(()=>engine.execute('schedule',{action:'resume',id:job.id}),/Automation is paused/);
+  assert.throws(()=>engine.execute('schedule',{action:'run_now',id:job.id}),/Automation is paused/);
+  assert.throws(()=>engine.execute('wakeup',{action:'set',taskId:job.taskId,at:'2026-10-25T00:01:00Z',reason:'Continue'}),/Automation is paused/);
+  assert.deepEqual(engine.snapshot(),before);
+  assert.equal(engine.execute('schedule',{action:'list'}).length,1);
+  engine.tick();assert.equal(host.starts.length,0);
+  host.enabled=true;engine.execute('schedule',{action:'run_now',id:job.id});engine.tick();assert.equal(host.starts.length,1);
+});

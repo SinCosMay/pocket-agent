@@ -561,7 +561,18 @@ public final class MainActivity extends Activity implements AgentService.Observe
             AutonomyStore.requestEnabled(this,checked,error->runOnUiThread(()->toast("Could not update automation")));
             if(!checked){RuntimeHost shared=RuntimeOwner.peekHost();if(shared!=null)shared.dispatch(json("action","stop_autonomy"));}
         });panel.addView(enabled);
-        panel.addView(text("Android may delay background runs. Runs use the phone's network and provider connection. Stop all pauses future automation. Quiet hours: 10 PM–8 AM on this phone."));
+        panel.addView(text(AutonomyStore.enabled(this)?"Automation enabled":"Automation paused — saved schedules will not run"));
+        if(!status.optBoolean("exactAlarmPermission")) {
+            panel.addView(text("Precise wakeups need Alarms & reminders access. Without it, Android may delay scheduled work."));
+            panel.addView(button("Allow precise schedule timing",()->startActivity(new Intent(
+                android.provider.Settings.ACTION_REQUEST_SCHEDULE_EXACT_ALARM,
+                android.net.Uri.parse("package:"+getPackageName())))));
+        }
+        if(status.optBoolean("batteryRestricted")) {
+            panel.addView(text("Battery optimization is enabled. For reliable screen-off work, set Pocket Agent battery usage to unrestricted."));
+            panel.addView(button("Battery settings",()->startActivity(new Intent(android.provider.Settings.ACTION_IGNORE_BATTERY_OPTIMIZATION_SETTINGS))));
+        }
+        panel.addView(text("Runs use the phone's network and provider connection. Stop all pauses future automation. Quiet hours: 10 PM–8 AM on this phone."));
         try {
             String startupIssue=status.optString("lastFailure");if(!startupIssue.isEmpty())panel.addView(text(startupIssue));
             JSONArray decisions=saved.getJSONArray("decisions");
@@ -583,7 +594,7 @@ public final class MainActivity extends Activity implements AgentService.Observe
             if(schedules.length()==0)panel.addView(text("Ask the assistant to schedule work or save a follow-up."));
             for(int i=0;i<schedules.length();i++) {
                 JSONObject schedule=schedules.getJSONObject(i);String id=schedule.getString("id");boolean active=schedule.optBoolean("enabled");
-                panel.addView(text(schedule.optString("title")+" · "+(active?"Active":"Paused or finished")+"\nNext: "+schedule.optString("nextRunAt","—")));
+                panel.addView(text(schedule.optString("title")+" · "+(active?(AutonomyStore.enabled(this)?"Active":"Blocked: automation paused"):"Paused or finished")+"\nNext: "+schedule.optString("nextRunAt","—")));
                 panel.addView(button(active?"Pause schedule":"Resume schedule",()->command(Json.obj("action","automation_control","tool","schedule","args",json("action",active?"pause":"resume","id",id)))));
             }
             panel.addView(text("Run history"));JSONArray runs=saved.getJSONArray("runs");

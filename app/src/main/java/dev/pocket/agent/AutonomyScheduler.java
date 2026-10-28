@@ -6,7 +6,7 @@ import androidx.work.OneTimeWorkRequest;
 import androidx.work.WorkManager;
 import java.util.concurrent.TimeUnit;
 
-/** OS-owned timers never keep the Node engine awake. All times are best effort. */
+/** OS-owned wakeup alarms with durable WorkManager recovery. */
 final class AutonomyScheduler {
     private static final java.util.concurrent.ScheduledExecutorService WORK=java.util.concurrent.Executors.newSingleThreadScheduledExecutor();
     static final class ArmRequests {
@@ -42,12 +42,32 @@ final class AutonomyScheduler {
         Context app=context.getApplicationContext();
         WORK.execute(()->{try{armNow(app);}catch(Exception error){arm(app);}finally{finished.run();}});
     }
+    static boolean exactAlarmsAllowed(Context context) {
+        return context.getSystemService(android.app.AlarmManager.class).canScheduleExactAlarms();
+    }
+    private static android.app.PendingIntent alarmIntent(Context context,boolean exact) {
+        return android.app.PendingIntent.getBroadcast(context,0,
+            new android.content.Intent(context,AutonomyAlarmReceiver.class).putExtra("exact",exact),
+            android.app.PendingIntent.FLAG_UPDATE_CURRENT|android.app.PendingIntent.FLAG_IMMUTABLE);
+    }
     private static void armNow(Context context) throws Exception {
         try(AutonomyStore store=new AutonomyStore(context)) {
             long due=store.nextDue();WorkManager manager=WorkManager.getInstance(context);
-            if(due==Long.MAX_VALUE){manager.cancelUniqueWork("pocket-autonomy-timer").getResult().get(5,TimeUnit.SECONDS);return;}
+            android.app.AlarmManager alarms=context.getSystemService(android.app.AlarmManager.class);
+            if(due==Long.MAX_VALUE){alarms.cancel(alarmIntent(context,false));manager.cancelUniqueWork("pocket-autonomy-timer").getResult().get(5,TimeUnit.SECONDS);return;}
+            long at=Math.max(System.currentTimeMillis()+1000,due);
+            boolean exact=exactAlarmsAllowed(context);
+            try {
+                if(exact)alarms.setExactAndAllowWhileIdle(android.app.AlarmManager.RTC_WAKEUP,at,alarmIntent(context,true));
+                else alarms.setAndAllowWhileIdle(android.app.AlarmManager.RTC_WAKEUP,at,alarmIntent(context,false));
+            } catch(SecurityException revoked) {
+                exact=false;
+                alarms.setAndAllowWhileIdle(android.app.AlarmManager.RTC_WAKEUP,at,alarmIntent(context,false));
+            }
+            // Let exact-alarm foreground execution claim the run before the job fallback.
+            // Otherwise JobScheduler may win the same-deadline race and leave it subject to job quotas.
             OneTimeWorkRequest timer=new OneTimeWorkRequest.Builder(AutonomyTimerWorker.class)
-                .setInitialDelay(Math.max(1000,due-System.currentTimeMillis()),TimeUnit.MILLISECONDS).build();
+                .setInitialDelay(Math.max(1000,due-System.currentTimeMillis())+(exact?60_000:0),TimeUnit.MILLISECONDS).build();
             manager.enqueueUniqueWork("pocket-autonomy-timer",ExistingWorkPolicy.REPLACE,timer).getResult().get(5,TimeUnit.SECONDS);
         }
     }
@@ -59,7 +79,8 @@ final class AutonomyScheduler {
         for(androidx.work.WorkInfo info:manager.getWorkInfosForUniqueWork("pocket-autonomy-runner").get(10,TimeUnit.SECONDS))
             if(info.getState()==androidx.work.WorkInfo.State.ENQUEUED||info.getState()==androidx.work.WorkInfo.State.BLOCKED)return;
         androidx.work.Constraints constraints=new androidx.work.Constraints.Builder().setRequiredNetworkType(androidx.work.NetworkType.CONNECTED).build();
-        OneTimeWorkRequest run=new OneTimeWorkRequest.Builder(AutonomyWorker.class).setConstraints(constraints).build();
+        OneTimeWorkRequest run=new OneTimeWorkRequest.Builder(AutonomyWorker.class).setConstraints(constraints)
+            .setExpedited(androidx.work.OutOfQuotaPolicy.RUN_AS_NON_EXPEDITED_WORK_REQUEST).build();
         manager.enqueueUniqueWork("pocket-autonomy-runner",ExistingWorkPolicy.APPEND_OR_REPLACE,run).getResult().get(5,TimeUnit.SECONDS);
     }
 }

@@ -9,6 +9,16 @@ import static org.junit.Assert.*;
 
 /** Real Android SQLite and host-ownership coverage, without model inference or phone mutations. */
 public final class AutonomyDeviceTest {
+    @Test public void activeWorkWakeLockReleasesWhenIdleAndCanResume() {
+        Context context=InstrumentationRegistry.getInstrumentation().getTargetContext();
+        ActiveWorkWakeLock lock=new ActiveWorkWakeLock(context);
+        try {
+            assertFalse(lock.isHeld());lock.setActive(true);assertTrue(lock.isHeld());
+            lock.setActive(true);lock.setActive(false);assertFalse(lock.isHeld());
+            lock.setActive(false);lock.setActive(true);assertTrue(lock.isHeld());
+        } finally {lock.setActive(false);}
+        assertFalse(lock.isHeld());
+    }
     @Test public void autonomyStorePersistsJobsAndDeduplicatesIncomingDecisions() throws Exception {
         Context context=InstrumentationRegistry.getInstrumentation().getTargetContext();
         String database="autonomy-instrumentation.db";context.deleteDatabase(database);
