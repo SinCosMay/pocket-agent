@@ -1,4 +1,5 @@
 import { randomUUID } from 'node:crypto';
+import {validateConnection} from './connection-validation.js';
 import {AutonomyEngine,autonomyTools,AUTONOMY_TOOL_NAMES,type AutonomousStartResult} from './autonomy.js';
 import phoneSchemas from '../../app/src/main/assets/tools.json';
 import { AgentRegistry } from '../vendor/pi9/agents.js';
@@ -75,6 +76,7 @@ export class PocketRuntime {
   private readonly credentialHistory=new Set<any>();
   private catalogPending?:Promise<CatalogModel[]>;
   private discoveringModels=false;
+  private connectionTests=0;
   private cachedModels?:{at:number,models:CatalogModel[]};
   private readonly workerReasoningProofs=new Map<string,{model:string,levels:ReasoningEffort[]}>();
   private catalogEpoch=0;
@@ -579,10 +581,28 @@ export class PocketRuntime {
         const own=this.runtime.generationCaller({conversationId:cmd.conversationId,generation:snapshot.generations.at(-1)!.generation});
         if(own.generation.state.kind==='done')own.conversation.markCollected(own.generation,'user');
         this.emit({type:'worker',conversationId:cmd.conversationId,snapshot,messages:textMessages(this.sessions.get(cmd.conversationId)?.messages??[],this.sanitize)});
+      } else if(cmd.action==='validate_connection') {
+        if(typeof cmd.requestId!=='string'||!/^[A-Za-z0-9_-]{1,64}$/.test(cmd.requestId))throw new Error('Invalid connection test request ID');
+        const requestId=cmd.requestId;
+        // Draft keys stay in this request; never reload/save them or add them to history.
+        const draft=cmd.credentials;
+        if(!draft||typeof draft!=='object')throw new Error('Missing draft connection');
+        this.connectionTests++;this.publish();
+        const finish=()=>{this.connectionTests--;this.publish();};
+        void validateConnection(draft).then(result=>{finish();this.emit({type:'connection_validation',requestId,...result});},
+          error=>{finish();this.emit({type:'connection_validation',requestId,error:redactProviderSecrets(String(error?.message??'Connection test failed'),draft)});});
       } else if(cmd.action==='list_models') {
         if(typeof cmd.requestId!=='string'||!/^[A-Za-z0-9_-]{1,64}$/.test(cmd.requestId))throw new Error('Invalid model discovery request ID');
         const requestId=cmd.requestId;
-        void this.refreshModels(true).then(models=>this.emit({type:'models',requestId,models}))
+        if(cmd.credentials) {
+          const draft=cmd.credentials;
+          if(!['nebius','opencode','openai','api-key','codex','codexRelay','codex-relay'].includes(draft.authMode))throw new Error('Unsupported draft provider');
+          const config={mode:normalizeMode(draft.authMode),endpoint:draft.endpoint,model:draft.model};
+          this.connectionTests++;this.publish();
+          const finish=()=>{this.connectionTests--;this.publish();};
+          void discoverProviderModels(config,draft).then(models=>{finish();this.emit({type:'models',requestId,models});},
+            error=>{finish();this.emit({type:'models',requestId,error:redactProviderSecrets(String(error?.message??'Discovery failed'),draft)});});
+        } else void this.refreshModels(true).then(models=>this.emit({type:'models',requestId,models}))
           .catch(error=>this.emit({type:'models',requestId,error:this.sanitize(String(error?.message??error))}));
       } else if(cmd.action==='mcp_discover') {
         if(typeof cmd.requestId!=='string'||!/^[A-Za-z0-9_-]{1,64}$/.test(cmd.requestId)||typeof cmd.serverId!=='string'||cmd.serverId.length>64)throw new Error('Invalid MCP discovery request');
@@ -805,7 +825,7 @@ export class PocketRuntime {
   }
   state():any {
     const tasks=this.runtime.listConversations().map(c=>{const g=c.generations.at(-1)!;return {...c,generation:g.generation,status:g.status.kind==='done'?({error:'failed',aborted:'cancelled',skipped:'cancelled'} as any)[g.status.outcome]??g.status.outcome:g.status.kind,output:g.status.kind==='done'?g.status.output:undefined};});
-    const otherActive=this.discoveringModels||hasPendingCodexRefresh(this.credentials)||this.observing||this.busy||tasks.some(t=>t.currentGeneration||t.isStopping)||(!this.mainPaused&&this.inbox.length>0)||Boolean(this.pendingSave);
+    const otherActive=this.connectionTests>0||this.discoveringModels||hasPendingCodexRefresh(this.credentials)||this.observing||this.busy||tasks.some(t=>t.currentGeneration||t.isStopping)||(!this.mainPaused&&this.inbox.length>0)||Boolean(this.pendingSave);
     const cleanupOnly=this.releaseRetries.size>0&&!otherActive;
     const cleanupWakeMs=cleanupOnly?Math.min(...[...this.releaseRetries.values()].map(retry=>Math.max(1,(retry.dueAt??Date.now()+200)-Date.now()))):0;
     return {messages:textMessages(this.main.messages,this.sanitize),mainThreadId:this.mainThreadId,tasks,busy:this.busy,lastError:this.lastError,active:this.releaseRetries.size>0||otherActive,cleanupOnly,cleanupWakeMs,mainPaused:this.mainPaused,mainInterrupted:this.mainInterrupted,provider:{...this.config},mainTurns:this.mainTurns,personalInstructions:this.personalInstructions,

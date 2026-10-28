@@ -54,6 +54,8 @@ public final class MainActivity extends Activity implements AgentService.Observe
     private Spinner reasoningPicker;
     private String renderedReasoningEffort = CredentialStore.DEFAULT_REASONING_EFFORT;
     private String modelRequestId;
+    private String connectionTestId;
+    private java.util.function.Consumer<JSONObject> connectionTestResult;
     private String mcpRequestId;
     private String[] modelIds = {};
     private final java.util.Map<String, String[]> modelReasoningEfforts = new java.util.HashMap<>();
@@ -245,6 +247,11 @@ public final class MainActivity extends Activity implements AgentService.Observe
     @Override public void onAgentEvent(JSONObject event) {
         String type = event.optString("type");
         if (type.equals("state")) { state = event.optJSONObject("state"); if (state == null) state = new JSONObject(); render(); }
+        else if (type.equals("connection_validation") && event.optString("requestId").equals(connectionTestId)) {
+            java.util.function.Consumer<JSONObject> callback = connectionTestResult;
+            connectionTestId = null; connectionTestResult = null;
+            if (callback != null) callback.accept(event);
+        }
         else if (type.equals("models") && modelPicker != null && event.optString("requestId").equals(modelRequestId)) {
             String failure = event.optString("error");
             if (!failure.isEmpty()) { toast(failure); return; }
@@ -275,6 +282,7 @@ public final class MainActivity extends Activity implements AgentService.Observe
             }
             modelPicker.setAdapter(new ArrayAdapter<>(this, android.R.layout.simple_spinner_dropdown_item, labels));
             modelPicker.setSelection(0);
+            modelPicker.setEnabled(true);
             toast("Discovered " + models.length() + " models");
         }
         else if (type.equals("mcp_tools") && event.optString("requestId").equals(mcpRequestId)) {
@@ -659,7 +667,7 @@ public final class MainActivity extends Activity implements AgentService.Observe
         picker.setAdapter(new ArrayAdapter<>(this, android.R.layout.simple_spinner_dropdown_item, new String[]{"Manual model ID · or Discover models"}));
         picker.setOnItemSelectedListener(new AdapterView.OnItemSelectedListener() {
             @Override public void onItemSelected(AdapterView<?> parent, View view, int position, long id) {
-                if (savedProofApplies[0] && position > 0 && position < modelIds.length && modelIds[position] != null) {
+                if (picker.isEnabled() && position > 0 && position < modelIds.length && modelIds[position] != null) {
                     String selectedMode = modes[mode.getSelectedItemPosition()];
                     String currentModel = model.getText().toString().trim();
                     preferredReasoning[0] = reasoningPreferenceAfterSelection(selectedMode, currentModel,
@@ -683,6 +691,7 @@ public final class MainActivity extends Activity implements AgentService.Observe
         });
         panel.addView(picker);
         final EditText[] newKey = new EditText[1];
+        final boolean[] testOnly = {false};
         panel.addView(button("Discover models", () -> {
             if (activeWork()) { toast("Finish active work before discovering models"); return; }
             String selectedMode = modes[mode.getSelectedItemPosition()];
@@ -690,15 +699,19 @@ public final class MainActivity extends Activity implements AgentService.Observe
             boolean sameMode = selectedMode.equals(savedMode)
                     || (selectedMode.equals("openai") && savedMode.equals("api-key"))
                     || (selectedMode.equals("codex") && (savedMode.equals("codexRelay") || savedMode.equals("codex-relay")));
-            boolean fixedProvider = selectedMode.equals(CredentialStore.OPENCODE) || selectedMode.equals(CredentialStore.NEBIUS);
-            if (!sameMode
-                    || (!selectedMode.equals(CredentialStore.CODEX_ACCOUNT) && !fixedProvider && !endpoint.getText().toString().trim().equals(saved.optString("endpoint")))
-                    || (newKey[0] != null && newKey[0].getText().length() > 0)) {
-                toast("Save your provider connection, then reopen Settings to discover its models");
+            if (selectedMode.equals(CredentialStore.CODEX_ACCOUNT) || selectedMode.equals("scripted")) {
+                if (!sameMode) { toast("Connect this provider first"); return; }
+                modelRequestId = Long.toHexString(System.nanoTime());
+                command(json("action", "list_models", "requestId", modelRequestId));
                 return;
             }
+            String enteredKey = newKey[0] == null ? "" : newKey[0].getText().toString().trim();
+            String apiKey = enteredKey.isEmpty() && sameMode ? saved.optString("apiKey") : enteredKey;
+            if (apiKey.isEmpty()) { toast("Enter an API key before discovering models"); return; }
+            JSONObject draft = json("authMode", selectedMode, "endpoint", endpoint.getText().toString().trim(),
+                    "model", model.getText().toString().trim(), "apiKey", apiKey);
             modelRequestId = Long.toHexString(System.nanoTime());
-            command(json("action", "list_models", "requestId", modelRequestId));
+            command(Json.obj("action", "list_models", "requestId", modelRequestId, "credentials", draft));
         }));
         LinearLayout secretPanel = column(); panel.addView(secretPanel);
         EditText secret = field(secretPanel, "API key / relay token (blank keeps saved value)", ""); secret.setInputType(InputType.TYPE_CLASS_TEXT | InputType.TYPE_TEXT_VARIATION_PASSWORD);
@@ -712,6 +725,15 @@ public final class MainActivity extends Activity implements AgentService.Observe
         accountPanel.addView(text(accountStatus));
         accountPanel.addView(text("Sign in using a device code, or select your Codex auth.json. Account tokens stay encrypted on this phone. Imported refresh tokens may share rotation with the original Codex installation."));
         final AlertDialog[] settingsDialog = new AlertDialog[1];
+        TextView connectionStatus = text("Test connection checks model discovery and a small reply before saving. This makes a small API request and may incur provider usage.");
+        panel.addView(connectionStatus);
+        Button testConnection = button("Test connection", () -> {
+            if (settingsDialog[0] == null) return;
+            testOnly[0] = true;
+            settingsDialog[0].getButton(AlertDialog.BUTTON_POSITIVE).performClick();
+            testOnly[0] = false;
+        });
+        panel.addView(testConnection);
         accountPanel.addView(button("Sign in", () -> {
             if (activeWork()) { toast("Stop active work before changing accounts"); return; }
             settingsDialog[0].dismiss(); signInAccount(false);
@@ -834,11 +856,16 @@ public final class MainActivity extends Activity implements AgentService.Observe
             @Override public void onTextChanged(CharSequence value, int start, int before, int count) { }
             @Override public void afterTextChanged(Editable value) {
                 if (changingModel[0]) return;
+                modelRequestId = null;
+                picker.setEnabled(false);
                 String effort = selectedReasoningEffort(reasoning);
                 String currentModel = model.getText().toString().trim();
                 boolean sameConnection = matchesSavedConnection(saved, modes[mode.getSelectedItemPosition()],
                         endpoint.getText().toString(), secret.getText().toString());
-                if (sameConnection == savedProofApplies[0]) return;
+                if (sameConnection == savedProofApplies[0]) {
+                    if (sameConnection) picker.setEnabled(true);
+                    return;
+                }
                 if (!sameConnection) {
                     sourceBeforeConnectionEdit[0] = modelSource[0];
                     modelBeforeConnectionEdit[0] = currentModel;
@@ -1084,17 +1111,64 @@ public final class MainActivity extends Activity implements AgentService.Observe
                     }
                     String prompt = mainPrompt.getText().toString().trim();
                     if (prompt.length() > 50000) { toast("Personal instructions must be 50000 characters or fewer"); return; }
-                    credentials.save(config); invalidateAccountOperations();
-                    // Serialize settings through the runtime owner, including when its previous
-                    // isolate is closing, so a late checkpoint cannot overwrite these preferences.
-                    JSONObject configure=json("action","configure","personalInstructions",prompt);
-                    command(configure);
-                    dialog.dismiss(); toast("Settings saved");
-                } catch (Exception error) { toast(error instanceof IllegalArgumentException ? error.getMessage() : "Could not save connection"); }
+                    Runnable saveConnection = () -> {
+                      try {
+                        if (activeWork()) { connectionStatus.setText("Stop active work and save again."); return; }
+                        credentials.save(config); invalidateAccountOperations();
+                        // Serialize through the owner so late checkpoints cannot overwrite preferences.
+                        JSONObject configure=json("action","configure","personalInstructions",prompt);
+                        command(configure);
+                        dialog.dismiss(); toast("Settings saved");
+                      } catch (Exception error) { connectionStatus.setText(error instanceof IllegalArgumentException ? error.getMessage() : "Could not save connection"); }
+                    };
+                    if (selectedMode.equals("scripted") || selectedMode.equals(CredentialStore.CODEX_ACCOUNT)) {
+                        if (testOnly[0]) { connectionStatus.setText("Connection testing is available for API-key providers. Use account sign-in for Codex."); return; }
+                        saveConnection.run(); return;
+                    }
+                    if (connectionTestId != null) { toast("Connection test is already running"); return; }
+                    boolean saveAfterTest = !testOnly[0];
+                    String testedEndpoint = endpoint.getText().toString();
+                    String testedKey = secret.getText().toString();
+                    connectionStatus.setText("Testing key, model catalog, and backend reply…");
+                    testConnection.setEnabled(false);
+                    dialog.getButton(AlertDialog.BUTTON_POSITIVE).setEnabled(false);
+                    connectionTestId = Long.toHexString(System.nanoTime());
+                    connectionTestResult = event -> {
+                        testConnection.setEnabled(true);
+                        dialog.getButton(AlertDialog.BUTTON_POSITIVE).setEnabled(true);
+                        String failure = event.optString("error");
+                        if (!failure.isEmpty()) { connectionStatus.setText(failure + " Settings were not saved."); return; }
+                        if (!selectedMode.equals(modes[mode.getSelectedItemPosition()])
+                                || !selectedModel.equals(model.getText().toString().trim())
+                                || !testedEndpoint.equals(endpoint.getText().toString())
+                                || !testedKey.equals(secret.getText().toString())
+                                || !selectedEffort.equals(selectedReasoningEffort(reasoning))
+                                || !prompt.equals(mainPrompt.getText().toString().trim())) {
+                            connectionStatus.setText("Connection responded, but settings changed during the test. Test or save again."); return;
+                        }
+                        connectionStatus.setText("Connection verified: key accepted, models discovered, and backend replied.");
+                        if (saveAfterTest) saveConnection.run();
+                    };
+                    String pendingTest = connectionTestId;
+                    connectionStatus.postDelayed(() -> {
+                        if (!pendingTest.equals(connectionTestId)) return;
+                        connectionTestId = null; connectionTestResult = null;
+                        testConnection.setEnabled(true);
+                        dialog.getButton(AlertDialog.BUTTON_POSITIVE).setEnabled(true);
+                        connectionStatus.setText("Connection test timed out. Settings were not saved. Check network access and retry.");
+                    }, 85000);
+                    command(Json.obj("action", "validate_connection", "requestId", connectionTestId, "credentials", config));
+                } catch (Exception error) {
+                    connectionTestId = null; connectionTestResult = null;
+                    testConnection.setEnabled(true);
+                    dialog.getButton(AlertDialog.BUTTON_POSITIVE).setEnabled(true);
+                    connectionStatus.setText(error instanceof IllegalArgumentException ? error.getMessage() : "Could not test or save connection");
+                }
             });
         });
         dialog.setOnDismissListener(ignored -> {
             if (modelPicker == picker) {
+                connectionTestId = null; connectionTestResult = null;
                 modelPicker = null; reasoningPicker = null; modelRequestId = null; modelIds = new String[0];
                 modelReasoningEfforts.clear();
                 modelDefaultReasoningEfforts.clear();

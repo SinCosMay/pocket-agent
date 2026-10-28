@@ -72,12 +72,17 @@ export async function discoverProviderModels(
   let response: Response;
   try {
     response = await fetcher(url, {method:'GET', headers, redirect:'error', signal:AbortSignal.timeout(15000)});
-  } catch {
-    throw new Error('Provider model discovery could not connect.');
+  } catch (error) {
+    const code = (error as any)?.cause?.code ?? (error as any)?.code;
+    const detail = ['ENOTFOUND','EAI_AGAIN','ECONNREFUSED','ECONNRESET','ETIMEDOUT','UND_ERR_CONNECT_TIMEOUT','CERT_HAS_EXPIRED','UNABLE_TO_VERIFY_LEAF_SIGNATURE'].includes(code) ? ` (${code})` : '';
+    throw new Error('Provider model discovery could not connect' + detail + '. Check network access and the provider endpoint.');
   }
   if (!response.ok) {
     await response.body?.cancel();
-    throw new Error('Provider model discovery rejected the request (HTTP ' + response.status + ').');
+    throw new Error(response.status === 401
+      ? 'Model discovery rejected this API key (HTTP 401). Check the key and selected provider.'
+      : response.status === 403 ? 'Model discovery access denied (HTTP 403). Check provider permissions.'
+      : 'Provider model discovery rejected the request (HTTP ' + response.status + ').');
   }
   const length = Number(response.headers.get('content-length'));
   if (length > maxCatalogBytes) {await response.body?.cancel();throw new Error('Provider model catalog exceeds size limit.');}

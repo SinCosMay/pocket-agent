@@ -80,6 +80,12 @@ public final class AgentService extends Service {
                     try {
                         JSONObject event = new JSONObject().put("type", voiceSessionId.isEmpty() ? "error" : "voice_error")
                             .put("error", failure == null && response != null ? response.optString("error", "Command rejected") : "Agent unavailable");
+                        if ("list_models".equals(command.optString("action"))) {
+                            event.put("type", "models").put("requestId", command.optString("requestId"));
+                        }
+                        if ("validate_connection".equals(command.optString("action"))) {
+                            event.put("type", "connection_validation").put("requestId", command.optString("requestId"));
+                        }
                         if (!voiceSessionId.isEmpty()) event.put("sessionId", voiceSessionId);
                         publish(event);
                     } catch (Exception ignored) { }

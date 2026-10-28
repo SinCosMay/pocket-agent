@@ -967,3 +967,52 @@ test('explicit same-ID catalog workers keep their reasoning restriction through 
    assert.deepEqual(efforts,['low','low','low']);
  } finally {globalThis.fetch=originalFetch;}
 });
+
+test('draft connection testing keeps the Android event loop active and never replaces saved credentials',async()=>{
+ const originalFetch=globalThis.fetch;
+ const bridge=new Bridge();
+ bridge.credentials={authMode:'scripted',model:'scripted'};
+ let finishCatalog!:()=>void;
+ const catalogGate=new Promise<void>(resolve=>{finishCatalog=resolve;});
+ globalThis.fetch=(async(input,init)=>{
+   assert.equal(new Headers(init?.headers).get('authorization'),'Bearer unsaved-draft-key');
+   if(String(input).endsWith('/models')) {
+     await catalogGate;
+     return Response.json({data:[{id:'zai-org/GLM-5.3-Flash'}]});
+   }
+   return new Response('data: '+JSON.stringify({id:'draft',choices:[{index:0,delta:{content:'OK'},finish_reason:'stop'}]})+'\n\ndata: [DONE]\n\n',{headers:{'content-type':'text/event-stream'}});
+ }) as typeof fetch;
+ try {
+   const runtime=new PocketRuntime(bridge);
+   command(runtime,{action:'validate_connection',requestId:'draft-test',credentials:{authMode:'nebius',model:'zai-org/GLM-5.3-Flash',apiKey:'unsaved-draft-key'}});
+   assert.equal(runtime.state().active,true);
+   finishCatalog();
+   await until(()=>bridge.events.some(e=>e.type==='connection_validation'));
+   const event=bridge.events.find(e=>e.type==='connection_validation');
+   assert.equal(event.error,undefined);
+   assert.equal(event.model,'zai-org/GLM-5.3-Flash');
+   assert.equal(runtime.state().active,false);
+   assert.equal(runtime.state().provider.mode,'scripted');
+   assert.deepEqual(bridge.credentials,{authMode:'scripted',model:'scripted'});
+   assert.doesNotMatch(JSON.stringify(bridge.events),/unsaved-draft-key/);
+ } finally {finishCatalog();globalThis.fetch=originalFetch;}
+});
+
+test('unsaved provider discovery uses the draft rather than the current scripted connection',async()=>{
+ const originalFetch=globalThis.fetch;
+ const bridge=new Bridge();bridge.credentials={authMode:'scripted',model:'scripted'};
+ globalThis.fetch=(async(input,init)=>{
+   assert.equal(String(input),'https://api.tokenfactory.nebius.com/v1/models');
+   assert.equal(new Headers(init?.headers).get('authorization'),'Bearer draft-catalog-key');
+   return Response.json({data:[{id:'zai-org/GLM-5.3-Flash'}]});
+ }) as typeof fetch;
+ try {
+   const runtime=new PocketRuntime(bridge);
+   command(runtime,{action:'list_models',requestId:'draft-models',credentials:{authMode:'nebius',model:'zai-org/GLM-5.3-Flash',apiKey:'draft-catalog-key'}});
+   await until(()=>bridge.events.some(e=>e.type==='models'));
+   const event=bridge.events.find(e=>e.type==='models');
+   assert.equal(event.error,undefined);assert.equal(event.models[0].id,'zai-org/GLM-5.3-Flash');
+   assert.equal(runtime.state().provider.mode,'scripted');
+   assert.doesNotMatch(JSON.stringify(bridge.events),/draft-catalog-key/);
+ } finally {globalThis.fetch=originalFetch;}
+});
