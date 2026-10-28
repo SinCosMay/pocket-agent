@@ -4,6 +4,11 @@ on:
     branches: [main, 'feat/**', 'fix/**']
   workflow_dispatch:
     inputs:
+      quick_test_profile:
+        description: Build a separate Pocket Agent Quick Test app without replacing the main app
+        required: false
+        default: false
+        type: boolean
       isolated_history:
         description: Build an isolated debug APK pair for USB history validation
         required: false
@@ -12,14 +17,14 @@ on:
 permissions:
   contents: read
 concurrency:
-  group: apk-${{ github.ref }}
+  group: apk-${{ github.ref }}-${{ inputs.quick_test_profile && 'quick-test' || 'standard' }}
   cancel-in-progress: true
 jobs:
   history-device:
     if: inputs.isolated_history == true
     uses: ./.github/workflows/history-device.yml
   build:
-    if: inputs.isolated_history != true
+    if: inputs.isolated_history != true && inputs.quick_test_profile != true
     runs-on: ubuntu-24.04
     timeout-minutes: 35
     env:
@@ -173,6 +178,63 @@ jobs:
             app/build/reports/lint-results-release.*
             app/build/outputs/mapping/**/missing_rules.txt
           if-no-files-found: ignore
+      - name: Remove signing material
+        if: always()
+        run: rm -f "$APK_KEYSTORE"
+
+  quick-test:
+    if: inputs.quick_test_profile == true && inputs.isolated_history != true
+    runs-on: ubuntu-24.04
+    timeout-minutes: 25
+    env:
+      APK_KEYSTORE: /tmp/pocket-agent-signing.jks
+      APK_STORE_PASSWORD: ${{ secrets.APK_STORE_PASSWORD }}
+      APK_KEY_PASSWORD: ${{ secrets.APK_KEY_PASSWORD }}
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-node@v5
+        with:
+          node-version: '22.22.2'
+          cache: npm
+          cache-dependency-path: runtime/package-lock.json
+      - name: Build runtime
+        working-directory: runtime
+        run: npm ci && npm run build
+      - uses: actions/setup-java@v5
+        with:
+          distribution: temurin
+          java-version: '17'
+      - uses: android-actions/setup-android@v4
+      - run: sdkmanager 'platforms;android-36' 'build-tools;36.0.0' 'ndk;27.2.12479018'
+      - name: Restore private signing material
+        env:
+          KEYSTORE_BASE64: ${{ secrets.APK_KEYSTORE_BASE64 }}
+        run: |
+          python3 - <<'PYTHON'
+          import base64, os
+          from pathlib import Path
+          path = Path(os.environ['APK_KEYSTORE'])
+          path.write_bytes(base64.b64decode(os.environ['KEYSTORE_BASE64'], validate=True))
+          path.chmod(0o600)
+          PYTHON
+      - uses: gradle/actions/setup-gradle@v5
+      - name: Build separate test app
+        run: ./gradlew --no-daemon -PquickCommandTestProfile :app:assembleDevelopment
+      - name: Verify isolated package and collect APK
+        run: |
+          mkdir -p quick-test-apk
+          apk=app/build/outputs/apk/development/app-arm64-v8a-development.apk
+          "$ANDROID_HOME/build-tools/36.0.0/aapt" dump badging "$apk" > quick-test-apk/package.txt
+          grep -q "package: name='dev.pocket.agent.quicktest'" quick-test-apk/package.txt
+          grep -q "application-label:'Pocket Agent Quick Test'" quick-test-apk/package.txt
+          cp "$apk" quick-test-apk/Pocket-Agent-Quick-Test-arm64.apk
+          git rev-parse HEAD > quick-test-apk/source-commit.txt
+          (cd quick-test-apk && sha256sum *.apk > SHA256SUMS.txt)
+      - uses: actions/upload-artifact@v4
+        with:
+          name: pocket-agent-quick-test
+          path: quick-test-apk/
+          retention-days: 30
       - name: Remove signing material
         if: always()
         run: rm -f "$APK_KEYSTORE"
