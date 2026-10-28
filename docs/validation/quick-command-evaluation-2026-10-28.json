@@ -1,0 +1,11 @@
+{
+  "model_bytes": 23026053,
+  "note": "Host JVM inference and fake Android backends; not phone microphone latency or actual message delivery.",
+  "cases": 119,
+  "failures": [],
+  "host_request_p50_ms": 4,
+  "positive_cases": 82,
+  "host_model_load_ms": 507,
+  "negative_cases": 37,
+  "host_request_p95_ms": 8
+}

@@ -16,10 +16,10 @@ arbitration disabled. While Pocket Agent is thinking or speaking, Flux temporari
 microphone as a full-duplex interruption bridge; if the user barges in, that stream finishes the
 interrupted utterance before Android recognition resumes. **Deepgram only** disables Android
 recognition and threshold logic. Deepgram TTS remains common to all three modes.
-A nonempty selected transcript, after any wake-word prefix is removed, is submitted as **one normal main-agent user message**; wake-word-only turns are ignored. Only
+A nonempty selected transcript first enters the optional [local command route](QUICK_COMMANDS.md). Supported requests execute through native tools and their real result is recorded in chat without model inference. Other requests, after any wake-word prefix is removed, are submitted as **one normal main-agent user message**; wake-word-only turns are ignored. Only
 text deltas produced in that particular main response are sent to Deepgram streaming
 TTS. Subsequent Pi9 worker completion messages and ordinary text messages remain
-visible in chat without speech unless the model explicitly calls `speak_to_user`. The listening service ends after three seconds of idle silence, or immediately via
+visible in chat without speech unless the model explicitly calls `speak_to_user`. The listening service ends after three seconds of idle silence (30 seconds while waiting for a local clarification), or immediately via
 the notification **Stop listening** action. Neither ending the voice session nor switching
 to another app cancels Pi workers. Stop response, Cancel worker and Stop all remain
 distinct actions.

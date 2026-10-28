@@ -751,6 +751,13 @@ public final class MainActivity extends Activity implements AgentService.Observe
         panel.addView(button("Notification access settings", () -> startActivity(new Intent(Settings.ACTION_NOTIFICATION_LISTENER_SETTINGS))));
         panel.addView(button("Choose phone permissions", this::permissions));
         panel.addView(button("Remote MCP servers", this::mcpSettings));
+        android.widget.Switch quickCommands = new android.widget.Switch(this);
+        quickCommands.setText("Handle supported voice commands locally");
+        quickCommands.setChecked(QuickVoiceCommands.enabled(this));
+        quickCommands.setOnCheckedChangeListener((view, checked) -> QuickVoiceCommands.setEnabled(this, checked));
+        panel.addView(quickCommands);
+        panel.addView(text("Local commands handle time, date, battery, basic calculations, phone controls, contacts and messages. Other requests use your existing agent. Applies to new voice sessions."));
+        panel.addView(button("Allow manual brightness control", () -> startActivity(new Intent(Settings.ACTION_MANAGE_WRITE_SETTINGS, android.net.Uri.parse("package:" + getPackageName())))));
         panel.addView(text("Speech-to-text mode"));
         Spinner sttMode = new Spinner(this);
         String[] sttModeNames = {
@@ -1160,12 +1167,12 @@ public final class MainActivity extends Activity implements AgentService.Observe
     }
 
     private void permissions() {
-        String[] labels = {"Contacts", "Phone calls and phone status", "Send SMS", "Read and edit calendar", "Runtime notifications"};
+        String[] labels = {"Contacts", "Phone calls and phone status", "Send SMS", "Read and edit calendar", "Runtime notifications", "Camera for flashlight"};
         boolean[] selected = new boolean[labels.length];
         new AlertDialog.Builder(this).setTitle("Allow tools you want to use").setMultiChoiceItems(labels, selected, (dialog, index, checked) -> selected[index] = checked)
                 .setNegativeButton("Close", null).setPositiveButton("Request selected", (dialog, which) -> {
                     java.util.ArrayList<String> needed = new java.util.ArrayList<>();
-                    String[][] groups = {{Manifest.permission.READ_CONTACTS}, {Manifest.permission.CALL_PHONE, Manifest.permission.READ_PHONE_STATE}, {Manifest.permission.SEND_SMS}, {Manifest.permission.READ_CALENDAR, Manifest.permission.WRITE_CALENDAR}, Build.VERSION.SDK_INT >= 33 ? new String[]{Manifest.permission.POST_NOTIFICATIONS} : new String[0]};
+                    String[][] groups = {{Manifest.permission.READ_CONTACTS}, {Manifest.permission.CALL_PHONE, Manifest.permission.READ_PHONE_STATE}, {Manifest.permission.SEND_SMS}, {Manifest.permission.READ_CALENDAR, Manifest.permission.WRITE_CALENDAR}, Build.VERSION.SDK_INT >= 33 ? new String[]{Manifest.permission.POST_NOTIFICATIONS} : new String[0], {Manifest.permission.CAMERA}};
                     for (int index = 0; index < groups.length; index++) if (selected[index]) for (String permission : groups[index]) if (checkSelfPermission(permission) != PackageManager.PERMISSION_GRANTED) needed.add(permission);
                     if (!needed.isEmpty()) requestPermissions(needed.toArray(new String[0]), 1); else toast("No additional permissions requested");
                 }).show();
