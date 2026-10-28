@@ -164,7 +164,8 @@ final class AutonomyStore extends SQLiteOpenHelper {
         NetworkCapabilities network=connectivity==null?null:connectivity.getNetworkCapabilities(connectivity.getActiveNetwork());
         PowerManager power=context.getSystemService(PowerManager.class);
         NotificationManager notifications=context.getSystemService(NotificationManager.class);
-        return Json.obj("enabled",enabled(context),"timing","inexact_android_workmanager","connected",network!=null&&network.hasCapability(NetworkCapabilities.NET_CAPABILITY_INTERNET),
+        return Json.obj("enabled",enabled(context),"timing",AutonomyScheduler.exactAlarmsAllowed(context)?"exact_android_alarm":"inexact_android_alarm",
+            "exactAlarmPermission",AutonomyScheduler.exactAlarmsAllowed(context),"connected",network!=null&&network.hasCapability(NetworkCapabilities.NET_CAPABILITY_INTERNET),
             "notificationsEnabled",notifications!=null&&notifications.areNotificationsEnabled(),"notificationAccess",PhoneNotifications.connected!=null,
             "batteryRestricted",power!=null&&!power.isIgnoringBatteryOptimizations(context.getPackageName()),"maxRunDurationMs",8*60_000,"phoneMustBeOnline",true,
             "lastFailure",context.getSharedPreferences("autonomy-policy",0).getString("lastFailure",""),"retryAfter",context.getSharedPreferences("autonomy-policy",0).getLong("backoffUntil",0));

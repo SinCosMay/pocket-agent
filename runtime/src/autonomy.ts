@@ -143,6 +143,9 @@ export class AutonomyEngine {
     if(name==='schedule'&&action==='history')return this.state.runs.filter((r:RecordValue)=>r.sourceId===args.id);
     if(automated&&name==='skill'&&!['get','list'].includes(action))throw Error('Automated workers may only read skills');
     if(automated&&name==='task'&&!['get','list','checkpoint','complete'].includes(action))throw Error('Automated workers may only update their own progress');
+    if(['schedule','wakeup','watch'].includes(name)&&['create','set','resume','run_now'].includes(action)
+      &&this.host.call('autonomy.status',{})?.enabled===false)
+      throw Error('Automation is paused. Enable Allow scheduled and autonomous work in Background activity before scheduling or resuming work.');
     const result=this.commit(s=>{
       if(action==='create'||(name==='wakeup'&&action==='set')) {
         const existing=s[collection].find((r:RecordValue)=>r.key===callId);if(existing)return existing;

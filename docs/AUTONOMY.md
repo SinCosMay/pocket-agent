@@ -49,14 +49,26 @@ and UTF-8 byte budget are bounded; exhausted limits return errors, never silentl
 truncate pending work. Delete old schedules, tasks or skills when their limits
 are reached. Completed run outputs retain the latest 100 records.
 
-WorkManager owns the timer. A short timer worker queues a separate execution
-worker, so rearming a timer does not cancel ongoing execution. Execution leases
-the same `RuntimeHost` as `AgentService`; a replacement waits for the old isolate
-to close. There is no background `startForegroundService` bypass and no exact-alarm
-permission. Each WorkManager invocation is bounded to eight minutes. Android 16
-job quotas and OEM restrictions still apply. Native startup/dispatch failures back off
-across process restarts; three consecutive failures pause automation until the
-user reviews the issue and enables it again in Activity.
+AlarmManager owns wakeup delivery. With **Alarms & reminders** access, an exact
+allow-while-idle alarm starts a visible, bounded foreground runner, which creates
+the runtime and executes the saved job without an open Activity or another message.
+Without access, an inexact allow-while-idle alarm queues expedited WorkManager work
+(with a normal-job fallback if quota is exhausted). A durable WorkManager timer is
+also retained for recovery. Both delivery paths share one execution guard and the
+same `RuntimeHost` as `AgentService`; a replacement waits for the old isolate to
+close. Boot, clock changes and exact-alarm permission grants rearm saved work.
+Each invocation supervises at most eight minutes of work. Native startup/dispatch
+failures back off across process restarts; three consecutive failures pause
+automation until the user reviews the issue and enables it again in Activity.
+
+Active inference and tool work hold a partial CPU wake lock with a ten-minute
+safety timeout, renewed by runtime activity events and released on idle, cleanup-only
+waiting, shutdown or runtime failure. The alarm runner also holds a timed startup
+lease. The physical screen stays off. Device power-off, force-stop, unavailable
+network/provider, denied tool permissions and OEM battery restrictions still prevent
+or delay execution; use unrestricted battery settings for reliable unattended work.
+Private-display Home/Back/Recents remain unsupported while this MIUI device is asleep;
+workers must use in-app navigation instead.
 
 Each run uses a dedicated `autonomy-worker` conversation, without a main-chat
 model turn or nested delegation. Its context comes from the saved task checkpoint
@@ -78,7 +90,9 @@ Activity shows pending decisions, schedules, recent runs and results, plus the
 master enable switch. Stop all pauses future automation immediately in memory and
 stops current work; the policy write is serialized in the background. Stale policy
 writes cannot override a newer user choice.
-Resume automation explicitly in Activity. Pausing a task stops its current worker
+Resume automation explicitly in Activity. New triggers, trigger resume and manual schedule
+runs are rejected while globally paused, so a saved timestamp cannot imply runnable work.
+Activity marks existing enabled schedules as blocked while the master switch is off. Pausing a task stops its current worker
 and keeps saved continuations; answering a pending decision is required before
 that task can resume. Pausing a schedule stops future runs;
 cancel the associated task to stop its current worker as well.
@@ -107,6 +121,6 @@ notification filters, skills, task completion and core-prompt migration/protecti
 `AutonomyDeviceTest` exercises real SQLite revision/event handling, direct runtime
 leases, notification text handling, and native instruction migration. Existing
 lifecycle tests exercise the foreground service separately. The APK workflow runs
-these tests alongside the instruction/editor lifecycle instrumentation. APK compilation and signing run
-only in GitHub Actions. Physical-device Doze/OEM battery behavior and live scheduled
+these tests alongside the instruction/editor lifecycle instrumentation. `ScreenOffScheduleDeviceTest` uses the isolated validation APK and offline scripted
+provider to check active-turn completion across screen-off and scheduled cold runtime startup. Physical-device Doze/OEM battery behavior and live scheduled
 provider runs remain separate device validation, not guarantees from unit tests.

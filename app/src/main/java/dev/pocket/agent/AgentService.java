@@ -16,7 +16,7 @@ import android.os.Looper;
 import java.util.concurrent.CopyOnWriteArraySet;
 import org.json.JSONObject;
 
-/** User-started foreground ownership survives Activity destruction, without a wake lock. */
+/** User-started foreground ownership survives Activity destruction, with CPU wake protection only during active work. */
 public final class AgentService extends Service {
     public static final String ACTION_START = "dev.pocket.agent.START";
     public static final String ACTION_COMMAND = "dev.pocket.agent.COMMAND";
