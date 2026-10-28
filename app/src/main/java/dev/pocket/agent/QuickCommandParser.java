@@ -56,7 +56,7 @@ final class QuickCommandParser {
         // Full-clause matches prevent executing a known prefix while dropping other work.
         if((m=match("(?:send (?:an? )?(?:sms|text(?: message)?|message|whatsapp(?: message)?) to|text|message|whatsapp) (.+?)(?:\\s+(?:saying|that says|with the message|that)|\\s*:)\\s+(.+)",s))!=null) {
             String body=m.group(2).trim();
-            if(body.startsWith("\"")&&body.endsWith("\""))body=body.substring(1,body.length()-1);
+            if(body.startsWith("\"")&&body.endsWith("\"")){body=body.substring(1,body.length()-1);if(body.contains("\""))return null;}
             else if(body.contains("\"")||body.matches("(?is).*\\b(?:and|then|also)\\b.*"))return null;
             String head=s.substring(0,m.start(2));
             String channel=head.toLowerCase(Locale.ROOT).contains("whatsapp")?"whatsapp":head.matches("(?is).*\\b(?:sms|text)\\b.*")?"sms":"";

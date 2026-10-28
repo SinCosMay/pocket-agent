@@ -901,6 +901,7 @@
         },
         "percent": {
           "type": "integer",
+          "description": "Required only when action is set; omit for up, down, mute and unmute.",
           "minimum": 0,
           "maximum": 100
         },

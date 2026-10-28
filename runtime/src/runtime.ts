@@ -535,9 +535,12 @@ export class PocketRuntime {
       } else if(cmd.action==='record_local_voice') {
         if(typeof cmd.text!=='string'||!cmd.text.trim()||cmd.text.length>1000||typeof cmd.response!=='string'||!cmd.response.trim()||cmd.response.length>4000)throw Error('Invalid local voice exchange');
         if(this.inbox.length>=32)throw Error('Pending message limit reached (32)');
+        if(this.main.full())throw Error('Main conversation is at the mobile context limit; history and pending results were retained');
+        const previousPaused=this.mainPaused;
+        this.mainPaused=false;
         const queued={type:'local_voice',text:cmd.text,response:cmd.response};
         this.inbox.push(queued);
-        if(!this.save()){this.inbox.pop();throw Error('Could not durably record local voice exchange');}
+        if(!this.save()){this.inbox.pop();this.mainPaused=previousPaused;throw Error('Could not durably record local voice exchange');}
         queueMicrotask(()=>void this.pump());
       } else if(cmd.action==='send') {
         if(typeof cmd.text!=='string'||!cmd.text.trim()||cmd.text.length>50000)throw new Error('Message must contain 1..50000 characters');

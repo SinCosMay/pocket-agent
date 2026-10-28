@@ -75,13 +75,15 @@ final class QuickCommandEngine {
                 check(alive);
                 if(p.tool().isEmpty()){replies.add(p.description());continue;}
                 JSONObject args=p.args();
+                String operationId=null;
                 if(p.mutation()) {
                     // Obtain today's installation-bound prefix immediately before dispatch.
                     JSONObject caps=read("phone_capabilities",Json.obj(),alive);
-                    String id=caps.getString("operation_prefix")+"_quick_"+UUID.randomUUID().toString().replace("-","");
-                    args.put("operation_id",id);operations.add(id);
+                    operationId=caps.getString("operation_prefix")+"_quick_"+UUID.randomUUID().toString().replace("-","");
+                    args.put("operation_id",operationId);
                 }
-                check(alive);JSONObject outcome=backend.call(p.tool(),args);
+                check(alive);if(operationId!=null)operations.add(operationId);
+                JSONObject outcome=backend.call(p.tool(),args);
                 if(outcome.optBoolean("isError")) {
                     return new Result(false,String.join(" ",replies)+(replies.isEmpty()?"":" ")+"Stopped: "+outcome.optString("message","The command outcome is unknown.")+" No remaining actions were requested.",false,List.copyOf(operations));
                 }
@@ -89,7 +91,7 @@ final class QuickCommandEngine {
             }
             return new Result(false,String.join(" ",replies),false,List.copyOf(operations));
         }catch(Fallback fallback){clear();return wasPending?Result.say("That command is no longer available locally. Please repeat the full request for the assistant.",false):Result.fallbackResult();}
-        catch(Cancelled cancelled){return Result.say("",awaiting);}
+        catch(Cancelled cancelled){return new Result(false,operations.isEmpty()?"":"The command was interrupted after an action was requested; check its outcome before retrying.",awaiting,List.copyOf(operations));}
         catch(Exception failure) {
             clear();
             // Includes model/backend failures. A model failure before any dispatch can safely
@@ -230,7 +232,7 @@ final class QuickCommandEngine {
         for(int i=0;i<contacts.length();i++){JSONObject c=contacts.getJSONObject(i);distinct.put(c.optLong("contact_id")+":"+c.getString("number").replaceAll("[^0-9+]",""),c);}
         for(JSONObject c:distinct.values()){candidates.add(c);if(QuickCommandParser.normalize(c.getString("name")).equals(QuickCommandParser.normalize(query)))exact.add(c);}
         if(!exact.isEmpty())candidates=exact;
-        if(candidates.size()==1){a.set("number",candidates.get(0).getString("number"));a.set("recipient",candidates.get(0).getString("name"));return;}
+        if(exact.size()==1){a.set("number",exact.get(0).getString("number"));a.set("recipient",exact.get(0).getString("name"));return;}
         if(candidates.size()>5)throw need(index,"recipient","I found several contacts. What is their full name or phone number?");
         List<Choice> choices=new ArrayList<>();for(JSONObject c:candidates)choices.add(new Choice(contactLabel(c),Map.of("recipient",c.getString("name"),"number",c.getString("number"))));
         throw choices(index,"number","Which contact?",choices);

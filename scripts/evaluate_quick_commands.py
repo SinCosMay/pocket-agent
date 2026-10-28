@@ -54,7 +54,7 @@ def main():
     sources = [source / (name + ".java") for name in ("Json", "QuickCommandParser", "QuickCommandFacts", "QuickCommandEncoder", "QuickCommandEngine")]
     sources.append(ROOT / "scripts/quick_commands/QuickCommandEvaluation.java")
     with tempfile.TemporaryDirectory(prefix="pocket-quick-") as temporary:
-        classpath = str(args.cache / "*")
+        classpath = os.pathsep.join(str(args.cache / name) for name in ARTIFACTS)
         subprocess.run(["javac", "--release", "17", "-cp", classpath, "-d", temporary, *map(str, sources)], check=True)
         java = ["java", "-cp", temporary + os.pathsep + classpath, "dev.pocket.agent.QuickCommandEvaluation", str(ASSETS)]
         if args.generate:

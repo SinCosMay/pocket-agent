@@ -757,7 +757,11 @@ public final class MainActivity extends Activity implements AgentService.Observe
         quickCommands.setOnCheckedChangeListener((view, checked) -> QuickVoiceCommands.setEnabled(this, checked));
         panel.addView(quickCommands);
         panel.addView(text("Local commands handle time, date, battery, basic calculations, phone controls, contacts and messages. Other requests use your existing agent. Applies to new voice sessions."));
-        panel.addView(button("Allow manual brightness control", () -> startActivity(new Intent(Settings.ACTION_MANAGE_WRITE_SETTINGS, android.net.Uri.parse("package:" + getPackageName())))));
+        panel.addView(button("Allow manual brightness control", () -> {
+            Intent intent=new Intent(Settings.ACTION_MANAGE_WRITE_SETTINGS, android.net.Uri.parse("package:"+getPackageName()));
+            if(intent.resolveActivity(getPackageManager())==null){toast("Manual brightness settings are unavailable on this device");return;}
+            try {startActivity(intent);}catch(android.content.ActivityNotFoundException|SecurityException unavailable){toast("Manual brightness settings are unavailable on this device");}
+        }));
         panel.addView(text("Speech-to-text mode"));
         Spinner sttMode = new Spinner(this);
         String[] sttModeNames = {

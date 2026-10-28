@@ -70,23 +70,43 @@ public final class QuickCommandEvaluation {
         check(!run(missingEngine,"What time is it?").awaiting()&&missing.mutations.isEmpty(),"New exact question cannot be sent as a missing body");
         run(missingEngine,"Text Rahul");run(missingEngine,"message is Go home");
         check(missing.arguments.get(0).getString("text").equals("Go home"),"Explicit command-like dictation");
+        Phone singlePartial=new Phone();singlePartial.contacts=Json.arr(Json.obj("contact_id",4,"name","Rahul Shah","number","+919000001111"));
+        QuickCommandEngine partialEngine=engine(singlePartial,time);
+        check(run(partialEngine,"Text Rahul saying hello").awaiting(),"A single partial-name match must require selection");
+        check(singlePartial.mutations.isEmpty(),"Partial-name match cannot dispatch automatically");
+        run(partialEngine,"first");check(singlePartial.mutations.equals(List.of("phone_sms")),"Explicit selection resolves a single partial match");
+        Phone interrupted=new Phone();java.util.concurrent.atomic.AtomicBoolean alive=new java.util.concurrent.atomic.AtomicBoolean(true);
+        QuickCommandEngine cancellation=new QuickCommandEngine((tool,args)->{JSONObject result=interrupted.call(tool,args);if(tool.equals("phone_open_app"))alive.set(false);return result;},a->true,time::get);
+        var cancelled=cancellation.handle("Open Spotify and set a timer for one minute",alive::get);
+        check(cancelled.operations().size()==1&&!cancelled.speech().isEmpty()&&interrupted.mutations.equals(List.of("phone_open_app")),"Interrupted dispatch retains a reviewable outcome and never starts the second action");
+        check(QuickCommandParser.parse("Text Rahul saying \"hi\" and \"bye\"").isEmpty(),"Nested quotes cannot become a partial dictated message");
         System.out.println("Dialogue and execution checks passed");
     }
     static void generate(Path assets) throws Exception {
-        try(QuickCommandEncoder encoder=new QuickCommandEncoder(assets.resolve("model.onnx").toString(),Files.newInputStream(assets.resolve("vocab.txt")),null);
-            DataOutputStream out=new DataOutputStream(Files.newOutputStream(assets.resolve("prototypes.bin")))) {
-            List<String> lines=Files.readAllLines(assets.resolve("prototypes.tsv"));out.writeInt(0x51434d31);out.writeInt(lines.size());
-            for(String line:lines){String[] fields=line.split("\t",2);List<QuickCommandParser.Action> parsed=QuickCommandParser.parse(fields[1]);String query=parsed.size()==1?QuickCommandEncoder.semanticText(parsed.get(0)):fields[1];out.writeUTF(fields[0]);for(float value:encoder.embed(query))out.writeFloat(value);}
-        }
+        List<String> lines=Files.readAllLines(assets.resolve("prototypes.tsv")).stream().filter(line->!line.isBlank()).toList();
+        if(lines.isEmpty()||lines.size()>500)throw new IllegalArgumentException("Expected 1..500 nonempty prototypes");
+        for(String line:lines){String[] fields=line.split("\\t",2);if(fields.length!=2||fields[0].isBlank()||fields[1].isBlank())throw new IllegalArgumentException("Each prototype needs a label, tab and example");List<QuickCommandParser.Action> parsed=QuickCommandParser.parse(fields[1]);if(!fields[0].equals("other")&&(parsed.size()!=1||!parsed.get(0).intent().equals(fields[0])))throw new IllegalArgumentException("Prototype does not match its intent: "+line);}
+        Path temporary=Files.createTempFile(assets,"prototypes-",".tmp");
+        try {
+            try(QuickCommandEncoder encoder=new QuickCommandEncoder(assets.resolve("model.onnx").toString(),Files.newInputStream(assets.resolve("vocab.txt")),null);
+                DataOutputStream out=new DataOutputStream(Files.newOutputStream(temporary))) {
+                out.writeInt(0x51434d31);out.writeInt(lines.size());
+                for(String line:lines){String[] fields=line.split("\\t",2);List<QuickCommandParser.Action> parsed=QuickCommandParser.parse(fields[1]);String query=parsed.size()==1?QuickCommandEncoder.semanticText(parsed.get(0)):fields[1];out.writeUTF(fields[0]);for(float value:encoder.embed(query))out.writeFloat(value);}
+            }
+            Files.move(temporary,assets.resolve("prototypes.bin"),StandardCopyOption.REPLACE_EXISTING);
+        }finally{Files.deleteIfExists(temporary);}
     }
     public static void main(String[] args) throws Exception {
         Path assets=Path.of(args[0]);if(args.length>1&&args[1].equals("--generate")){generate(assets);return;}
         dialogues();
         JSONArray cases=new JSONArray(Files.readString(Path.of(args[1]))),failures=new JSONArray();List<Long> times=new ArrayList<>();
+        if(cases.isEmpty())throw new IllegalArgumentException("Evaluation cases cannot be empty");
+        Set<String> examples=new HashSet<>();for(String line:Files.readAllLines(assets.resolve("prototypes.tsv"))){String[] parts=line.split("\\t",2);if(parts.length==2)examples.add(parts[1].toLowerCase(Locale.ROOT).replaceAll("[.!?]+$", ""));}
+        for(int i=0;i<cases.length();i++)if(examples.contains(cases.getJSONObject(i).getString("text").toLowerCase(Locale.ROOT).replaceAll("[.!?]+$", "")))throw new IllegalArgumentException("Evaluation request duplicates a prototype: "+cases.getJSONObject(i).getString("text"));
         long loadAt=System.nanoTime();
         try(QuickCommandEncoder encoder=new QuickCommandEncoder(assets.resolve("model.onnx").toString(),Files.newInputStream(assets.resolve("vocab.txt")),Files.newInputStream(assets.resolve("prototypes.bin")))) {
             long loadMs=(System.nanoTime()-loadAt)/1000000;
-            int accepted=0,rejected=0;
+            int accepted=0,rejected=0,expectedIntents=0,expectedMutations=0;
             for(int i=0;i<cases.length();i++) {
                 JSONObject c=cases.getJSONObject(i);String text=c.getString("text");long at=System.nanoTime();List<QuickCommandParser.Action> plan=QuickCommandParser.parse(text);
                 List<String> labels=new ArrayList<>();JSONArray ranks=new JSONArray();boolean supported=!plan.isEmpty();
@@ -95,13 +115,15 @@ public final class QuickCommandEvaluation {
                 Phone phone=new Phone();QuickCommandEngine production=new QuickCommandEngine(phone,a->QuickCommandFacts.exact(a)||encoder.accepts(a),System::currentTimeMillis);
                 phone.replies=Json.arr(Json.obj("package_name","com.whatsapp","notification_key","wa-mum","posted_at_ms",123,"action_index",0,"title","Mum","group_conversation",false),Json.obj("package_name","com.whatsapp","notification_key","wa-alex","posted_at_ms",123,"action_index",0,"title","Alex","group_conversation",false));
                 QuickCommandEngine.Result routed=run(production,text);supported=!routed.fallback();
+                if(c.has("expected_intents")){JSONArray want=c.getJSONArray("expected_intents");List<String> expectedLabels=new ArrayList<>();for(int n=0;n<want.length();n++)expectedLabels.add(want.getString(n));check(labels.equals(expectedLabels),"Wrong intents for "+text+": "+labels);expectedIntents++;}
+                if(c.has("expected_mutations")){JSONArray want=c.getJSONArray("expected_mutations");List<String> expectedTools=new ArrayList<>();for(int n=0;n<want.length();n++)expectedTools.add(want.getString(n));check(phone.mutations.equals(expectedTools),"Wrong native mutations for "+text+": "+phone.mutations);expectedMutations++;}
                 times.add((System.nanoTime()-at)/1000000);
                 boolean expected=c.optBoolean("local");
                 if(expected)accepted++;else rejected++;
                 if(supported!=expected){for(var a:plan)if(!QuickCommandFacts.exact(a)){var rank=encoder.rank(QuickCommandEncoder.semanticText(a));ranks.put(Json.obj("intent",a.intent(),"top",rank.label(),"score",rank.score(),"margin",rank.margin()));}failures.put(Json.obj("text",text,"expected_local",expected,"parsed",labels,"ranks",ranks));}
             }
             Collections.sort(times);
-            JSONObject report=Json.obj("cases",cases.length(),"positive_cases",accepted,"negative_cases",rejected,"failures",failures,"host_model_load_ms",loadMs,"host_request_p50_ms",times.get(times.size()/2),"host_request_p95_ms",times.get(Math.min(times.size()-1,(int)(times.size()*.95))),"model_bytes",Files.size(assets.resolve("model.onnx")),"note","Host JVM inference and fake Android backends; not phone microphone latency or actual message delivery.");
+            JSONObject report=Json.obj("cases",cases.length(),"positive_cases",accepted,"negative_cases",rejected,"cases_with_intent_assertions",expectedIntents,"cases_with_mutation_assertions",expectedMutations,"failures",failures,"host_model_load_ms",loadMs,"host_request_p50_ms",times.get(times.size()/2),"host_request_p95_ms",times.get(Math.min(times.size()-1,(int)(times.size()*.95))),"model_bytes",Files.size(assets.resolve("model.onnx")),"note","Host JVM inference and fake Android backends; not phone microphone latency or actual message delivery.");
             System.out.println(report.toString(2));if(args.length>2)Files.writeString(Path.of(args[2]),report.toString(2)+"\n");
             check(failures.isEmpty(),"Request evaluation failed");
         }

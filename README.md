@@ -43,7 +43,7 @@ device sign-in, secure import and the optional legacy development relay.
 
 ## Local voice commands
 
-Settings → **Handle supported voice commands locally** enables a local route before
+Settings → **Handle supported voice commands locally** (enabled by default) uses a local route before
 normal agent inference. Everyday time/date, battery/network, arithmetic and unit
 conversion queries need no LLM. A bundled 23 MB INT8 MiniLM encoder plus validated
 slots handles supported action paraphrases and compounds: timers, alarms, media,

@@ -1,15 +1,37 @@
 [
   {
     "text": "Hey Jarvis, can you open Spotify and set a timer for ten minutes?",
-    "local": true
+    "local": true,
+    "expected_intents": [
+      "app",
+      "timer"
+    ],
+    "expected_mutations": [
+      "phone_open_app",
+      "phone_timer"
+    ]
   },
   {
     "text": "Could you bring up YouTube and start a timer for forty five seconds?",
-    "local": true
+    "local": true,
+    "expected_intents": [
+      "app",
+      "timer"
+    ],
+    "expected_mutations": [
+      "phone_open_app",
+      "phone_timer"
+    ]
   },
   {
     "text": "Would you launch Calculator please?",
-    "local": true
+    "local": true,
+    "expected_intents": [
+      "app"
+    ],
+    "expected_mutations": [
+      "phone_open_app"
+    ]
   },
   {
     "text": "Pull up Spotify",
@@ -24,12 +46,18 @@
     "local": true
   },
   {
-    "text": "Open https://example.com",
+    "text": "Bring up https://news.example.com",
     "local": true
   },
   {
     "text": "Set a countdown timer for two minutes and thirty seconds",
-    "local": true
+    "local": true,
+    "expected_intents": [
+      "timer"
+    ],
+    "expected_mutations": [
+      "phone_timer"
+    ]
   },
   {
     "text": "Give me a timer for twenty-five minutes",
@@ -41,7 +69,13 @@
   },
   {
     "text": "Set an alarm for 6:45 am",
-    "local": true
+    "local": true,
+    "expected_intents": [
+      "alarm"
+    ],
+    "expected_mutations": [
+      "phone_alarm"
+    ]
   },
   {
     "text": "Create an alarm at 22:30",
@@ -53,7 +87,11 @@
   },
   {
     "text": "Text Rahul saying I will arrive at six",
-    "local": true
+    "local": true,
+    "expected_intents": [
+      "message"
+    ],
+    "expected_mutations": []
   },
   {
     "text": "Could you send an SMS to Priya saying Meet me at home?",
@@ -65,7 +103,11 @@
   },
   {
     "text": "WhatsApp Mum saying I am on my way",
-    "local": true
+    "local": true,
+    "expected_intents": [
+      "message"
+    ],
+    "expected_mutations": []
   },
   {
     "text": "Send a WhatsApp message to Alex saying I am outside",
@@ -88,8 +130,14 @@
     "local": true
   },
   {
-    "text": "Dial +14155550123",
-    "local": true
+    "text": "Call +14155550123",
+    "local": true,
+    "expected_intents": [
+      "call"
+    ],
+    "expected_mutations": [
+      "phone_call"
+    ]
   },
   {
     "text": "Find contacts for Priya",
@@ -104,7 +152,7 @@
     "local": true
   },
   {
-    "text": "Show me my apps",
+    "text": "Show my installed apps",
     "local": true
   },
   {
@@ -129,7 +177,13 @@
   },
   {
     "text": "Pause my music",
-    "local": true
+    "local": true,
+    "expected_intents": [
+      "media"
+    ],
+    "expected_mutations": [
+      "phone_media"
+    ]
   },
   {
     "text": "Resume the playback",
@@ -148,11 +202,11 @@
     "local": true
   },
   {
-    "text": "Play music on Spotify",
+    "text": "Play music in Spotify",
     "local": true
   },
   {
-    "text": "Turn the volume up",
+    "text": "Increase music volume",
     "local": true
   },
   {
@@ -165,23 +219,41 @@
   },
   {
     "text": "Set volume to 35 percent",
+    "local": true,
+    "expected_intents": [
+      "volume"
+    ],
+    "expected_mutations": [
+      "phone_volume"
+    ]
+  },
+  {
+    "text": "Mute volume",
     "local": true
   },
   {
-    "text": "Mute the music",
-    "local": true
-  },
-  {
-    "text": "Unmute",
+    "text": "Unmute music",
     "local": true
   },
   {
     "text": "Set screen brightness to 60 percent",
-    "local": true
+    "local": true,
+    "expected_intents": [
+      "brightness"
+    ],
+    "expected_mutations": [
+      "phone_brightness"
+    ]
   },
   {
     "text": "Turn the torch on",
-    "local": true
+    "local": true,
+    "expected_intents": [
+      "flashlight"
+    ],
+    "expected_mutations": [
+      "phone_flashlight"
+    ]
   },
   {
     "text": "Switch off the flashlight",
@@ -189,7 +261,13 @@
   },
   {
     "text": "Show me Wi-Fi settings",
-    "local": true
+    "local": true,
+    "expected_intents": [
+      "settings"
+    ],
+    "expected_mutations": [
+      "phone_settings"
+    ]
   },
   {
     "text": "Open Bluetooth settings",
@@ -205,7 +283,11 @@
   },
   {
     "text": "What time is it?",
-    "local": true
+    "local": true,
+    "expected_intents": [
+      "time"
+    ],
+    "expected_mutations": []
   },
   {
     "text": "What is the current time?",
@@ -237,7 +319,11 @@
   },
   {
     "text": "How much battery is left?",
-    "local": true
+    "local": true,
+    "expected_intents": [
+      "device"
+    ],
+    "expected_mutations": []
   },
   {
     "text": "Check my battery level",
@@ -269,7 +355,11 @@
   },
   {
     "text": "What is 12 plus 35?",
-    "local": true
+    "local": true,
+    "expected_intents": [
+      "math"
+    ],
+    "expected_mutations": []
   },
   {
     "text": "Calculate 18 divided by 3",
@@ -285,7 +375,11 @@
   },
   {
     "text": "Convert 5 miles to kilometers",
-    "local": true
+    "local": true,
+    "expected_intents": [
+      "convert"
+    ],
+    "expected_mutations": []
   },
   {
     "text": "What is 70 fahrenheit in celsius?",
@@ -444,19 +538,25 @@
     "local": false
   },
   {
-    "text": "Go home",
+    "text": "Go to home",
+    "local": true,
+    "expected_intents": [
+      "navigation"
+    ],
+    "expected_mutations": [
+      "phone_act"
+    ]
+  },
+  {
+    "text": "Back",
     "local": true
   },
   {
-    "text": "Go back",
+    "text": "Open recents",
     "local": true
   },
   {
-    "text": "Show me recent apps",
-    "local": true
-  },
-  {
-    "text": "Show the home screen",
+    "text": "Show me the home screen",
     "local": true
   },
   {
@@ -473,6 +573,10 @@
   },
   {
     "text": "Call Priya and then delete my messages",
+    "local": false
+  },
+  {
+    "text": "Resume music on Spotify",
     "local": false
   }
 ]

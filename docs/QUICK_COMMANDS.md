@@ -79,8 +79,8 @@ For “Text Rahul saying I'll be late”, multiple matches are spoken as a numbe
 list with names and number suffixes. The next voice turn may be “first”, “the
 second one”, “Rahul Mehta”, “first Rahul Shah”, or “number ending 1111”. Conflicting
 ordinal/name answers and ambiguous names ask again. Multiple numbers belonging to
-one person also ask. Full contact names are preferred over partial-name results;
-truncated contact searches require a narrower query rather than a guessed choice.
+one person also ask. Full contact names are preferred over partial-name results; even a single partial match
+requires explicit selection. Truncated contact searches require a narrower query rather than a guessed choice.
 
 Clarifications are memory-only within the current voice service, expire after two
 minutes, and keep the microphone available for 30 seconds after the prompt instead
@@ -140,7 +140,7 @@ checks. No phone, credentials, calls or actual messages are used.
 The checked-in [host evaluation](validation/quick-command-evaluation-2026-10-28.json)
 is a curated regression set, not an independent population accuracy estimate or
 phone end-to-end benchmark. The suite tests positive paraphrases and compounds,
-negative/out-of-scope requests, message-body preservation, missing parameters,
+negative/out-of-scope requests, explicit intent and tool assertions, message-body preservation, missing parameters,
 contact/number/SIM disambiguation, ordinal/name conflicts, cancellation, expiry,
 WhatsApp notification selection/expiry, operation IDs and no replay after errors.
 

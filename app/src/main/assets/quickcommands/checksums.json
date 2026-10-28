@@ -1,6 +1,6 @@
 {
   "model.onnx": "4278337fd0ff3c68bfb6291042cad8ab363e1d9fbc43dcb499fe91c871902474",
   "vocab.txt": "07eced375cec144d27c900241f3e339478dec958f92fddbc551f295c992038a3",
-  "prototypes.tsv": "d1685507ac4ad331d4b63cc60d4ac33e09afa0642fe2caa272824d29435f4cca",
-  "prototypes.bin": "77dd72b7f54b639bba78a9dd2ca975ab823cafee2cb2bbf3c837a320d7e1d92c"
+  "prototypes.tsv": "a849c73c6c54f1bcf1507c31559bdc5c307af6815332bd7e0604330089b11d7a",
+  "prototypes.bin": "c26a9675395a17d8ad0f069901e8dcc16c8890fe4cf7d4c4ba05cd57c242e71d"
 }

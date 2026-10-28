@@ -140,6 +140,7 @@ test('everyday direct controls use native APIs and settings requires an explicit
  }
  assert.equal(acquisitions,0);
  assert.equal(calls.length,5);
+ assert.deepEqual(calls.map(c=>c.name),['phone_device_info','phone_volume','phone_brightness','phone_flashlight','phone_settings']);
  const settings=tools.find(t=>t.name==='phone_settings')!;
  assert.throws(()=>validateToolArguments(settings,{type:'toolCall',id:'missing',name:settings.name,arguments:{screen:'wifi',operation_id:op}}),/display_target/);
  assert.throws(()=>validateToolArguments(settings,{type:'toolCall',id:'virtual',name:settings.name,arguments:{screen:'wifi',display_target:'virtual',operation_id:op}}),/display_target/);
