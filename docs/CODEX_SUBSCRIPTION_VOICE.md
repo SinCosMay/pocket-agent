@@ -112,6 +112,12 @@ A successful APK compile is not sufficient for release. Verify on a physical And
 
 Security note: account credentials remain in Android Keystore-encrypted storage; never emit access/refresh tokens in diagnostics or issue/PR descriptions.
 
+### Shared and separate account lifecycle
+
+Signing out of chat preserves a separately selected voice account. If voice shares the chat account, chat sign-out also disconnects that voice session and cancels its pending invitation. Disconnecting the voice account invalidates pending invitations as well. Switching or signing out of a different chat provider does not remove the separate voice login.
+
+Native voice and Pi can refresh the same login. Before refreshing an expired token, Pi checks encrypted storage for an already completed rotation for the same account and provider revision. It checks again after a concurrent refresh fails, adopting a fresh saved rotation in place so existing main/worker sessions keep their credential object. A different provider/account, invalid or expired saved token, or unchanged refresh token cannot clear a failed-refresh latch. This does not retry an uncertain old refresh request; missing persistence evidence still requires sign-in. Both original and adopted credentials remain covered by secret redaction.
+
 ## Native turn-taking
 
 A synthetic full-duplex call using the Android startup prompt accepted a second spoken request during the first assistant reply and a third request after the second reply. Codex ended the first assistant turn after the new input and delivered all three client delegations. No local muting, VAD detector, `response.cancel`, `output_audio_buffer.clear`, or cancellation of Pi work was involved. The test used synthetic speech, mocked client results, and muted local output; it is protocol evidence, not physical-phone or audible-playback acceptance. See [the duplex validation record](validation/2026-10-27-subscription-voice-duplex.json).

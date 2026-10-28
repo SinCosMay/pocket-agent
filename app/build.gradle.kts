@@ -20,8 +20,8 @@ android {
             "dev.pocket.agent.historyvalidation" else "dev.pocket.agent"
         minSdk = 31
         targetSdk = 36
-        versionCode = 12
-        versionName = "0.1.12-voice-invitations.1"
+        versionCode = 13
+        versionName = "0.1.13-voice-account-sync.1"
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
         buildConfigField("boolean", "DEVELOPMENT_TOOLS", "false")
     }

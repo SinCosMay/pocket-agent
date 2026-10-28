@@ -7,6 +7,7 @@ import {AssistantMessageEventStream,validateToolArguments} from '@earendil-works
 import {toolResult,MobileSubagentParams,nativeTools} from '../src/tools.js';
 import {SubagentParams,parseSubagentInvocation} from '../vendor/pi9/schema.js';
 import {memoryTools} from '../src/memory.js';
+import {ensureCodexCredentials} from '../src/codex-auth.js';
 
 class Bridge implements NativeBridge {
  state:any={};events:any[]=[];tools:any[]=[];credentials:any={authMode:'scripted'};
@@ -27,6 +28,32 @@ class Bridge implements NativeBridge {
 }
 async function until(fn:()=>any,timeout=4000):Promise<void>{const end=Date.now()+timeout;while(!fn()){if(Date.now()>end)throw new Error('Timed out');await delay(10);}}
 const command=(r:PocketRuntime,cmd:any)=>assert.equal(JSON.parse(r.dispatch(JSON.stringify(cmd))).ok,true);
+
+test('running provider adopts native voice rotations only for the same account and provider revision',async()=>{
+ const now=Date.now(),account='shared-native-account';
+ const token=(id:string,expires:number)=>[Buffer.from('{}').toString('base64url'),
+   Buffer.from(JSON.stringify({exp:Math.floor(expires/1000),'https://api.openai.com/auth':{chatgpt_account_id:id}})).toString('base64url'),
+   'synthetic-signature'].join('.');
+ const changes:Array<{providerRevision?:string;authMode?:string;accountId?:string}>=[{},
+   {providerRevision:'different-provider'},{authMode:'scripted'},{accountId:'different-account'}];
+ for(const change of changes) {
+   const bridge=new Bridge();bridge.credentials={authMode:'codex-account',model:'gpt-6-luna',providerRevision:'same-provider',
+     accessToken:token(account,now-1000),refreshToken:'old-native-refresh',accountId:account,expiresAt:now-1000};
+   const runtime=new PocketRuntime(bridge),live=(runtime as any).credentials;
+   bridge.credentials={...bridge.credentials,...change,accessToken:token(change.accountId??account,now+7200000),
+     refreshToken:'rotated-native-refresh',expiresAt:now+7200000};
+   let calls=0;
+   const options={now:()=>now,fetch:async()=>{calls++;return new Response('',{status:401});}};
+   if(Object.keys(change).length) {
+     await assert.rejects(ensureCodexCredentials(live,options),/No retry/);
+     assert.equal(calls,1);assert.equal(live.refreshToken,'old-native-refresh');
+   } else {
+     assert.equal((await ensureCodexCredentials(live,options)).refreshToken,'rotated-native-refresh');
+     assert.equal(calls,0);
+     assert.equal((runtime as any).credentials,live,'existing streams keep the shared credential object');
+   }
+ }
+});
 
 test('Pi validates the full mutation ID contract before dispatch; historical receipt lookup remains separate',()=>{
  const tools=nativeTools({call:()=>{throw new Error('Validation must not dispatch');}},'contract');

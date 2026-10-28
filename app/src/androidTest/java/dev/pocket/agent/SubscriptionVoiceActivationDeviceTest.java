@@ -125,6 +125,60 @@ public final class SubscriptionVoiceActivationDeviceTest {
             SubscriptionVoiceFailureStore.safeReason("Subscription call rejected (HTTP 401)")));
     }
 
+    @Test public void chatSignOutPreservesIndependentVoiceAndIdentifiesSharedLogout() throws Exception {
+        SharedPreferences prefs = context().getSharedPreferences("provider-secrets", Context.MODE_PRIVATE);
+        String prior = prefs.getString("encrypted", null);
+        try {
+            assertTrue(prefs.edit().remove("encrypted").commit());
+            CredentialStore store = new CredentialStore(context());
+            store.save(fakeAccount("chat-account", "chat-refresh").put("authMode", CredentialStore.CODEX_ACCOUNT)
+                .put("model", CredentialStore.CODEX_MODEL));
+            store.saveVoiceCodex(fakeAccount("voice-account", "voice-refresh"));
+            assertFalse("Independent voice must not be disconnected by chat sign-out", store.signOutCodex());
+            assertEquals("scripted", store.get().getString("authMode"));
+            assertEquals("voice-account", store.getVoiceCodex().getString("accountId"));
+            assertEquals("voice-refresh", store.getVoiceCodex().getString("refreshToken"));
+            assertFalse("Non-Codex chat sign-out must leave voice alone", store.signOutCodex());
+            assertEquals("voice-refresh", store.getVoiceCodex().getString("refreshToken"));
+            store.signOutVoiceCodex();
+            store.save(fakeAccount("shared-account", "shared-refresh").put("authMode", CredentialStore.CODEX_ACCOUNT)
+                .put("model", CredentialStore.CODEX_MODEL));
+            assertTrue("Removing the shared login must tell the UI to disconnect voice", store.signOutCodex());
+            assertEquals("scripted", store.get().getString("authMode"));
+            assertEquals(0, store.getVoiceCodex().length());
+        } finally {
+            SharedPreferences.Editor restore = prefs.edit();
+            if (prior == null) restore.remove("encrypted"); else restore.putString("encrypted", prior);
+            assertTrue(restore.commit());
+        }
+    }
+
+    @Test public void sharedTokenRotationsKeepChatAndVoiceInSyncInEitherOrder() throws Exception {
+        SharedPreferences prefs = context().getSharedPreferences("provider-secrets", Context.MODE_PRIVATE);
+        String prior = prefs.getString("encrypted", null);
+        try {
+            assertTrue(prefs.edit().remove("encrypted").commit());
+            CredentialStore store = new CredentialStore(context());
+            store.save(fakeAccount("shared-account", "refresh-one").put("authMode", CredentialStore.CODEX_ACCOUNT)
+                .put("model", CredentialStore.CODEX_MODEL));
+            String revision = store.get().getString("providerRevision");
+            store.updateCodex(fakeAccount("shared-account", "refresh-two").put("oldRefreshToken", "refresh-one"));
+            assertEquals("refresh-two", store.getVoiceCodex().getString("refreshToken"));
+            store.updateVoiceCodex(fakeAccount("shared-account", "refresh-three").put("oldRefreshToken", "refresh-two"));
+            assertEquals("refresh-three", store.get().getString("refreshToken"));
+            assertEquals(revision, store.get().getString("providerRevision"));
+            try {
+                store.updateCodex(fakeAccount("shared-account", "stale-refresh").put("oldRefreshToken", "refresh-two"));
+                fail("A stale Pi refresh must not overwrite the newer voice rotation");
+            } catch (IllegalStateException expected) { }
+            assertEquals("refresh-three", store.getVoiceCodex().getString("refreshToken"));
+        } finally {
+            SharedPreferences.Editor restore = prefs.edit();
+            if (prior == null) restore.remove("encrypted"); else restore.putString("encrypted", prior);
+            assertTrue(restore.commit());
+        }
+    }
+
     private static View findText(View view, String text) {
         if (view instanceof TextView && text.contentEquals(((TextView) view).getText())) return view;
         if (view instanceof ViewGroup) {

@@ -191,7 +191,14 @@ export class PocketRuntime {
   private reloadCredentials():void {
     this.credentials=this.call('credentials.get',{})??{};
     this.credentialHistory.add(this.credentials);
-    registerCodexCredentialUpdater(this.credentials,args=>this.call('credentials.updateCodex',args),()=>this.coalesce());
+    const credentials=this.credentials;
+    registerCodexCredentialUpdater(credentials,args=>this.call('credentials.updateCodex',args),()=>this.coalesce(),()=>{
+      const latest=this.call('credentials.get',{});
+      // A rotation may update active streams; a provider/account change requires configure.
+      return latest?.authMode==='codex-account' && latest.authMode===credentials.authMode
+        && latest.accountId===credentials.accountId && latest.providerRevision===credentials.providerRevision
+        ?latest:undefined;
+    });
     this.config={mode:normalizeMode(this.credentials.authMode??'scripted'),endpoint:this.credentials.endpoint,model:this.credentials.model,reasoningEffort:normalizeReasoningEffort(this.credentials.reasoningEffort)};
   }
   async refreshModels(force=false):Promise<CatalogModel[]> {

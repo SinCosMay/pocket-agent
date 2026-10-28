@@ -116,3 +116,55 @@ test('uncertain refresh network or transient HTTP failures stay latched without 
    assert.equal(calls,1);assert.equal(saves,0);
  }
 });
+
+test('native voice-first rotation is adopted before dispatch and remembers both token generations for redaction',async()=>{
+ const creds=credentials(),original=creds;let calls=0,saves=0;
+ const saved={...credentials(now+7200000),refreshToken:'voice-rotated-refresh',idToken:'voice-rotated-id'};
+ registerCodexCredentialUpdater(creds,update=>{saves++;return update;},undefined,()=>saved);
+ const result=await ensureCodexCredentials(creds,{now:()=>now,fetch:async()=>{calls++;return response();}});
+ assert.equal(creds,original);assert.equal(result.refreshToken,'voice-rotated-refresh');
+ assert.equal(calls,0);assert.equal(saves,0);
+ assert.equal(redactProviderSecrets('old-refresh-secret voice-rotated-refresh voice-rotated-id',creds),'[redacted] [redacted] [redacted]');
+});
+
+test('a concurrent native rotation recovers a rejected Pi refresh without another request or lost waiters',async()=>{
+ const creds=credentials();let saved={...creds},calls=0,saves=0,release!:()=>void;
+ const gate=new Promise<void>(resolve=>release=resolve);
+ registerCodexCredentialUpdater(creds,update=>{saves++;return update;},undefined,()=>saved);
+ const fetcher:typeof fetch=async()=>{calls++;await gate;return new Response('private rejected-refresh body',{status:401});};
+ const controller=new AbortController();
+ const cancelled=ensureCodexCredentials(creds,{now:()=>now,fetch:fetcher,signal:controller.signal});
+ const worker=ensureCodexCredentials(creds,{now:()=>now,fetch:fetcher});
+ controller.abort();await assert.rejects(cancelled,/cancelled/);
+ saved={...credentials(now+7200000),refreshToken:'native-won-refresh'};release();
+ assert.equal((await worker).refreshToken,'native-won-refresh');
+ assert.equal(calls,1);assert.equal(saves,0);
+ assert.equal((await ensureCodexCredentials(creds,{now:()=>now,fetch:fetcher})).refreshToken,'native-won-refresh');
+ assert.equal(calls,1);
+});
+
+test('a latched failure recovers only after a valid changed native token is securely stored',async()=>{
+ const creds=credentials();let saved={...creds},calls=0;
+ registerCodexCredentialUpdater(creds,update=>update,undefined,()=>saved);
+ const fetcher:typeof fetch=async()=>{calls++;return new Response('',{status:401});};
+ for(let attempt=0;attempt<2;attempt++)await assert.rejects(ensureCodexCredentials(creds,{now:()=>now,fetch:fetcher}),/No retry/);
+ assert.equal(calls,1);
+ saved={...credentials(now+7200000),refreshToken:'recovered-native-refresh'};
+ assert.equal((await ensureCodexCredentials(creds,{now:()=>now,fetch:fetcher})).refreshToken,'recovered-native-refresh');
+ assert.equal(calls,1);
+});
+
+test('saved rotations with another account, invalid claims, old expiry or unchanged refresh cannot bypass the failure latch',async()=>{
+ for(const saved of [
+   {...credentials(now+7200000),accessToken:jwt(now+7200000,'other-account'),accountId:'other-account',refreshToken:'different-refresh'},
+   {...credentials(now+7200000),accessToken:'invalid-token',refreshToken:'different-refresh'},
+   {...credentials(),refreshToken:'different-refresh'},
+   credentials(now+7200000),
+ ]) {
+   const creds=credentials();let calls=0;
+   registerCodexCredentialUpdater(creds,update=>update,undefined,()=>saved);
+   const fetcher:typeof fetch=async()=>{calls++;return new Response('',{status:401});};
+   for(let attempt=0;attempt<2;attempt++)await assert.rejects(ensureCodexCredentials(creds,{now:()=>now,fetch:fetcher}),/No retry/);
+   assert.equal(calls,1);assert.equal(creds.refreshToken,'old-refresh-secret');
+ }
+});

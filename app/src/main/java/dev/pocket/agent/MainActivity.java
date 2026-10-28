@@ -728,7 +728,17 @@ public final class MainActivity extends Activity implements AgentService.Observe
         }));
         accountPanel.addView(button("Sign out", () -> {
             if (activeWork()) { toast("Stop active work before signing out"); return; }
-            try { credentials.signOutCodex(); invalidateAccountOperations(); if (AgentService.isRunning()) command(json("action", "configure")); settingsDialog[0].dismiss(); toast("Account signed out on this phone"); }
+            try {
+                boolean sharedVoice = credentials.signOutCodex();
+                if (sharedVoice) {
+                    stopService(new Intent(this, SubscriptionVoiceService.class));
+                    VoiceConversationInvitation.cancel(this, "account_signed_out");
+                }
+                invalidateAccountOperations();
+                if (AgentService.isRunning()) command(json("action", "configure"));
+                settingsDialog[0].dismiss();
+                toast(sharedVoice ? "Chat and shared voice account signed out" : "Chat account signed out");
+            }
             catch (Exception error) { toast("Unable to clear the protected account"); }
         }));
         TextView connectionHelp = text("OpenCode Free uses OpenCode's fixed external inference API and requires a Console service-account key. Pocket Agent sends it only as Authorization: Bearer to opencode.ai; no OpenCode client identity headers are spoofed. Nebius Token Factory uses its fixed API endpoint and requires a Nebius key; its default GLM-5.3-Flash supports vision and tool use. Codex relay uses http://10.0.2.2:port/v1 on an emulator. Codex account mode needs no API key or endpoint."); panel.addView(connectionHelp);
@@ -1301,6 +1311,7 @@ public final class MainActivity extends Activity implements AgentService.Observe
         try {
             stopService(new Intent(this, SubscriptionVoiceService.class));
             new CredentialStore(this).signOutVoiceCodex();
+            VoiceConversationInvitation.cancel(this, "voice_account_signed_out");
             invalidateAccountOperations();
             if (AgentService.isRunning()) command(json("action", "configure"));
             settingsDialog.dismiss();

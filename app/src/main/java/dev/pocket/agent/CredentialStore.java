@@ -369,18 +369,21 @@ public final class CredentialStore {
         return snapshot;
     }
 
-    public void signOutCodex() throws Exception {
+    /** Signs out chat, preserving a different voice login. Returns whether shared voice auth was removed. */
+    public boolean signOutCodex() throws Exception {
         synchronized (LOCK) {
             JSONObject current = read();
+            if (!CODEX_ACCOUNT.equals(current.optString("authMode"))) return false;
             String effort = reasoningEffort(current.optString("reasoningEffort", DEFAULT_REASONING_EFFORT));
             String preferredEffort = reasoningEffort(current.optString("preferredReasoningEffort", effort));
-            if (CODEX_ACCOUNT.equals(current.optString("authMode"))) write(new JSONObject().put("authMode", "scripted").put("model", "scripted").put("endpoint", "https://api.openai.com/v1")
+            JSONObject voice = current.optJSONObject(VOICE_ACCOUNT);
+            boolean sharedVoice = voice == null || sameCodexAccount(voice, current);
+            JSONObject allowed = new JSONObject().put("authMode", "scripted").put("model", "scripted").put("endpoint", "https://api.openai.com/v1")
                     .put("reasoningEffort", preferredEffort).put("preferredReasoningEffort", preferredEffort).put("providerRevision", UUID.randomUUID().toString())
-                    .put("mcpServers", sanitizedMcpServers(current.optJSONArray("mcpServers"))));
-            else if (current.has(VOICE_ACCOUNT)) {
-                current.remove(VOICE_ACCOUNT);
-                write(current);
-            }
+                    .put("mcpServers", sanitizedMcpServers(current.optJSONArray("mcpServers")));
+            if (!sharedVoice) allowed.put(VOICE_ACCOUNT, voice);
+            write(allowed);
+            return sharedVoice;
         }
     }
     private static String canonicalMode(String mode) {
