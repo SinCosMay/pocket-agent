@@ -1,0 +1,38 @@
+name: Mobile UI checks
+on:
+  pull_request:
+    paths:
+      - 'app/**'
+      - 'android-platform/**'
+      - 'runtime/**'
+      - 'preview/**'
+      - '.github/workflows/mobile-ui-checks.yml'
+permissions:
+  contents: read
+jobs:
+  verify:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 25
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-node@v5
+        with:
+          node-version: '22.22.2'
+          cache: npm
+          cache-dependency-path: runtime/package-lock.json
+      - name: Runtime and local companion contracts
+        working-directory: runtime
+        run: npm ci && npm test && npm run test:ui && npm run build
+      - uses: actions/setup-java@v5
+        with:
+          distribution: temurin
+          java-version: '17'
+      - name: Protocol and display ownership tests
+        run: |
+          python3 -m pip install aiohttp==3.13.5
+          python3 -m unittest discover -s scripts -p 'test_*.py'
+      - uses: android-actions/setup-android@v4
+      - run: sdkmanager 'platforms;android-36' 'build-tools;36.0.0' 'ndk;27.2.12479018'
+      - uses: gradle/actions/setup-gradle@v5
+      - name: Build isolated UI and instrumentation APKs, then lint
+        run: ./gradlew --no-daemon -PuiPreview :app:assembleDebug :app:assembleDebugAndroidTest :app:lintDebug

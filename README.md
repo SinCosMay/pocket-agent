@@ -6,6 +6,23 @@ An Android assistant that delegates phone work to background agents while you ke
 
 ## Install and connect
 
+### Mobile chat UI and private display viewing
+
+The app now packages the same phone-first interface used by the local browser
+companion: swipeable chat drawer, short conversation titles, writable previous
+chats, a compact composer, and separate subagent threads. Settings includes
+provider sign-in/model discovery, system/Groq/Deepgram voice options, phone
+permissions, MCP connections and background-work controls. Original advanced
+Android voice/account controls remain available.
+
+Open **Activity → Displays** to inspect three on-demand Shizuku slots and watch
+an active private screen without controlling it. Preview frames are requested
+only while that viewer is open. Private displays hold their own power-group lock
+while leased, so the physical display can remain off. Rich editors can use the
+explicit keyboard typing path and must be reopened to verify persistence.
+See [mobile UI validation and limitations](docs/MOBILE_UI_VALIDATION.md) and
+[running the local companion](preview/README.md).
+
 Requires **Android 12 or later**. This is a separate app, `dev.pocket.agent`, and does not replace Pocket MCP.
 
 1. Download a signed APK from a published release or the `pocket-agent-release` artifact of a successful Actions run. `Pocket-Agent-x86_64.apk` targets the emulator; `Pocket-Agent-arm64.apk` targets ARM64 phones. ARM64 execution is still unverified. A universal APK is also built.

@@ -213,6 +213,44 @@ final class ConversationHistory {
         return String.join(" OR ",quoted);
     }
 
+    static JSONArray conversations(SQLiteDatabase db, String query) {
+        if (query == null || query.length() > 300) throw new IllegalArgumentException("Invalid conversation search");
+        String expression = match(query); if (expression.isEmpty() && !query.trim().isEmpty()) return new JSONArray();
+        String filter = " WHERE h.owner='main'" + (expression.isEmpty() ? "" : " AND h.thread_id IN (SELECT m.thread_id FROM conversation_history m JOIN conversation_history_fts f ON f.docid=m.id WHERE m.owner='main' AND f.text MATCH ?)");
+        String sql = "SELECT h.thread_id,h.owner,MAX(h.timestamp),COUNT(*),(SELECT substr(x.text,1,100) FROM conversation_history x WHERE x.thread_id=h.thread_id AND x.role='user' ORDER BY x.timestamp,x.id LIMIT 1) FROM conversation_history h" + filter + " GROUP BY h.thread_id ORDER BY MAX(h.timestamp) DESC LIMIT 50";
+        JSONArray result = new JSONArray();
+        try (Cursor cursor = db.rawQuery(sql, expression.isEmpty() ? new String[0] : new String[]{expression})) {
+            while (cursor.moveToNext()) try {
+                result.put(new JSONObject().put("threadId", cursor.getString(0)).put("owner", cursor.getString(1)).put("updatedAt", cursor.getLong(2)).put("count", cursor.getInt(3)).put("title", cursor.isNull(4) ? "Saved conversation" : cursor.getString(4)));
+            } catch (org.json.JSONException invalid) { throw new IllegalStateException("Could not read conversation history", invalid); }
+        }
+        return result;
+    }
+    static JSONObject conversation(SQLiteDatabase db, String threadId, int offset) {
+        if (threadId == null || threadId.isEmpty() || threadId.length() > 300 || offset < 0) throw new IllegalArgumentException("Invalid conversation page");
+        int total;
+        try (Cursor count = db.rawQuery("SELECT COUNT(*) FROM conversation_history WHERE thread_id=?", new String[]{threadId})) { count.moveToFirst(); total = count.getInt(0); }
+        JSONArray messages = new JSONArray();
+        try (Cursor cursor = db.rawQuery("SELECT role,text,timestamp FROM conversation_history WHERE thread_id=? ORDER BY timestamp,id LIMIT 60 OFFSET ?", new String[]{threadId, String.valueOf(offset)})) {
+            while (cursor.moveToNext()) try { messages.put(new JSONObject().put("role", cursor.getString(0)).put("text", cursor.getString(1)).put("timestamp", cursor.getLong(2))); }
+            catch (org.json.JSONException invalid) { throw new IllegalStateException("Could not read conversation page", invalid); }
+        }
+        try { return new JSONObject().put("messages", messages).put("total", total).put("offset", offset); }
+        catch (org.json.JSONException invalid) { throw new IllegalStateException("Could not read conversation page", invalid); }
+    }
+    static JSONArray resumeMain(SQLiteDatabase db,String threadId) {
+        if(threadId==null||threadId.isEmpty()||threadId.length()>180)throw new IllegalArgumentException("Invalid conversation");
+        ArrayList<JSONObject> tail=new ArrayList<>();int bytes=0;
+        try(Cursor cursor=db.rawQuery("SELECT role,text,timestamp FROM conversation_history WHERE thread_id=? AND owner='main' ORDER BY timestamp DESC,id DESC LIMIT 2048",new String[]{threadId})){
+            while(cursor.moveToNext()){
+                String text=cursor.getString(1);int size=text.getBytes(StandardCharsets.UTF_8).length;
+                if(bytes+size>6000000)break;bytes+=size;
+                try{tail.add(new JSONObject().put("role",cursor.getString(0)).put("text",text).put("timestamp",cursor.getLong(2)));}catch(org.json.JSONException invalid){throw new IllegalStateException("Could not load conversation",invalid);}
+            }
+        }
+        if(tail.isEmpty())throw new IllegalArgumentException("This main conversation could not be found");
+        java.util.Collections.reverse(tail);return new JSONArray(tail);
+    }
     static JSONArray search(SQLiteDatabase db,String query,int limit,String requester) {
         if(query==null||query.length()>300||limit<1||limit>50||requester==null||requester.isEmpty()||requester.length()>160)
             throw new IllegalArgumentException("Invalid history search");

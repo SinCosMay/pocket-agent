@@ -137,6 +137,13 @@ public final class StateStore extends SQLiteOpenHelper {
     public synchronized JSONArray searchHistory(String query,int limit) {
         return searchHistory(query,limit,"main");
     }
+    public synchronized JSONArray listConversations(String query) {
+        return ConversationHistory.conversations(getReadableDatabase(), query);
+    }
+    public synchronized JSONObject readConversation(String threadId, int offset) {
+        return ConversationHistory.conversation(getReadableDatabase(), threadId, offset);
+    }
+    public synchronized JSONArray resumeMainConversation(String threadId) { return ConversationHistory.resumeMain(getReadableDatabase(),threadId); }
     public synchronized JSONArray searchHistory(String query,int limit,String requester) {
         return ConversationHistory.search(getReadableDatabase(),query,limit,requester);
     }

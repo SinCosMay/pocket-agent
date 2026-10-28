@@ -1,0 +1,23 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <color name="pocket_canvas">#171918</color>
+    <color name="pocket_surface">#1E211F</color>
+    <color name="pocket_raised">#292D29</color>
+    <color name="pocket_ink">#EEEFE8</color>
+    <color name="pocket_muted">#A6ADA3</color>
+    <color name="pocket_line">#343A33</color>
+    <color name="pocket_accent">#B7D9A4</color>
+    <style name="PocketTheme" parent="android:style/Theme.Material.NoActionBar">
+        <item name="android:fontFamily">sans-serif</item>
+        <item name="android:windowBackground">@color/pocket_canvas</item>
+        <item name="android:colorBackground">@color/pocket_canvas</item>
+        <item name="android:colorAccent">@color/pocket_muted</item>
+        <item name="android:textColorPrimary">@color/pocket_ink</item>
+        <item name="android:textColorSecondary">@color/pocket_muted</item>
+        <item name="android:statusBarColor">@color/pocket_canvas</item>
+        <item name="android:navigationBarColor">@color/pocket_canvas</item>
+        <item name="android:windowLightStatusBar">false</item>
+        <item name="android:windowLightNavigationBar">false</item>
+        <item name="android:windowActionModeOverlay">true</item>
+    </style>
+</resources>

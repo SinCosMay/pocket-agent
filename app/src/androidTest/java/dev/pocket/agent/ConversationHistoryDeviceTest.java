@@ -12,6 +12,27 @@ import static org.junit.Assert.*;
 
 @RunWith(AndroidJUnit4.class)
 public class ConversationHistoryDeviceTest {
+    @Test public void drawerSearchAndPagesReadTheOriginalArchive() throws Exception {
+        Context context=InstrumentationRegistry.getInstrumentation().getTargetContext();
+        String name="drawer-history-instrumentation.db"; context.deleteDatabase(name);
+        try (StateStore store=new StateStore(context,name)) {
+            JSONArray messages=new JSONArray();
+            for (int i=0;i<65;i++) messages.put(new JSONObject().put("role","user").put("timestamp",1000+i).put("content","Sapphire archive message "+i));
+            JSONObject saved=checkpoint("",1).put("mainMessages",messages);
+            saved.put("workerMessages",new JSONObject().put("worker-a",new JSONArray().put(new JSONObject().put("role","user").put("timestamp",2000).put("content","Sapphire internal worker prompt"))));
+            store.saveDurable(saved);
+            JSONArray chats=store.listConversations("Sapphire");
+            assertEquals(1,chats.length());
+            String thread=chats.getJSONObject(0).getString("threadId");
+            assertEquals(65,chats.getJSONObject(0).getInt("count"));
+            assertEquals(60,store.readConversation(thread,0).getJSONArray("messages").length());
+            assertEquals(5,store.readConversation(thread,60).getJSONArray("messages").length());
+            assertEquals(0,store.listConversations("obsidian").length());
+            assertEquals(1,store.listConversations("").length());
+            assertEquals(65,store.resumeMainConversation(thread).length());
+            assertThrows(IllegalArgumentException.class,()->store.resumeMainConversation("worker:worker-a"));
+        } finally { context.deleteDatabase(name); }
+    }
     private JSONObject checkpoint(String text,long timestamp) throws Exception {
         return new JSONObject().put("mainThreadId","33333333-3333-4333-8333-333333333333")
             .put("mainMessages",new JSONArray().put(new JSONObject().put("role","user")

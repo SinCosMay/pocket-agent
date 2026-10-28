@@ -35,7 +35,7 @@ jobs:
           cache-dependency-path: runtime/package-lock.json
       - name: Build and test trimmed runtime
         working-directory: runtime
-        run: npm ci && npm test && npm run build
+        run: npm ci && npm test && npm run build && npm run test:ui
       - uses: actions/setup-java@v5
         with:
           distribution: temurin

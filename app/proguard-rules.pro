@@ -97,6 +97,11 @@
 -keep class dev.pocket.agent.AutonomyStore { *; }
 -keep class dev.pocket.agent.RuntimeOwner { *; }
 
+# Offline WebView calls this bridge by its JavaScript method name.
+-keepclassmembers class dev.pocket.agent.PocketWebUi$* {
+    @android.webkit.JavascriptInterface <methods>;
+}
+
 # Package-private notification helpers exercised by the separately compiled device suite.
 -keepclassmembers class dev.pocket.agent.PhoneNotifications {
     static java.lang.String notificationText(android.os.Bundle);
