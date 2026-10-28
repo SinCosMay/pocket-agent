@@ -245,6 +245,9 @@ jobs:
         run: rm -f "$APK_KEYSTORE"
 
   clone-downloaded:
+    permissions:
+      contents: read
+      actions: read
     if: inputs.clone_downloaded_apk == true && inputs.quick_test_profile != true && inputs.isolated_history != true
     runs-on: ubuntu-24.04
     timeout-minutes: 20
