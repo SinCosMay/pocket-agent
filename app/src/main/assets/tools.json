@@ -58,7 +58,7 @@
   },
   {
     "name": "phone_act",
-    "description": "Perform an Android screen action using a recent snapshot_id. display_target must match the observed snapshot and defaults to the private virtual display; use physical only when the user explicitly wants visible-screen control. Prefer exact unique semantic selectors for click/type/scroll. Enter uses real IME action. Input acceptance is not task completion. Reuse operation_id and identical arguments after network loss. operation_id must be phone_capabilities.operation_prefix + underscore + a unique 8..48 character nonce; reuse identical IDs and arguments after uncertain results.",
+    "description": "Perform an Android screen action using a recent snapshot_id. Prefer exact semantic selectors. For rich note editors such as Google Keep, accessibility text replacement may appear without saving: click the intended field, observe, then type with input_method=keyboard and verify by reopening. Keyboard input supports up to 2000 representable characters on private displays; unsupported characters fail before typing, so use an acceptable transliteration when appropriate. replace defaults to true. Other typing uses accessibility. Enter uses real IME action. Input acceptance is not task completion. display_target defaults to private virtual; use physical only with explicit visible-screen authorization. operation_id must be phone_capabilities.operation_prefix + underscore + a unique 8..48 character nonce; reuse identical IDs and arguments after uncertain results.",
     "inputSchema": {
       "type": "object",
       "properties": {
@@ -114,6 +114,11 @@
         },
         "replace": {
           "type": "boolean"
+        },
+        "input_method": {
+          "type": "string",
+          "enum": ["accessibility", "keyboard"],
+          "default": "accessibility"
         },
         "key": {
           "type": "string",
@@ -249,7 +254,7 @@
   },
   {
     "name": "phone_open_url",
-    "description": "Open a validated HTTP(S) URL via Android ACTION_VIEW. display_target defaults to the private agent display; set physical only when the user explicitly wants the URL shown on the visible device screen. Verify the actual browser after launch; not a page-read API.",
+    "description": "Open a validated HTTP(S) URL. Google Play https://play.google.com/store/apps/details?id=PACKAGE links use the private Store session automatically: an idle background Store task transfers into the agent display and closes on phone_screen release. A visible Store or another worker's task cannot be taken over. Observe the app listing, tap Install, and verify installation with phone_apps. Other URLs use Android ACTION_VIEW. display_target defaults to virtual; physical requires the user's explicit request. Verify the resulting screen after launch.",
     "inputSchema": {
       "type": "object",
       "properties": {
