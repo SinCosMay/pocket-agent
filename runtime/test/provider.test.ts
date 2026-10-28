@@ -390,6 +390,11 @@ test('keyed OpenCode and Nebius inference send the configured bearer credential'
      const headers=new Headers(init?.headers);
      authorization=headers.get('authorization');
      assert.match(headers.get('content-type')||'',/^application\/json/);
+     if(item.config.mode==='nebius') {
+       const body=JSON.parse(String(init?.body));
+       assert.equal(body.reasoning_effort,undefined);
+       assert.equal(body.store,undefined);
+     }
      if(item.config.mode==='opencode')assert.equal(headers.get('x-opencode-org-id'),null);
      const chunks=[
        {id:'chatcmpl-keyed',object:'chat.completion.chunk',created:1,model:item.credentials.model,choices:[{index:0,delta:{role:'assistant',content:'OK'},finish_reason:null}]},

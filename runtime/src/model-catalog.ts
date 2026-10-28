@@ -110,6 +110,9 @@ export async function discoverProviderModels(
     if (!entry || typeof entry !== 'object' || entry.supported_in_api === false || entry.visibility === 'hide') continue;
     const id = entry.id ?? entry.slug;
     if (typeof id !== 'string' || !MODEL_ID.test(id) || seen.has(id)) continue;
+    // Nebius lists embedding/reranking endpoints alongside chat models.
+    // These cannot be sent to the Chat Completions adapter.
+    if (mode === 'nebius' && /(^|[/._-])(embedding\w*|rerank\w*)([/._-]|$)/i.test(id)) continue;
     if (mode === 'opencode' && ((id !== 'big-pickle' && !id.endsWith('-free')) || OPENCODE_NON_CHAT_FREE.has(id))) continue;
     seen.add(id);
     const display = entry.display_name ?? entry.name;

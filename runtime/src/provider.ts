@@ -82,7 +82,9 @@ export function modelFor(config: ProviderConfig, credentials: ProviderCredential
       reasoning: true, contextWindow: 128000, maxTokens: 4096,
       thinkingLevelMap: selectedThinkingLevelMap(config,credentials),
       cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
-      compat: { supportsDeveloperRole: false },
+      compat: { supportsDeveloperRole: false,
+        ...(mode === 'nebius' ? {supportsReasoningEffort:false,supportsStore:false} : {}),
+      },
     };
   }
   return {

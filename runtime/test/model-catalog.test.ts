@@ -125,7 +125,7 @@ test('Nebius discovery uses its fixed OpenAI-compatible endpoint and bearer key'
  const models=await discoverProviderModels(config,credentials,async(input,init)=>{
    assert.equal(String(input),'https://api.tokenfactory.nebius.com/v1/models');
    assert.equal(new Headers(init?.headers).get('authorization'),'Bearer nebius-secret');
-   return json({data:[{id:'zai-org/GLM-5.3-Flash'}]});
+   return json({data:[{id:'Qwen/Qwen3-Embedding-8B'},{id:'BAAI/bge-reranker-v2-m3'},{id:'zai-org/GLM-5.3-Flash'}]});
  });
  assert.deepEqual(models,[{id:'zai-org/GLM-5.3-Flash',name:'zai-org/GLM-5.3-Flash'}]);
 });
