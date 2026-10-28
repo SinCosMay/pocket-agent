@@ -3,6 +3,23 @@
 Pi, Pi9 scheduling and every phone tool run inside the APK. Providers supply
 inference only; they do not run a desktop agent or phone tools.
 
+## Switching providers
+
+Settings keeps a separate encrypted connection for each provider. After configuring
+and saving a provider once, choosing another provider and tapping **Save** switches
+the active model without deleting the previous provider's API key, endpoint,
+model, reasoning selection or ChatGPT account tokens. Switching back restores
+that provider's saved connection; a blank API-key field reuses its own saved
+key, never a different provider's key. The Settings status indicates whether
+a provider already has a saved connection.
+
+Only the active connection is passed to the inference runtime. Inactive
+profiles stay in the app's Android Keystore-protected credential envelope,
+not logs, diagnostics, backups or runtime state. **Sign out** explicitly removes
+the saved Codex chat account even when another provider is active; it also
+disconnects voice if it shares that login. Expired or revoked sessions can
+still require signing in again.
+
 ## Codex account
 
 Select **Codex account** in Settings. There is no API key, custom endpoint, PC
