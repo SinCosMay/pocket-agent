@@ -26,8 +26,8 @@ android {
             "dev.pocket.agent.historyvalidation" else "dev.pocket.agent"
         minSdk = 31
         targetSdk = 36
-        versionCode = 26
-        versionName = "0.1.26-mobile-ui-live-displays.1"
+        versionCode = 29
+        versionName = "0.1.29-integrated-chat-search.1"
         resValue("string", "app_name", if (providers.gradleProperty("uiPreview").isPresent) "Pocket Agent Preview" else "Pocket Agent")
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
         buildConfigField("boolean", "DEVELOPMENT_TOOLS", "false")
@@ -72,6 +72,7 @@ android {
     packaging { jniLibs { useLegacyPackaging = true }; resources { excludes += "META-INF/DEPENDENCIES" } }
 }
 dependencies {
+    implementation("androidx.activity:activity:1.11.0")
     implementation(project(":android-platform"))
     implementation("androidx.work:work-runtime:2.10.5")
     implementation("com.caoccao.javet:javet-node-android-i18n:6.0.2")

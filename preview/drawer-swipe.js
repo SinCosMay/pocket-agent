@@ -1,10 +1,11 @@
 export function attachDrawerSwipe({workspace,isOpen,canOpen,open,close}){
-  let gesture=null,suppressClickUntil=0,frame=0;
-  function paint(){frame=0;if(!gesture?.dragging)return;workspace.style.setProperty('--drawer-offset',gesture.offset+'px');workspace.style.setProperty('--drawer-opacity',String(gesture.offset/gesture.width));}
+  let gesture=null,suppressClickUntil=0,paintFrame=0;
   const drawer=workspace.querySelector('.chat-drawer');
+  const paint=()=>{paintFrame=0;if(!gesture)return;workspace.style.setProperty('--drawer-offset',gesture.offset+'px');workspace.style.setProperty('--drawer-opacity',String(gesture.offset/gesture.width));};
   function finish(cancelled=false){
     if(!gesture)return;
-    const current=gesture;gesture=null;if(frame){cancelAnimationFrame(frame);frame=0;}
+    const current=gesture;gesture=null;
+    if(paintFrame){cancelAnimationFrame(paintFrame);paintFrame=0;}
     if(!current.dragging)return;
     const moved=current.offset-(current.wasOpen?current.width:0);
     const speed=moved/Math.max(1,performance.now()-current.started);
@@ -35,7 +36,7 @@ export function attachDrawerSwipe({workspace,isOpen,canOpen,open,close}){
     }
     event.preventDefault();
     gesture.offset=Math.max(0,Math.min(gesture.width,(gesture.wasOpen?gesture.width:0)+dx));
-    if(!frame)frame=requestAnimationFrame(paint);
+    if(!paintFrame)paintFrame=requestAnimationFrame(paint);
   },{passive:false});
   workspace.addEventListener('touchend',()=>finish(),{passive:true});
   workspace.addEventListener('touchcancel',()=>finish(true),{passive:true});

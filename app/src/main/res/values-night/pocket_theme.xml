@@ -1,12 +1,12 @@
 <?xml version="1.0" encoding="utf-8"?>
 <resources>
-    <color name="pocket_canvas">#171918</color>
-    <color name="pocket_surface">#1E211F</color>
-    <color name="pocket_raised">#292D29</color>
-    <color name="pocket_ink">#EEEFE8</color>
-    <color name="pocket_muted">#A6ADA3</color>
-    <color name="pocket_line">#343A33</color>
-    <color name="pocket_accent">#B7D9A4</color>
+    <color name="pocket_canvas">#000000</color>
+    <color name="pocket_surface">#161616</color>
+    <color name="pocket_raised">#242424</color>
+    <color name="pocket_ink">#F5F5F5</color>
+    <color name="pocket_muted">#A3A3A3</color>
+    <color name="pocket_line">#14FFFFFF</color>
+    <color name="pocket_accent">#3974EF</color>
     <style name="PocketTheme" parent="android:style/Theme.Material.NoActionBar">
         <item name="android:fontFamily">sans-serif</item>
         <item name="android:windowBackground">@color/pocket_canvas</item>

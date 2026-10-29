@@ -39,7 +39,7 @@ import org.json.JSONArray;
 import org.json.JSONObject;
 
 /** Small native text surface; service/session ownership never follows this Activity. */
-public final class MainActivity extends Activity implements AgentService.Observer, SubscriptionVoiceService.Observer {
+public final class MainActivity extends androidx.activity.ComponentActivity implements AgentService.Observer, SubscriptionVoiceService.Observer {
     @Override protected void attachBaseContext(android.content.Context base) {
         String theme = base.getSharedPreferences("pocket-ui", 0).getString("theme", "system");
         if (!theme.equals("system")) { android.content.res.Configuration config = new android.content.res.Configuration(base.getResources().getConfiguration()); config.uiMode = (config.uiMode & ~android.content.res.Configuration.UI_MODE_NIGHT_MASK) | (theme.equals("dark") ? android.content.res.Configuration.UI_MODE_NIGHT_YES : android.content.res.Configuration.UI_MODE_NIGHT_NO); base = base.createConfigurationContext(config); }
@@ -159,8 +159,9 @@ public final class MainActivity extends Activity implements AgentService.Observe
         buildNativeShell(root, transcriptFrame);
         if (saved != null) input.setText(saved.getString("composeDraft", ""));
         pocketUi = new PocketWebUi(this, this::webRequest);
-        if(Build.VERSION.SDK_INT>=33)getOnBackInvokedDispatcher().registerOnBackInvokedCallback(
-            android.window.OnBackInvokedDispatcher.PRIORITY_DEFAULT,this::navigateBack);
+        getOnBackPressedDispatcher().addCallback(this,new androidx.activity.OnBackPressedCallback(true){
+            @Override public void handleOnBackPressed(){navigateBack();}
+        });
         input.addTextChangedListener(new TextWatcher() {
             public void beforeTextChanged(CharSequence s,int start,int count,int after) { }
             public void onTextChanged(CharSequence s,int start,int before,int count) { if(pocketUi!=null&&!s.toString().isEmpty())pocketUi.event("dictation",json("text",s.toString())); }
@@ -371,12 +372,7 @@ public final class MainActivity extends Activity implements AgentService.Observe
         else if (type.equals("ready")) render();
     }
     private void render() {
-        // The native shell is detached once the WebView is installed. Rebuilding
-        // its transcript and task cards on every streaming event blocks gestures.
-        if (pocketUi != null) {
-            if (workerTranscript != null && viewedWorker != null) workerTranscript.setText(workerMessages(viewedWorker));
-            return;
-        }
+        if(pocketUi!=null){if(workerTranscript!=null&&viewedWorker!=null){String text=workerMessages(viewedWorker);if(!text.contentEquals(workerTranscript.getText()))workerTranscript.setText(text);}return;}
         status.setText(!AgentService.isRunning() ? "Stopped · Send starts the runtime" : state.optBoolean("busy") ? "Main is responding" : state.optBoolean("active") ? "Workers active · Main is available" : "Ready");
         if(AgentService.isRunning() && !state.isNull("lastError") && !state.optString("lastError").isEmpty()) status.setText("Error · "+state.optString("lastError"));
         String rendered=formatMessages(state.optJSONArray("messages"));
@@ -603,6 +599,14 @@ public final class MainActivity extends Activity implements AgentService.Observe
                 : new String[]{CredentialStore.DEFAULT_REASONING_EFFORT};
         if (hasPersistedReasoningModelProof(modelId, verifiedModel, verifiedLevels)) return verifiedLevels;
         return new String[]{CredentialStore.DEFAULT_REASONING_EFFORT};
+    }
+    /** Resolves a blank key only from this provider's saved profile and endpoint. */
+    static String savedProviderKeyForEndpoint(JSONObject profile, String mode, String endpoint, String enteredKey) {
+        String key = enteredKey.trim();
+        if (!key.isEmpty()) return key;
+        String resolvedEndpoint = mode.equals(CredentialStore.OPENCODE) ? CredentialStore.OPENCODE_ENDPOINT
+                : mode.equals(CredentialStore.NEBIUS) ? CredentialStore.NEBIUS_ENDPOINT : endpoint.trim();
+        return resolvedEndpoint.equals(profile.optString("endpoint")) ? profile.optString("apiKey") : "";
     }
     /** Matches Save's blank-key retention and fixed-provider endpoint semantics. */
     static boolean matchesSavedConnection(JSONObject saved, String mode, String endpoint, String enteredKey) {
@@ -839,9 +843,9 @@ public final class MainActivity extends Activity implements AgentService.Observe
         toast("Conversation copied");
     }
     private JSONObject webStatus() throws Exception {
-        JSONObject config = new CredentialStore(this).get(); String mode=config.optString("authMode");
+        CredentialStore credentials=new CredentialStore(this);JSONObject config=credentials.get();String mode=config.optString("authMode");
         JSONObject providers = new JSONObject();
-        for(String provider:new String[]{"nebius","opencode","codex-account"})providers.put(provider,json("configured",mode.equals(provider)&&!config.optString(provider.equals("codex-account")?"accessToken":"apiKey").isEmpty()));
+        for(String provider:new String[]{"nebius","opencode","codex-account"}){JSONObject profile=credentials.getProviderProfile(provider);providers.put(provider,json("configured",!profile.optString(provider.equals("codex-account")?"accessToken":"apiKey").isEmpty(),"active",mode.equals(provider),"model",profile.optString("model"),"reasoning",profile.optString("reasoningEffort","low")));}
         return json("providers",providers,"auth",webAuth,"voiceAccount",!new CredentialStore(this).getVoiceCodex().optString("accessToken").isEmpty(),"voice",json("groq",new VoiceCredentialStore(this,"groq").configured(),"deepgram",new VoiceCredentialStore(this).configured()));
     }
     private JSONObject webSnapshot() throws Exception { return webSnapshot(state); }
@@ -855,6 +859,15 @@ public final class MainActivity extends Activity implements AgentService.Observe
         return result;
     }
     private JSONArray credentialsForUi() throws Exception { return new CredentialStore(this).mcpServers(); }
+    private void finishChatDeletion(String threadId,PocketWebUi.Reply reply,long deadline) {
+        if(isDestroyed()){reply.complete(null,"Chat deletion was interrupted");return;}
+        if(!threadId.equals(state.optString("mainThreadId"))){
+            boolean saved=getSharedPreferences("conversation-ui",0).edit().putBoolean(threadId+".deleted",true).commit();
+            reply.complete(saved?json("ok",true):null,saved?null:"Could not save chat changes");return;
+        }
+        if(android.os.SystemClock.elapsedRealtime()>=deadline){reply.complete(null,"Could not close this chat. Stop active work and try again.");return;}
+        pocketUi.view.postDelayed(()->finishChatDeletion(threadId,reply,deadline),50);
+    }
     private void webRequest(String path,JSONObject body,PocketWebUi.Reply reply) throws Exception {
         CredentialStore credentials=new CredentialStore(this);
         switch(path) {
@@ -867,13 +880,29 @@ public final class MainActivity extends Activity implements AgentService.Observe
             case "/native/keyboard-hide" -> {android.view.inputmethod.InputMethodManager ime=getSystemService(android.view.inputmethod.InputMethodManager.class);ime.hideSoftInputFromWindow(pocketUi.view.getWindowToken(),0);pocketUi.keyboardVisibility(false);}
             case "/native/display-preview" -> {int id=body.optInt("displayId",-1);historyQueries.submit(()->{try {reply.complete(AgentDisplayCoordinator.shared(getApplicationContext()).preview(id),null);}catch(Exception unavailable){reply.complete(null,"This private screen has finished or is unavailable");}});return;}
             case "/api/provider/status" -> { replyWebStatus(reply);return; }
-            case "/native/chats" -> { historyQueries.submit(()->{try(StateStore history=new StateStore(getApplicationContext())){JSONArray chats=history.listConversations(body.optString("query"));for(int i=0;i<chats.length();i++){JSONObject chat=chats.getJSONObject(i);String title=getSharedPreferences("conversation-titles",0).getString(chat.optString("threadId"),"");chat.put("named",!title.isEmpty());if(!title.isEmpty())chat.put("title",title);}reply.complete(json("chats",chats),null);}catch(Exception failure){reply.complete(null,"Could not read saved chats");}});return; }
+            case "/native/chats" -> { historyQueries.submit(()->{try(StateStore history=new StateStore(getApplicationContext())){java.util.Map<String,String> titles=new java.util.HashMap<>();for(java.util.Map.Entry<String,?> entry:getSharedPreferences("conversation-titles",0).getAll().entrySet())if(entry.getValue() instanceof String text)titles.put(entry.getKey(),text);JSONArray saved=history.listConversations(body.optString("query"),titles),chats=new JSONArray();android.content.SharedPreferences metadata=getSharedPreferences("conversation-ui",0);for(int i=0;i<saved.length();i++){JSONObject chat=saved.getJSONObject(i);String threadId=chat.optString("threadId");if(metadata.getBoolean(threadId+".deleted",false))continue;String title=titles.getOrDefault(threadId,"");chat.put("snippet",chat.optString("title"));chat.put("named",!title.isEmpty());chat.put("pinned",metadata.getBoolean(threadId+".pinned",false));if(!title.isEmpty())chat.put("title",title);chats.put(chat);}reply.complete(json("chats",chats),null);}catch(Exception failure){reply.complete(null,"Could not read saved chats");}});return; }
+            case "/native/chat-state" -> {
+                String threadId=body.optString("threadId");if(!threadId.matches("[a-f0-9-]{36}"))throw new IllegalArgumentException("Invalid chat");
+                if(body.optBoolean("deleted")){
+                    JSONArray tasks=state.optJSONArray("tasks");if(tasks!=null)for(int i=0;i<tasks.length();i++){JSONObject task=tasks.optJSONObject(i);if(task!=null&&threadId.equals(task.optString("mainThreadId"))&&java.util.List.of("running","queued","waiting").contains(task.optString("status")))throw new IllegalStateException("Stop this chat's active work before deleting it");}
+                    if(threadId.equals(state.optString("mainThreadId"))){if(activeWork())throw new IllegalStateException("Stop active work before deleting this chat");VoiceConversationInvitation.cancel(this,"thread_changed");stopService(new Intent(this,SubscriptionVoiceService.class));command(json("action","new_main"));finishChatDeletion(threadId,reply,android.os.SystemClock.elapsedRealtime()+20000);return;}
+                }
+                android.content.SharedPreferences.Editor metadata=getSharedPreferences("conversation-ui",0).edit();
+                if(body.has("pinned"))metadata.putBoolean(threadId+".pinned",body.optBoolean("pinned"));
+                if(body.has("deleted"))metadata.putBoolean(threadId+".deleted",body.optBoolean("deleted"));
+                if(!metadata.commit())throw new IllegalStateException("Could not save chat changes");
+            }
+            case "/native/chat-rename" -> {
+                String threadId=body.optString("threadId"),title=body.optString("title").trim().replaceAll("\\s+"," ");
+                if(!threadId.matches("[a-f0-9-]{36}")||title.isEmpty()||title.length()>80)throw new IllegalArgumentException("Enter a chat name of 1 to 80 characters");
+                if(!getSharedPreferences("conversation-titles",0).edit().putString(threadId,title).commit())throw new IllegalStateException("Could not rename this chat");
+            }
             case "/native/title" -> {
                 String threadId=body.optString("threadId");if(threadId.isEmpty()||threadId.length()>300)throw new IllegalArgumentException("Invalid conversation");
                 String saved=getSharedPreferences("conversation-titles",0).getString(threadId,"");if(!saved.isEmpty()){reply.complete(json("title",saved),null);return;}
                 historyQueries.submit(()->{try(StateStore history=new StateStore(getApplicationContext())){
                     JSONArray items=history.readConversation(threadId,0).getJSONArray("messages");StringBuilder sample=new StringBuilder();for(int i=0;i<Math.min(2,items.length());i++){JSONObject message=items.getJSONObject(i);sample.append(message.optString("role")).append(": ").append(message.optString("text")).append('\n');}String text=sample.substring(0,Math.min(4000,sample.length()));
-                    runOnUiThread(()->{if(isDestroyed())return;String id="title-"+System.nanoTime();webRequests.put(id,(result,error)->{if(error==null&&result!=null){String title=result.optString("title").trim();if(!title.isEmpty()&&title.length()<=100)getSharedPreferences("conversation-titles",0).edit().putString(threadId,title).apply();}reply.complete(result,error);});command(json("action","generate_title","requestId",id,"text",text));pocketUi.view.postDelayed(()->{PocketWebUi.Reply pending=webRequests.remove(id);if(pending!=null)pending.complete(null,"Conversation naming timed out");},25000);});
+                    runOnUiThread(()->{if(isDestroyed())return;String id="title-"+System.nanoTime();webRequests.put(id,(result,error)->{if(error==null&&result!=null){String title=result.optString("title").trim();if(!title.isEmpty()&&title.length()<=100&&getSharedPreferences("conversation-titles",0).getString(threadId,"").isEmpty())getSharedPreferences("conversation-titles",0).edit().putString(threadId,title).apply();}reply.complete(result,error);});command(json("action","generate_title","requestId",id,"text",text));pocketUi.view.postDelayed(()->{PocketWebUi.Reply pending=webRequests.remove(id);if(pending!=null)pending.complete(null,"Conversation naming timed out");},25000);});
                 }catch(Exception failure){reply.complete(null,"Conversation naming is unavailable");}});return;
             }
             case "/native/archive" -> { historyQueries.submit(()->{try(StateStore history=new StateStore(getApplicationContext())){reply.complete(history.readConversation(body.optString("threadId"),body.optInt("offset")),null);}catch(Exception failure){reply.complete(null,"Could not read saved conversation");}});return; }
@@ -883,7 +912,7 @@ public final class MainActivity extends Activity implements AgentService.Observe
             case "/native/stop" -> command(json("action","stop_main"));
             case "/native/minimize" -> moveTaskToBack(true);
             case "/native/theme" -> {
-                boolean light=body.optString("theme").equals("light");int color=android.graphics.Color.parseColor(light?"#F6F5F0":"#171918");
+                boolean light=body.optString("theme").equals("light");int color=android.graphics.Color.parseColor(light?"#FAFAFA":"#000000");
                 getWindow().setStatusBarColor(color);getWindow().setNavigationBarColor(color);
                 if(pocketUi.view.getParent() instanceof View parent)parent.setBackgroundColor(color);
                 android.view.WindowInsetsController controller=getWindow().getDecorView().getWindowInsetsController();
@@ -895,6 +924,14 @@ public final class MainActivity extends Activity implements AgentService.Observe
                 if(body.has("name"))getSharedPreferences("pocket-ui",0).edit().putString("name",body.optString("name").substring(0,Math.min(120,body.optString("name").length()))).apply();
                 if(body.has("instructions")){String value=body.optString("instructions");if(value.length()>50000)throw new IllegalArgumentException("Instructions are too long");command(json("action","configure","personalInstructions",value));}
                 if(body.has("stt")){String value=body.optString("stt");if(!java.util.List.of("system","groq","deepgram","codex").contains(value))throw new IllegalArgumentException("Unknown voice mode");getSharedPreferences("pocket-ui",0).edit().putString("voiceEngine",value).apply();}
+            }
+            case "/native/select-provider" -> {
+                if(activeWork())throw new IllegalStateException("Stop active work before changing connections");String provider=body.optString("provider");
+                if(!java.util.List.of("nebius","opencode","codex-account").contains(provider))throw new IllegalArgumentException("Choose a provider");
+                JSONObject profile=credentials.getProviderProfile(provider);boolean configured=!profile.optString(provider.equals("codex-account")?"accessToken":"apiKey").isEmpty();
+                invalidateAccountOperations();webAuth=json("state","idle");webModelProofs.clear();
+                if(configured){credentials.save(profile);if(AgentService.isRunning())command(json("action","configure"));}
+                reply.complete(json("configured",configured,"provider",provider,"model",profile.optString("model"),"reasoning",profile.optString("reasoningEffort","low")),null);return;
             }
             case "/native/provider" -> {
                 if(activeWork())throw new IllegalStateException("Stop active work before changing connections");
@@ -914,13 +951,14 @@ public final class MainActivity extends Activity implements AgentService.Observe
             case "/api/provider/disconnect" -> {
                 if(activeWork())throw new IllegalStateException("Stop active work before disconnecting");invalidateAccountOperations();webAuth=json("state","idle");
                 if(body.optString("provider").equals("codex-account")){boolean shared=credentials.signOutCodex();if(shared)stopService(new Intent(this,SubscriptionVoiceService.class));}
-                else if(body.optString("provider").equals(credentials.get().optString("authMode")))credentials.save(json("authMode","scripted","model","scripted"));
+                else credentials.removeKeyProvider(body.optString("provider"));
                 if(AgentService.isRunning())command(json("action","configure"));
             }
             case "/api/auth/codex/start" -> { if(activeWork())throw new IllegalStateException("Stop active work before signing in");webSignIn(body.optBoolean("voiceOnly")); }
             case "/api/auth/codex/cancel" -> {invalidateAccountOperations();webAuth=json("state","idle");}
             case "/api/auth/codex/import" -> {if(activeWork())throw new IllegalStateException("Stop active work before importing");JSONObject account=CodexAccountAuth.readImport(new java.io.ByteArrayInputStream(body.getJSONObject("document").toString().getBytes(java.nio.charset.StandardCharsets.UTF_8)));invalidateAccountOperations();saveAccount(account);webAuth=json("state","idle");}
             case "/api/provider/models", "/native/mcp/discover" -> {
+                if(path.equals("/api/provider/models")&&!body.optString("provider",credentials.get().optString("authMode")).equals(credentials.get().optString("authMode")))throw new IllegalStateException("Connect the selected provider before discovering models");
                 String id="web-"+System.nanoTime();webRequests.put(id,reply);
                 command(path.equals("/api/provider/models")?json("action","list_models","requestId",id):json("action","mcp_discover","requestId",id,"serverId",body.optString("id")));
                 pocketUi.view.postDelayed(()->{PocketWebUi.Reply waiting=webRequests.remove(id);if(waiting!=null)waiting.complete(null,"Discovery timed out. Try again.");},45000);return;
@@ -962,8 +1000,12 @@ public final class MainActivity extends Activity implements AgentService.Observe
             default -> throw new IllegalArgumentException("Unknown phone action");
         }
     }
-    private void validateWebConnection(JSONObject draft,PocketWebUi.Reply reply) {
+    private void validateWebConnection(JSONObject draft,PocketWebUi.Reply reply) throws Exception {
         long generation=invalidateAccountOperations();String id="connection-"+System.nanoTime();
+        CredentialStore credentials=new CredentialStore(this);JSONObject previous=credentials.getProviderProfile(draft.optString("authMode"));
+        if(!previous.optString("apiKey").isEmpty()&&matchesSavedConnection(previous,draft.optString("authMode"),draft.optString("endpoint",previous.optString("endpoint")),draft.optString("apiKey"))){
+            credentials.save(draft);webAuth=json("state","idle");webModelProofs.clear();if(AgentService.isRunning())command(json("action","configure"));reply.complete(webStatus(),null);return;
+        }
         webRequests.put(id,(result,error)->{
             if(error!=null){reply.complete(null,error+" Settings were not saved.");return;}
             if(generation!=accountGeneration||activeWork()){reply.complete(null,"Connection settings changed during the test. Try again.");return;}
@@ -984,13 +1026,6 @@ public final class MainActivity extends Activity implements AgentService.Observe
         });
     }
     private void navigateBack(){if(pocketUi!=null)pocketUi.view.evaluateJavascript("window.pocketBack?.()",null);else finish();}
-    // Legacy system back (including gesture navigation before Android 13) must
-    // follow the same WebView navigation path as OnBackInvokedCallback.
-    // Android 13+ uses the registered OnBackInvokedCallback; this override
-    // is solely the platform Activity fallback for older devices.
-    @android.annotation.SuppressLint("GestureBackNavigation")
-    @SuppressWarnings("deprecation")
-    @Override public void onBackPressed(){navigateBack();}
     private void conversationActions() {
         String[] labels = {"New chat", "Copy conversation", "Search saved conversations", "Stop response", "Stop all work", "Stop assistant listening", "Voice modes"};
         new AlertDialog.Builder(this).setTitle("Conversation").setItems(labels, (dialog, which) -> {
@@ -1129,6 +1164,8 @@ public final class MainActivity extends Activity implements AgentService.Observe
         String normalizedAuth = auth.equals("api-key") ? "openai" : auth.equals("codexRelay") || auth.equals("codex-relay") ? "codex" : auth;
         int selected = java.util.Arrays.asList(modes).indexOf(normalizedAuth); if (selected < 0) selected = modes.length - 1;
         mode.setSelection(selected); panel.addView(mode);
+        panel.addView(text("Each provider keeps its own encrypted connection. Switching back reuses saved keys and sign-ins."));
+        TextView providerStatus = text(""); panel.addView(providerStatus);
         LinearLayout endpointPanel = column(); panel.addView(endpointPanel);
         String defaultEndpoint = modes[selected].equals(CredentialStore.OPENCODE) ? CredentialStore.OPENCODE_ENDPOINT : modes[selected].equals(CredentialStore.NEBIUS) ? CredentialStore.NEBIUS_ENDPOINT : "https://api.openai.com/v1";
         EditText endpoint = field(endpointPanel, "API endpoint", saved.optString("endpoint", defaultEndpoint)); endpoint.setInputType(InputType.TYPE_CLASS_TEXT | InputType.TYPE_TEXT_VARIATION_URI);
@@ -1137,20 +1174,21 @@ public final class MainActivity extends Activity implements AgentService.Observe
         panel.addView(text("Reasoning effort"));
         Spinner reasoning = new Spinner(this);
         reasoningPicker = reasoning;
-        String savedActiveReasoning = saved.optString("reasoningEffort", CredentialStore.DEFAULT_REASONING_EFFORT);
-        final String[] preferredReasoning = {saved.optString("preferredReasoningEffort", savedActiveReasoning)};
-        final String savedReasoningModel = saved.optString("reasoningEffortModel");
-        final String[] savedReasoningLevels = reasoningEfforts(saved.optJSONArray("reasoningEfforts"));
-        final String savedModelSource = saved.optString("modelSource",
-                savedReasoningModel.isEmpty() ? "manual" : "catalog");
-        final String[] modelSource = {savedModelSource};
+        final JSONObject[] currentSaved = {saved};
+        final String[] savedActiveReasoning = {saved.optString("reasoningEffort", CredentialStore.DEFAULT_REASONING_EFFORT)};
+        final String[] preferredReasoning = {saved.optString("preferredReasoningEffort", savedActiveReasoning[0])};
+        final String[] savedReasoningModel = {saved.optString("reasoningEffortModel")};
+        final String[][] savedReasoningLevels = {reasoningEfforts(saved.optJSONArray("reasoningEfforts"))};
+        final String[] savedModelSource = {saved.optString("modelSource",
+                savedReasoningModel[0].isEmpty() ? "manual" : "catalog")};
+        final String[] modelSource = {savedModelSource[0]};
         final boolean[] savedProofApplies = {true};
         final boolean[] changingModel = {false};
         final boolean[] manualModelEdited = {false};
-        final String[] sourceBeforeConnectionEdit = {savedModelSource};
+        final String[] sourceBeforeConnectionEdit = {savedModelSource[0]};
         final String[] modelBeforeConnectionEdit = {model.getText().toString().trim()};
-        populateReasoningPicker(reasoning, model.getText().toString(), savedActiveReasoning,
-                modelSource[0].equals("manual"), savedReasoningModel, savedReasoningLevels);
+        populateReasoningPicker(reasoning, model.getText().toString(), savedActiveReasoning[0],
+                modelSource[0].equals("manual"), savedReasoningModel[0], savedReasoningLevels[0]);
         panel.addView(reasoning);
         TextView reasoningHelp = text("");
         panel.addView(reasoningHelp);
@@ -1164,7 +1202,7 @@ public final class MainActivity extends Activity implements AgentService.Observe
                     String currentModel = model.getText().toString().trim();
                     preferredReasoning[0] = reasoningPreferenceAfterSelection(selectedMode, currentModel,
                             selectedReasoningEffort(reasoning), preferredReasoning[0],
-                            modelReasoningEfforts.get(currentModel), savedReasoningModel, savedReasoningLevels,
+                            modelReasoningEfforts.get(currentModel), savedReasoningModel[0], savedReasoningLevels[0],
                             modelSource[0].equals("manual") && (manualModelEdited[0]
                                     || !selectedReasoningEffort(reasoning).equals(renderedReasoningEffort)));
                     changingModel[0] = true;
@@ -1175,8 +1213,8 @@ public final class MainActivity extends Activity implements AgentService.Observe
                     String pickerPreference = selectedMode.equals(CredentialStore.CODEX_ACCOUNT)
                             ? selectedReasoningEffort(reasoning) : preferredReasoning[0];
                     populateReasoningPicker(reasoning, modelIds[position], pickerPreference,
-                            false, savedProofApplies[0] ? savedReasoningModel : "",
-                            savedProofApplies[0] ? savedReasoningLevels : new String[0]);
+                            false, savedProofApplies[0] ? savedReasoningModel[0] : "",
+                            savedProofApplies[0] ? savedReasoningLevels[0] : new String[0]);
                 }
             }
             @Override public void onNothingSelected(AdapterView<?> parent) { }
@@ -1198,7 +1236,8 @@ public final class MainActivity extends Activity implements AgentService.Observe
                 return;
             }
             String enteredKey = newKey[0] == null ? "" : newKey[0].getText().toString().trim();
-            String apiKey = enteredKey.isEmpty() && sameMode ? saved.optString("apiKey") : enteredKey;
+            String apiKey = savedProviderKeyForEndpoint(currentSaved[0], selectedMode,
+                    endpoint.getText().toString(), enteredKey);
             if (apiKey.isEmpty()) { toast("Enter an API key before discovering models"); return; }
             JSONObject draft = json("authMode", selectedMode, "endpoint", endpoint.getText().toString().trim(),
                     "model", model.getText().toString().trim(), "apiKey", apiKey);
@@ -1214,10 +1253,11 @@ public final class MainActivity extends Activity implements AgentService.Observe
         if (auth.equals(CredentialStore.CODEX_ACCOUNT) && !saved.optString("accountId").isEmpty()) {
             accountStatus = saved.optLong("expiresAt") <= System.currentTimeMillis() ? "Account connected · access token needs refresh" : "Account connected · access token valid";
         }
-        accountPanel.addView(text(accountStatus));
+        TextView accountStatusView = text(accountStatus);
+        accountPanel.addView(accountStatusView);
         accountPanel.addView(text("Sign in using a device code, or select your Codex auth.json. Account tokens stay encrypted on this phone. Imported refresh tokens may share rotation with the original Codex installation."));
         final AlertDialog[] settingsDialog = new AlertDialog[1];
-        TextView connectionStatus = text("Test connection checks model discovery and a small reply before saving. This makes a small API request and may incur provider usage.");
+        TextView connectionStatus = text("Save tests the connection only when the API key changes. Test connection checks discovery and a backend reply on demand and may incur provider usage.");
         panel.addView(connectionStatus);
         Button testConnection = button("Test connection", () -> {
             if (settingsDialog[0] == null) return;
@@ -1270,19 +1310,40 @@ public final class MainActivity extends Activity implements AgentService.Observe
                             ? "Defaults to low. Edit the model ID for manual effort selection, or choose a discovered model to use its catalog reasoning levels."
                             : "Defaults to low. Manual model IDs allow manual effort selection; discovered models use their catalog reasoning levels."
                     : "This provider does not expose the OpenAI/Codex reasoning-effort control. The saved value is kept for compatible providers.");
-            boolean sameProvider = selectedMode.equals(auth)
-                    || (selectedMode.equals("openai") && auth.equals("api-key"))
-                    || (selectedMode.equals("codex") && (auth.equals("codexRelay") || auth.equals("codex-relay")));
+            JSONObject profile;
+            try { profile = credentials.getProviderProfile(selectedMode); }
+            catch (Exception error) { toast("Unable to read saved provider connection"); return; }
+            currentSaved[0] = profile;
+            savedActiveReasoning[0] = profile.optString("reasoningEffort", CredentialStore.DEFAULT_REASONING_EFFORT);
+            preferredReasoning[0] = profile.optString("preferredReasoningEffort", savedActiveReasoning[0]);
+            savedReasoningModel[0] = profile.optString("reasoningEffortModel");
+            savedReasoningLevels[0] = reasoningEfforts(profile.optJSONArray("reasoningEfforts"));
+            savedModelSource[0] = profile.optString("modelSource",
+                    savedReasoningModel[0].isEmpty() ? "manual" : "catalog");
+            boolean sameProvider = selectedMode.equals(profile.optString("authMode"))
+                    || (selectedMode.equals("openai") && profile.optString("authMode").equals("api-key"))
+                    || (selectedMode.equals("codex") && (profile.optString("authMode").equals("codexRelay")
+                            || profile.optString("authMode").equals("codex-relay")));
+            if (account) {
+                String status = profile.optString("accountId").isEmpty() ? "No account connected"
+                        : profile.optLong("expiresAt") <= System.currentTimeMillis()
+                                ? "Account saved · access token needs refresh" : "Account connected · access token valid";
+                accountStatusView.setText(status);
+                providerStatus.setText(profile.optString("accountId").isEmpty()
+                        ? "Not signed in · Sign in to use this provider" : "Saved ChatGPT account · ready to reuse");
+            } else if (selectedMode.equals("scripted")) providerStatus.setText("Local test provider · no credentials needed");
+            else providerStatus.setText(profile.optString("apiKey").isEmpty()
+                    ? "No saved key for this provider" : "Saved encrypted API key · ready to reuse");
             endpointPanel.setVisibility(account || fixedProvider ? View.GONE : View.VISIBLE);
             secretPanel.setVisibility(account ? View.GONE : View.VISIBLE);
             accountPanel.setVisibility(account ? View.VISIBLE : View.GONE);
             secret.setHint(openCode ? "OpenCode Console service-account key (required)" : nebius ? "Nebius API key (required)" : "API key / relay token (blank keeps saved value)");
             changingModel[0] = true;
-            modelSource[0] = sameProvider ? savedModelSource : "manual";
+            modelSource[0] = sameProvider ? savedModelSource[0] : "manual";
             manualModelEdited[0] = false;
             if (sameProvider) {
-                if (!account) endpoint.setText(saved.optString("endpoint", endpoint.getText().toString()));
-                model.setText(saved.optString("model", model.getText().toString()));
+                if (!account) endpoint.setText(profile.optString("endpoint", endpoint.getText().toString()));
+                model.setText(profile.optString("model", model.getText().toString()));
             } else if (account) model.setText(CredentialStore.CODEX_MODEL);
             else if (openCode) { endpoint.setText(CredentialStore.OPENCODE_ENDPOINT); model.setText(CredentialStore.OPENCODE_MODEL); }
             else if (nebius) { endpoint.setText(CredentialStore.NEBIUS_ENDPOINT); model.setText(CredentialStore.NEBIUS_MODEL); }
@@ -1290,17 +1351,17 @@ public final class MainActivity extends Activity implements AgentService.Observe
             else if (selectedMode.equals("openai")) { endpoint.setText("https://api.openai.com/v1"); model.setText("gpt-4.1-mini"); }
             else { endpoint.setText("https://api.openai.com/v1"); model.setText("scripted"); }
             changingModel[0] = false;
-            boolean sameConnection = matchesSavedConnection(saved, selectedMode,
+            boolean sameConnection = matchesSavedConnection(profile, selectedMode,
                     endpoint.getText().toString(), secret.getText().toString());
             savedProofApplies[0] = sameConnection;
             if (!sameConnection) modelSource[0] = "manual";
             sourceBeforeConnectionEdit[0] = modelSource[0];
             modelBeforeConnectionEdit[0] = model.getText().toString().trim();
             picker.setEnabled(sameConnection);
-            String pickerPreference = sameProvider ? savedActiveReasoning : preferredReasoning[0];
+            String pickerPreference = sameProvider ? savedActiveReasoning[0] : preferredReasoning[0];
             populateReasoningPicker(reasoning, model.getText().toString(), pickerPreference,
-                    modelSource[0].equals("manual"), sameConnection ? savedReasoningModel : "",
-                    sameConnection ? savedReasoningLevels : new String[0]);
+                    modelSource[0].equals("manual"), sameConnection ? savedReasoningModel[0] : "",
+                    sameConnection ? savedReasoningLevels[0] : new String[0]);
         };
         final int[] lastProvider = {selected};
         mode.setOnItemSelectedListener(new AdapterView.OnItemSelectedListener() {
@@ -1310,7 +1371,7 @@ public final class MainActivity extends Activity implements AgentService.Observe
                     String currentModel = model.getText().toString().trim();
                     preferredReasoning[0] = reasoningPreferenceAfterSelection(previousMode, currentModel,
                             selectedReasoningEffort(reasoning), preferredReasoning[0],
-                            modelReasoningEfforts.get(currentModel), savedReasoningModel, savedReasoningLevels,
+                            modelReasoningEfforts.get(currentModel), savedReasoningModel[0], savedReasoningLevels[0],
                             modelSource[0].equals("manual") && (manualModelEdited[0]
                                     || !selectedReasoningEffort(reasoning).equals(renderedReasoningEffort)));
                     changingModel[0] = true;
@@ -1352,7 +1413,7 @@ public final class MainActivity extends Activity implements AgentService.Observe
                 picker.setEnabled(false);
                 String effort = selectedReasoningEffort(reasoning);
                 String currentModel = model.getText().toString().trim();
-                boolean sameConnection = matchesSavedConnection(saved, modes[mode.getSelectedItemPosition()],
+                boolean sameConnection = matchesSavedConnection(currentSaved[0], modes[mode.getSelectedItemPosition()],
                         endpoint.getText().toString(), secret.getText().toString());
                 if (sameConnection == savedProofApplies[0]) {
                     if (sameConnection) picker.setEnabled(true);
@@ -1371,7 +1432,7 @@ public final class MainActivity extends Activity implements AgentService.Observe
                 savedProofApplies[0] = sameConnection;
                 picker.setEnabled(sameConnection);
                 populateReasoningPicker(reasoning, currentModel, effort, modelSource[0].equals("manual"),
-                        sameConnection ? savedReasoningModel : "", sameConnection ? savedReasoningLevels : new String[0]);
+                        sameConnection ? savedReasoningModel[0] : "", sameConnection ? savedReasoningLevels[0] : new String[0]);
             }
         };
         endpoint.addTextChangedListener(connectionChanges);
@@ -1581,12 +1642,12 @@ public final class MainActivity extends Activity implements AgentService.Observe
                     String selectedEffort = selectedReasoningEffort(reasoning);
                     String[] advertised = modelReasoningEfforts.get(selectedModel);
                     boolean persistedModelProof = savedProofApplies[0] && hasPersistedReasoningModelProof(selectedModel,
-                            savedReasoningModel, savedReasoningLevels);
+                            savedReasoningModel[0], savedReasoningLevels[0]);
                     String[] verifiedLevels = modelSource[0].equals("manual") ? null
-                            : advertised != null ? advertised : persistedModelProof ? savedReasoningLevels : null;
+                            : advertised != null ? advertised : persistedModelProof ? savedReasoningLevels[0] : null;
                     preferredReasoning[0] = reasoningPreferenceAfterSelection(selectedMode, selectedModel,
                             selectedEffort, preferredReasoning[0], advertised,
-                            savedReasoningModel, savedReasoningLevels,
+                            savedReasoningModel[0], savedReasoningLevels[0],
                             modelSource[0].equals("manual") && (manualModelEdited[0]
                                     || !selectedEffort.equals(renderedReasoningEffort)));
                     JSONObject config = json("authMode", selectedMode, "model", selectedModel, "modelSource", modelSource[0], "reasoningEffort", selectedEffort,
@@ -1595,13 +1656,8 @@ public final class MainActivity extends Activity implements AgentService.Observe
                     config.put("reasoningEfforts", reasoningEffortsJson(verifiedLevels));
                     if (!selectedMode.equals(CredentialStore.CODEX_ACCOUNT)) {
                         config.put("endpoint", endpoint.getText().toString().trim());
-                        String savedMode = saved.optString("authMode");
-                        boolean sameProvider = selectedMode.equals(savedMode)
-                                || (selectedMode.equals("openai") && savedMode.equals("api-key"))
-                                || (selectedMode.equals("codex") && (savedMode.equals("codexRelay") || savedMode.equals("codex-relay")));
-                        // Never carry a credential from a different provider when switching modes.
-                        String entered = secret.getText().toString().trim();
-                        config.put("apiKey", entered.isEmpty() && sameProvider ? saved.optString("apiKey") : entered);
+                        // Blank keys resolve only against the selected provider's encrypted profile.
+                        config.put("apiKey", secret.getText().toString().trim());
                     }
                     String prompt = mainPrompt.getText().toString().trim();
                     if (prompt.length() > 50000) { toast("Personal instructions must be 50000 characters or fewer"); return; }
@@ -1617,6 +1673,11 @@ public final class MainActivity extends Activity implements AgentService.Observe
                     };
                     if (selectedMode.equals("scripted") || selectedMode.equals(CredentialStore.CODEX_ACCOUNT)) {
                         if (testOnly[0]) { connectionStatus.setText("Connection testing is available for API-key providers. Use account sign-in for Codex."); return; }
+                        saveConnection.run(); return;
+                    }
+                    // Compare the effective key after blank-field retention, not model/preferences.
+                    // Re-entering the saved key also must not trigger an automatic request.
+                    if (!testOnly[0] && config.optString("apiKey").equals(saved.optString("apiKey"))) {
                         saveConnection.run(); return;
                     }
                     if (connectionTestId != null) { toast("Connection test is already running"); return; }
@@ -1651,7 +1712,10 @@ public final class MainActivity extends Activity implements AgentService.Observe
                         dialog.getButton(AlertDialog.BUTTON_POSITIVE).setEnabled(true);
                         connectionStatus.setText("Connection test timed out. Settings were not saved. Check network access and retry.");
                     }, 85000);
-                    command(Json.obj("action", "validate_connection", "requestId", connectionTestId, "credentials", config));
+                    JSONObject testConfig = new JSONObject(config.toString());
+                    testConfig.put("apiKey", savedProviderKeyForEndpoint(currentSaved[0], selectedMode,
+                            endpoint.getText().toString(), secret.getText().toString()));
+                    command(Json.obj("action", "validate_connection", "requestId", connectionTestId, "credentials", testConfig));
                 } catch (Exception error) {
                     connectionTestId = null; connectionTestResult = null;
                     testConnection.setEnabled(true);

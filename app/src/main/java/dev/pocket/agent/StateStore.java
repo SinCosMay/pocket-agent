@@ -140,6 +140,9 @@ public final class StateStore extends SQLiteOpenHelper {
     public synchronized JSONArray listConversations(String query) {
         return ConversationHistory.conversations(getReadableDatabase(), query);
     }
+    public synchronized JSONArray listConversations(String query,java.util.Map<String,String> titles) {
+        return ConversationHistory.conversations(getReadableDatabase(),query,titles);
+    }
     public synchronized JSONObject readConversation(String threadId, int offset) {
         return ConversationHistory.conversation(getReadableDatabase(), threadId, offset);
     }

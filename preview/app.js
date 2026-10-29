@@ -5,7 +5,7 @@ import { createVoice } from './voice.js';
 import { createActivity } from './activity.js';
 import { attachDrawerSwipe } from './drawer-swipe.js';
 import {shortTitle} from './chat-titles.js';
-import {reconcileMessages,mountComposer,mountThinkingIndicator} from './chat-view.js';
+import {reconcileMessages,mountComposer,mountThinkingIndicator,renderChatHistory,confirmChatDelete,showChatUndo,renameChat,createChatSearch} from './chat-view.js';
 
 const icons = {
   menu:'M4 7h16M4 12h12M4 17h16',
@@ -80,7 +80,7 @@ function openDrawer() {
   closeChats.focus({preventScroll:true});
 }
 drawerTrigger.onclick = openDrawer;
-attachDrawerSwipe({workspace:phoneFrame,isOpen:()=>drawerLayer.classList.contains('is-open'),canOpen:()=>document.querySelector('#settings-screen').hidden&&document.querySelector('#activity-screen').hidden&&!panel.open,open:openDrawer,close:closeDrawer});
+attachDrawerSwipe({workspace:phoneFrame,isOpen:()=>drawerLayer.classList.contains('is-open'),canOpen:()=>document.querySelector('#settings-screen').hidden&&document.querySelector('#activity-screen').hidden&&document.querySelector('#chat-search-screen').hidden&&!panel.open,open:openDrawer,close:closeDrawer});
 closeChats.onclick = closeDrawer;
 document.querySelector('#drawer-backdrop').onclick = closeDrawer;
 document.addEventListener('keydown', event => {
@@ -102,7 +102,7 @@ const modelPicker=mountModelPicker({getConfig:()=>settings.preferences(),isBusy:
 document.querySelector('#provider-picker').onclick=()=>void modelPicker.open();
 try {
   const saved = JSON.parse(localStorage.getItem('pocket-preview-chats') || '[]');
-  if (Array.isArray(saved)) conversations = saved.filter(chat => chat && typeof chat.id === 'string' && Array.isArray(chat.messages)).map(chat => ({id:chat.id,title:typeof chat.title==='string'?shortTitle(chat.title):'',messages:chat.messages.filter(m => m && ['user','assistant'].includes(m.role) && typeof m.text === 'string')}));
+  if (Array.isArray(saved)) conversations = saved.filter(chat => chat && typeof chat.id === 'string' && Array.isArray(chat.messages)).map(chat => ({id:chat.id,title:typeof chat.title==='string'?shortTitle(chat.title):'',pinned:!!chat.pinned,deleted:!!chat.deleted,messages:chat.messages.filter(m => m && ['user','assistant'].includes(m.role) && typeof m.text === 'string')}));
   const savedTheme = localStorage.getItem('pocket-preview-theme');
   if (savedTheme === 'light' || savedTheme === 'dark') theme = savedTheme;
   input.value = localStorage.getItem('pocket-preview-draft') || '';
@@ -110,6 +110,8 @@ try {
 document.documentElement.dataset.theme = theme;
 function save(key, value) { try { localStorage.setItem(key, value); } catch { notice.textContent = 'Could not save locally. Keep this tab open to retain your preview.'; } }
 function title(chat) { return shortTitle(chat.title||chat.messages.find(message => message.role === 'user')?.text); }
+const separateSearch=createChatSearch({screen:document.querySelector('#chat-search-screen'),search:async query=>conversations.filter(chat=>!chat.deleted&&[title(chat),...chat.messages.map(m=>m.text)].some(text=>text.toLowerCase().includes(query.toLowerCase()))).map(chat=>({id:chat.id,title:title(chat),snippet:chat.messages.find(m=>m.text.toLowerCase().includes(query.toLowerCase()))?.text.slice(0,160)})),onSelect:chat=>{if(responding&&current.id!==chat.id){notice.textContent='Stop the current response before switching chats.';return;}current=conversations.find(c=>c.id===chat.id);render();},onClose:selected=>{mainScreen.inert=false;if(!selected)openDrawer();}});
+document.querySelector('#open-search').onclick=()=>{closeDrawer();mainScreen.inert=true;separateSearch.open();};
 const naming=new Set();
 async function nameChat(chat){
   if(chat.title||naming.has(chat.id)||responding||!chat.messages.some(m=>m.role==='assistant'))return;
@@ -123,14 +125,15 @@ function setResponding(value){responding=value;setThinking(value);send.setAttrib
 function renderHistory(target = document.querySelector('#history'), query = chatSearch.value) {
   if (!target) return;
   target.replaceChildren();
-  const matches = conversations.filter(chat => chat.messages.some(m => m.text.toLowerCase().includes(query.toLowerCase())));
+  const matches = conversations.filter(chat => !chat.deleted&&(title(chat).toLowerCase().includes(query.toLowerCase())||chat.messages.some(m => m.text.toLowerCase().includes(query.toLowerCase()))));
   if(!responding){const unnamed=matches.find(chat=>!chat.title&&chat.messages.some(m=>m.role==='assistant')&&!naming.has(chat.id));if(unnamed&&naming.size===0)void nameChat(unnamed);}
-  for (const chat of matches) {
-    const button = document.createElement('button'); button.type = 'button'; button.className = 'history-item'; button.textContent = title(chat);
-    if (chat.id === current.id) button.setAttribute('aria-current','page');
-    button.onclick = () => { current = chat; render(); closeDrawer(); if (panel.open) panel.close(); };
-    target.append(button);
-  }
+  const persistChats=()=>save('pocket-preview-chats',JSON.stringify(conversations));
+  renderChatHistory(target,matches.map(chat=>({...chat,title:title(chat)})),{currentId:current.id,onError:error=>{notice.textContent=error.message;},
+    onOpen:chat=>{if(responding&&chat.id!==current.id)throw Error('Stop the current response before switching chats.');current=conversations.find(c=>c.id===chat.id);render();closeDrawer();if(panel.open)panel.close();},
+    onRename:async chat=>{const saved=conversations.find(c=>c.id===chat.id);const value=await renameChat(document.querySelector('.workspace'),saved.title||title(saved));if(value===null)return;saved.title=value;persistChats();renderHistory();},
+    onPin:chat=>{const saved=conversations.find(c=>c.id===chat.id);saved.pinned=!saved.pinned;persistChats();renderHistory();},
+    onDelete:async chat=>{if(responding&&chat.id===current.id)throw Error('Stop this response before deleting the chat.');if(!await confirmChatDelete(document.querySelector('.workspace'),chat.title))return;const saved=conversations.find(c=>c.id===chat.id);saved.deleted=true;persistChats();if(current.id===chat.id)current={id:crypto.randomUUID(),messages:[]};render();showChatUndo(document.querySelector('.workspace'),()=>{saved.deleted=false;persistChats();renderHistory();});}
+  });
   if (!matches.length) { const text = document.createElement('p'); text.className = 'history-empty'; text.textContent = query ? 'No chats match your search.' : 'No chats yet. Start a conversation and it will appear here.'; target.append(text); }
 }
 function render() {
