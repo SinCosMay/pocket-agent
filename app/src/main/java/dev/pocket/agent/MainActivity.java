@@ -986,6 +986,9 @@ public final class MainActivity extends Activity implements AgentService.Observe
     private void navigateBack(){if(pocketUi!=null)pocketUi.view.evaluateJavascript("window.pocketBack?.()",null);else finish();}
     // Legacy system back (including gesture navigation before Android 13) must
     // follow the same WebView navigation path as OnBackInvokedCallback.
+    // Android 13+ uses the registered OnBackInvokedCallback; this override
+    // is solely the platform Activity fallback for older devices.
+    @android.annotation.SuppressLint("GestureBackNavigation")
     @SuppressWarnings("deprecation")
     @Override public void onBackPressed(){navigateBack();}
     private void conversationActions() {
