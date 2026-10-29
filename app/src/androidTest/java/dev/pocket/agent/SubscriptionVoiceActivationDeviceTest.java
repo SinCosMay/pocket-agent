@@ -226,8 +226,16 @@ public final class SubscriptionVoiceActivationDeviceTest {
             try {
                 WebView webView = findWebView(activity.getWindow().getDecorView());
                 assertNotNull("Main chat WebView must be present", webView);
+                String domReady = "false";
+                long domUntil = SystemClock.elapsedRealtime() + 12_000L;
+                while (SystemClock.elapsedRealtime() < domUntil) {
+                    domReady = evaluateJavascript(webView, "!!document.querySelector('#message')");
+                    if ("true".equals(domReady)) break;
+                    SystemClock.sleep(100L);
+                }
+                assertEquals("Main chat DOM must finish loading", "true", domReady);
                 assertEquals("true", evaluateJavascript(webView,
-                        "(()=>{const input=document.querySelector('#message');if(!input)return false;input.value='';input.dispatchEvent(new Event('input',{bubbles:true}));return true;})()"));
+                        "(()=>{localStorage.removeItem('pocket-native-draft');const input=document.querySelector('#message');if(!input)return false;input.value='';input.dispatchEvent(new Event('input',{bubbles:true}));return true;})()"));
                 String expectedLabel = JSONObject.quote("Start Codex voice");
                 String label = "";
                 long pageUntil = SystemClock.elapsedRealtime() + 12_000L;
