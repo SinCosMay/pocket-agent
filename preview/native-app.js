@@ -47,7 +47,7 @@ function renderChat(force=false){const state=snapshot.state;syncComposer();$('#s
  if(archive){if(archive.page.offset>0)list.append(button('Earlier messages',()=>openArchive(archive.id,archive.title,Math.max(0,archive.page.offset-60))));if(archive.page.offset+60<archive.page.total)list.append(button('More messages',()=>openArchive(archive.id,archive.title,archive.page.offset+60)));}
  $('#copy-chat').disabled=!items.length;input.disabled=!!archive;syncComposer();if(follow||force)scroller.scrollTop=scroller.scrollHeight;else scroller.scrollTop=top;
 }
-function syncComposer(){const busy=snapshot.state.busy,voice=!busy&&!input.value.trim();$('#send').disabled=!!archive;$('#send').classList.toggle('is-voice',voice);$('#send').setAttribute('aria-label',busy?'Stop response':voice?'Start Codex live voice':'Send message');const mark=$('#send [data-icon]');mark.replaceChildren(voice?waveIcon():icon(busy?'stop':'up'));}
+function syncComposer(){const busy=snapshot.state.busy,voice=!busy&&!input.value.trim();$('#send').disabled=!!archive;$('#send').classList.toggle('is-voice',voice);$('#send').setAttribute('aria-label',busy?'Stop response':voice?'Start Codex voice':'Send message');const mark=$('#send [data-icon]');mark.replaceChildren(voice?waveIcon():icon(busy?'stop':'up'));}
 function waveIcon(){const value=icon('mic');value.querySelector('path').setAttribute('d','M4 10v4M8 6v12M12 3v18M16 7v10M20 10v4');return value;}
 input.value=localStorage.getItem('pocket-native-draft')||'';input.oninput=()=>{localStorage.setItem('pocket-native-draft',input.value);syncComposer();resizeComposer();};
 const resizeComposer=mountComposer(input);
