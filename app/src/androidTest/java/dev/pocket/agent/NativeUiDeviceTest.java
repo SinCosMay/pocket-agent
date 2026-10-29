@@ -123,7 +123,7 @@ public class NativeUiDeviceTest {
         ready("typeof window.pocketRequest==='function'");home();
         eval("window.__originalBridge=window.PocketNative;window.__sendFixtureReady=false;window.pocketRequest('/native/snapshot').then(s=>{window.__sendFixture=s;s.preferences.provider='codex-account';s.state={mainThreadId:'11111111-1111-4111-8111-111111111111',messages:[],tasks:[],workerMessages:{},busy:false};window.__snapshots=0;window.PocketNative={request:(id,path,payload)=>{if(path==='/native/snapshot'){window.__snapshots++;window.pocketReply(id,window.__sendFixture,null);}else if(path==='/native/send'){window.__heldSend=id;}else window.__originalBridge.request(id,path,payload);}};window.pocketEvent('agent',{});window.__sendFixtureReady=true;})");
         try {
-            ready("window.__sendFixtureReady&&document.querySelector('#welcome').hidden===false");
+            ready("window.__sendFixtureReady&&document.querySelector('#welcome').hidden===false&&document.querySelector('#provider-label').textContent==='Codex'");
             eval("document.querySelector('#message').value='A quick test message';document.querySelector('#message').dispatchEvent(new Event('input'));document.querySelector('#composer').requestSubmit()");
             ready("window.__heldSend&&document.querySelector('#messages .message[data-role=user]')?.textContent.includes('A quick test message')&&document.querySelector('#message').value===''");
             capture("instant-send-dark");
