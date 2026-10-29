@@ -72,6 +72,7 @@ android {
     packaging { jniLibs { useLegacyPackaging = true }; resources { excludes += "META-INF/DEPENDENCIES" } }
 }
 dependencies {
+    implementation("androidx.activity:activity:1.11.0")
     implementation(project(":android-platform"))
     implementation("androidx.work:work-runtime:2.10.5")
     implementation("com.caoccao.javet:javet-node-android-i18n:6.0.2")

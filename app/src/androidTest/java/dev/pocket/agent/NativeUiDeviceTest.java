@@ -273,7 +273,7 @@ public class NativeUiDeviceTest {
         assertEquals("true",eval("getComputedStyle(document.querySelector('#message')).outlineStyle==='none'"));
         eval("document.querySelector('#message').blur()");
         eval("document.querySelector('#message').value='';document.querySelector('#message').dispatchEvent(new Event('input'))");
-        assertEquals("\"Start Codex live voice\"",eval("document.querySelector('#send').getAttribute('aria-label')"));
+        assertEquals("\"Start Codex voice\"",eval("document.querySelector('#send').getAttribute('aria-label')"));
         eval("document.querySelector('#message').value='Hello';document.querySelector('#message').dispatchEvent(new Event('input'))");
         assertEquals("\"Send message\"",eval("document.querySelector('#send').getAttribute('aria-label')"));
         eval("document.querySelector('#message').value='';document.querySelector('#message').dispatchEvent(new Event('input'))");
@@ -319,7 +319,7 @@ public class NativeUiDeviceTest {
                 eval("document.querySelector('#show-threads').click()");ready("document.querySelector('#settings-screen .settings-title').textContent==='Threads'");capture("chat-threads-screen");
                 assertEquals("true",eval("document.querySelectorAll('#settings-screen .native-task').length>0"));
                 eval("window.pocketBack();document.querySelector('#message').value='';document.querySelector('#message').dispatchEvent(new Event('input'))");
-                ready("document.querySelector('#send').getAttribute('aria-label')==='Start Codex live voice'");capture("empty-composer-live-voice");
+                ready("document.querySelector('#send').getAttribute('aria-label')==='Start Codex voice'");capture("empty-composer-live-voice");
             }finally{
                 app.startService(new android.content.Intent(app,AgentService.class).setAction(AgentService.ACTION_STOP));
                 long deadline=android.os.SystemClock.elapsedRealtime()+10000;while(AgentService.isRunning()&&android.os.SystemClock.elapsedRealtime()<deadline)android.os.SystemClock.sleep(50);

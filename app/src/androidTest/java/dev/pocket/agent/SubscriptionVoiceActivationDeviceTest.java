@@ -206,6 +206,31 @@ public final class SubscriptionVoiceActivationDeviceTest {
         return result.get();
     }
 
+    @Test public void systemBackReturnsThroughMenusBeforeLeavingChat() throws Exception {
+        var instrumentation = InstrumentationRegistry.getInstrumentation();
+        Activity activity = instrumentation.startActivitySync(
+                new Intent(context(), MainActivity.class).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK));
+        try {
+            WebView web = findWebView(activity.getWindow().getDecorView());
+            assertNotNull(web);
+            long until = SystemClock.elapsedRealtime() + 12_000L;
+            while (!"true".equals(evaluateJavascript(web, "typeof window.pocketBack === 'function'"))
+                    && SystemClock.elapsedRealtime() < until) SystemClock.sleep(100);
+            assertEquals("true", evaluateJavascript(web,
+                    "(()=>{document.querySelector('[data-action=settings]').click();return !document.querySelector('#settings-screen').hidden;})()"));
+            evaluateJavascript(web, "Array.from(document.querySelectorAll('.settings-row')).find(n=>n.textContent.includes('Background work')).click()");
+            evaluateJavascript(web, "Array.from(document.querySelectorAll('.settings-row')).find(n=>n.textContent.includes('Schedules, subagents')).click()");
+            assertEquals("false", evaluateJavascript(web, "document.querySelector('#activity-screen').hidden"));
+            instrumentation.sendKeyDownUpSync(android.view.KeyEvent.KEYCODE_BACK);
+            assertEquals("true", evaluateJavascript(web, "!document.querySelector('#settings-screen').hidden && document.querySelector('#settings-screen').textContent.includes('Let Pocket do the legwork.')"));
+            instrumentation.sendKeyDownUpSync(android.view.KeyEvent.KEYCODE_BACK);
+            assertEquals("true", evaluateJavascript(web, "!document.querySelector('#settings-screen').hidden && document.querySelector('#settings-screen').textContent.includes('Your assistant')"));
+            instrumentation.sendKeyDownUpSync(android.view.KeyEvent.KEYCODE_BACK);
+            assertEquals("true", evaluateJavascript(web, "document.querySelector('#settings-screen').hidden && document.querySelector('#activity-screen').hidden"));
+            assertFalse(activity.isFinishing());
+        } finally { instrumentation.runOnMainSync(activity::finish); }
+    }
+
     @Test public void mainChatVoiceControlOpensSetupWhenAccountIsMissing() throws Exception {
         Context ctx = context();
         SharedPreferences protectedPrefs = ctx.getSharedPreferences("provider-secrets", Context.MODE_PRIVATE);

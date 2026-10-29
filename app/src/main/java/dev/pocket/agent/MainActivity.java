@@ -39,7 +39,7 @@ import org.json.JSONArray;
 import org.json.JSONObject;
 
 /** Small native text surface; service/session ownership never follows this Activity. */
-public final class MainActivity extends Activity implements AgentService.Observer, SubscriptionVoiceService.Observer {
+public final class MainActivity extends androidx.activity.ComponentActivity implements AgentService.Observer, SubscriptionVoiceService.Observer {
     @Override protected void attachBaseContext(android.content.Context base) {
         String theme = base.getSharedPreferences("pocket-ui", 0).getString("theme", "system");
         if (!theme.equals("system")) { android.content.res.Configuration config = new android.content.res.Configuration(base.getResources().getConfiguration()); config.uiMode = (config.uiMode & ~android.content.res.Configuration.UI_MODE_NIGHT_MASK) | (theme.equals("dark") ? android.content.res.Configuration.UI_MODE_NIGHT_YES : android.content.res.Configuration.UI_MODE_NIGHT_NO); base = base.createConfigurationContext(config); }
@@ -158,8 +158,9 @@ public final class MainActivity extends Activity implements AgentService.Observe
         buildNativeShell(root, transcriptFrame);
         if (saved != null) input.setText(saved.getString("composeDraft", ""));
         pocketUi = new PocketWebUi(this, this::webRequest);
-        if(Build.VERSION.SDK_INT>=33)getOnBackInvokedDispatcher().registerOnBackInvokedCallback(
-            android.window.OnBackInvokedDispatcher.PRIORITY_DEFAULT,this::navigateBack);
+        getOnBackPressedDispatcher().addCallback(this,new androidx.activity.OnBackPressedCallback(true){
+            @Override public void handleOnBackPressed(){navigateBack();}
+        });
         input.addTextChangedListener(new TextWatcher() {
             public void beforeTextChanged(CharSequence s,int start,int count,int after) { }
             public void onTextChanged(CharSequence s,int start,int before,int count) { if(pocketUi!=null&&!s.toString().isEmpty())pocketUi.event("dictation",json("text",s.toString())); }
@@ -1013,14 +1014,6 @@ public final class MainActivity extends Activity implements AgentService.Observe
         });
     }
     private void navigateBack(){if(pocketUi!=null)pocketUi.view.evaluateJavascript("window.pocketBack?.()",null);else finish();}
-    @Override public boolean onKeyDown(int keyCode,android.view.KeyEvent event){
-        if(Build.VERSION.SDK_INT<33&&keyCode==android.view.KeyEvent.KEYCODE_BACK){event.startTracking();return true;}
-        return super.onKeyDown(keyCode,event);
-    }
-    @Override public boolean onKeyUp(int keyCode,android.view.KeyEvent event){
-        if(Build.VERSION.SDK_INT<33&&keyCode==android.view.KeyEvent.KEYCODE_BACK&&event.isTracking()&&!event.isCanceled()){navigateBack();return true;}
-        return super.onKeyUp(keyCode,event);
-    }
     private void conversationActions() {
         String[] labels = {"New chat", "Copy conversation", "Search saved conversations", "Stop response", "Stop all work", "Stop assistant listening", "Voice modes"};
         new AlertDialog.Builder(this).setTitle("Conversation").setItems(labels, (dialog, which) -> {
