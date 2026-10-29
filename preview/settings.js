@@ -68,7 +68,7 @@ export function createSettings({screen,onClose,getTheme,setTheme,onProviderChang
       row(phone,{label:'Connections',detail:prefs.servers.length?`${prefs.servers.length} connection drafts`:'Remote MCP servers',glyph:'link',action:()=>render('connections')});
       row(phone,{label:'Background work',detail:'Scheduled & autonomous tasks',glyph:'activity',action:()=>render('background')});
       heading('Make it yours');const appearance=group();
-      select(appearance,'theme','Appearance',[['dark','Warm charcoal'],['light','Soft paper']],getTheme(),value=>{setTheme(value);status.textContent='Appearance updated';});
+      select(appearance,'theme','Appearance',[['dark','Dark'],['light','Light']],getTheme(),value=>{setTheme(value);status.textContent='Appearance updated';});
       body.append(el('p','settings-about','Pocket Agent · Android companion'));
     } else if(route==='profile') {
       heading('A little more you.','Choose what Pocket should call you.');field(body,'name','Your name',{placeholder:'What should we call you?'});nativeNote('This local profile is separate from provider sign-in.');

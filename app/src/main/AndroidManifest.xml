@@ -41,7 +41,7 @@
         <provider android:name=".AccessibilityBridgeProvider" android:authorities="${applicationId}.accessibility-bridge"
             android:exported="false" android:process=":accessibility" />
         <receiver android:name=".VoiceConversationInvitation$Receiver" android:exported="false" />
-        <activity android:name=".MainActivity" android:exported="true" android:theme="@style/PocketTheme" android:windowSoftInputMode="adjustResize">
+        <activity android:name=".MainActivity" android:exported="true" android:theme="@style/PocketTheme" android:windowSoftInputMode="adjustResize" android:configChanges="orientation|screenSize|smallestScreenSize">
             <intent-filter><action android:name="android.intent.action.MAIN" /><category android:name="android.intent.category.LAUNCHER" /></intent-filter>
         </activity>
         <service android:name=".PocketVoiceInteractionService" android:label="Pocket Agent" android:exported="true"

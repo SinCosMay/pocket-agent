@@ -12,7 +12,7 @@ permissions:
 jobs:
   verify:
     runs-on: ubuntu-24.04
-    timeout-minutes: 25
+    timeout-minutes: 35
     steps:
       - uses: actions/checkout@v5
       - uses: actions/setup-node@v5
@@ -35,4 +35,30 @@ jobs:
       - run: sdkmanager 'platforms;android-36' 'build-tools;36.0.0' 'ndk;27.2.12479018'
       - uses: gradle/actions/setup-gradle@v5
       - name: Build isolated UI and instrumentation APKs, then lint
-        run: ./gradlew --no-daemon -PuiPreview :app:assembleDebug :app:assembleDebugAndroidTest :app:lintDebug
+        run: ./gradlew --no-daemon -PuiPreview :app:assembleDebug :app:assembleDebugAndroidTest :app:lintDebug :app:minifyReleaseWithR8
+      - name: Allow hardware-assisted emulator execution
+        run: sudo chmod 666 /dev/kvm
+      - name: Exercise mobile chat, provider profiles and voice UI integration
+        uses: reactivecircus/android-emulator-runner@v2
+        with:
+          api-level: 35
+          arch: x86_64
+          target: google_apis
+          emulator-options: -no-window -gpu swiftshader_indirect -no-snapshot -no-boot-anim
+          script: |
+            adb shell settings put global hidden_api_policy 1
+            ./gradlew --no-daemon -PuiPreview :app:installDebug
+            adb shell pm grant dev.pocket.agent.uipreview android.permission.RECORD_AUDIO
+            adb shell pm grant dev.pocket.agent.uipreview android.permission.POST_NOTIFICATIONS
+            ./gradlew --no-daemon -PuiPreview :app:connectedDebugAndroidTest -Pandroid.testInstrumentationRunnerArguments.class=dev.pocket.agent.NativeUiDeviceTest,dev.pocket.agent.ConversationHistoryDeviceTest,dev.pocket.agent.ProviderProfilesDeviceTest,dev.pocket.agent.SubscriptionVoiceActivationDeviceTest,dev.pocket.agent.VoiceInvitationDeviceTest
+      - name: Preserve Android test reports
+        if: always()
+        uses: actions/upload-artifact@v6
+        with:
+          name: mobile-ui-integration-evidence
+          path: |
+            app/build/outputs/androidTest-results/connected/
+            app/build/reports/androidTests/connected/
+            app/build/reports/lint-results-debug.html
+          if-no-files-found: ignore
+          retention-days: 14

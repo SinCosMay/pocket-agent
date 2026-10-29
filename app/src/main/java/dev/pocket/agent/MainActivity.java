@@ -369,6 +369,7 @@ public final class MainActivity extends Activity implements AgentService.Observe
         else if (type.equals("ready")) render();
     }
     private void render() {
+        if(pocketUi!=null){if(workerTranscript!=null&&viewedWorker!=null){String text=workerMessages(viewedWorker);if(!text.contentEquals(workerTranscript.getText()))workerTranscript.setText(text);}return;}
         status.setText(!AgentService.isRunning() ? "Stopped · Send starts the runtime" : state.optBoolean("busy") ? "Main is responding" : state.optBoolean("active") ? "Workers active · Main is available" : "Ready");
         if(AgentService.isRunning() && !state.isNull("lastError") && !state.optString("lastError").isEmpty()) status.setText("Error · "+state.optString("lastError"));
         String rendered=formatMessages(state.optJSONArray("messages"));
@@ -839,9 +840,9 @@ public final class MainActivity extends Activity implements AgentService.Observe
         toast("Conversation copied");
     }
     private JSONObject webStatus() throws Exception {
-        JSONObject config = new CredentialStore(this).get(); String mode=config.optString("authMode");
+        CredentialStore credentials=new CredentialStore(this);JSONObject config=credentials.get();String mode=config.optString("authMode");
         JSONObject providers = new JSONObject();
-        for(String provider:new String[]{"nebius","opencode","codex-account"})providers.put(provider,json("configured",mode.equals(provider)&&!config.optString(provider.equals("codex-account")?"accessToken":"apiKey").isEmpty()));
+        for(String provider:new String[]{"nebius","opencode","codex-account"}){JSONObject profile=credentials.getProviderProfile(provider);providers.put(provider,json("configured",!profile.optString(provider.equals("codex-account")?"accessToken":"apiKey").isEmpty(),"active",mode.equals(provider),"model",profile.optString("model"),"reasoning",profile.optString("reasoningEffort","low")));}
         return json("providers",providers,"auth",webAuth,"voiceAccount",!new CredentialStore(this).getVoiceCodex().optString("accessToken").isEmpty(),"voice",json("groq",new VoiceCredentialStore(this,"groq").configured(),"deepgram",new VoiceCredentialStore(this).configured()));
     }
     private JSONObject webSnapshot() throws Exception {
@@ -854,6 +855,15 @@ public final class MainActivity extends Activity implements AgentService.Observe
         return result;
     }
     private JSONArray credentialsForUi() throws Exception { return new CredentialStore(this).mcpServers(); }
+    private void finishChatDeletion(String threadId,PocketWebUi.Reply reply,long deadline) {
+        if(isDestroyed()){reply.complete(null,"Chat deletion was interrupted");return;}
+        if(!threadId.equals(state.optString("mainThreadId"))){
+            boolean saved=getSharedPreferences("conversation-ui",0).edit().putBoolean(threadId+".deleted",true).commit();
+            reply.complete(saved?json("ok",true):null,saved?null:"Could not save chat changes");return;
+        }
+        if(android.os.SystemClock.elapsedRealtime()>=deadline){reply.complete(null,"Could not close this chat. Stop active work and try again.");return;}
+        pocketUi.view.postDelayed(()->finishChatDeletion(threadId,reply,deadline),50);
+    }
     private void webRequest(String path,JSONObject body,PocketWebUi.Reply reply) throws Exception {
         CredentialStore credentials=new CredentialStore(this);
         switch(path) {
@@ -861,13 +871,29 @@ public final class MainActivity extends Activity implements AgentService.Observe
             case "/native/keyboard-hide" -> {android.view.inputmethod.InputMethodManager ime=getSystemService(android.view.inputmethod.InputMethodManager.class);ime.hideSoftInputFromWindow(pocketUi.view.getWindowToken(),0);pocketUi.keyboardVisibility(false);}
             case "/native/display-preview" -> {int id=body.optInt("displayId",-1);historyQueries.submit(()->{try {reply.complete(AgentDisplayCoordinator.shared(getApplicationContext()).preview(id),null);}catch(Exception unavailable){reply.complete(null,"This private screen has finished or is unavailable");}});return;}
             case "/api/provider/status" -> { reply.complete(webStatus(),null);return; }
-            case "/native/chats" -> { historyQueries.submit(()->{try(StateStore history=new StateStore(getApplicationContext())){JSONArray chats=history.listConversations(body.optString("query"));for(int i=0;i<chats.length();i++){JSONObject chat=chats.getJSONObject(i);String title=getSharedPreferences("conversation-titles",0).getString(chat.optString("threadId"),"");chat.put("named",!title.isEmpty());if(!title.isEmpty())chat.put("title",title);}reply.complete(json("chats",chats),null);}catch(Exception failure){reply.complete(null,"Could not read saved chats");}});return; }
+            case "/native/chats" -> { historyQueries.submit(()->{try(StateStore history=new StateStore(getApplicationContext())){java.util.Map<String,String> titles=new java.util.HashMap<>();for(java.util.Map.Entry<String,?> entry:getSharedPreferences("conversation-titles",0).getAll().entrySet())if(entry.getValue() instanceof String text)titles.put(entry.getKey(),text);JSONArray saved=history.listConversations(body.optString("query"),titles),chats=new JSONArray();android.content.SharedPreferences metadata=getSharedPreferences("conversation-ui",0);for(int i=0;i<saved.length();i++){JSONObject chat=saved.getJSONObject(i);String threadId=chat.optString("threadId");if(metadata.getBoolean(threadId+".deleted",false))continue;String title=titles.getOrDefault(threadId,"");chat.put("snippet",chat.optString("title"));chat.put("named",!title.isEmpty());chat.put("pinned",metadata.getBoolean(threadId+".pinned",false));if(!title.isEmpty())chat.put("title",title);chats.put(chat);}reply.complete(json("chats",chats),null);}catch(Exception failure){reply.complete(null,"Could not read saved chats");}});return; }
+            case "/native/chat-state" -> {
+                String threadId=body.optString("threadId");if(!threadId.matches("[a-f0-9-]{36}"))throw new IllegalArgumentException("Invalid chat");
+                if(body.optBoolean("deleted")){
+                    JSONArray tasks=state.optJSONArray("tasks");if(tasks!=null)for(int i=0;i<tasks.length();i++){JSONObject task=tasks.optJSONObject(i);if(task!=null&&threadId.equals(task.optString("mainThreadId"))&&java.util.List.of("running","queued","waiting").contains(task.optString("status")))throw new IllegalStateException("Stop this chat's active work before deleting it");}
+                    if(threadId.equals(state.optString("mainThreadId"))){if(activeWork())throw new IllegalStateException("Stop active work before deleting this chat");VoiceConversationInvitation.cancel(this,"thread_changed");stopService(new Intent(this,SubscriptionVoiceService.class));command(json("action","new_main"));finishChatDeletion(threadId,reply,android.os.SystemClock.elapsedRealtime()+20000);return;}
+                }
+                android.content.SharedPreferences.Editor metadata=getSharedPreferences("conversation-ui",0).edit();
+                if(body.has("pinned"))metadata.putBoolean(threadId+".pinned",body.optBoolean("pinned"));
+                if(body.has("deleted"))metadata.putBoolean(threadId+".deleted",body.optBoolean("deleted"));
+                if(!metadata.commit())throw new IllegalStateException("Could not save chat changes");
+            }
+            case "/native/chat-rename" -> {
+                String threadId=body.optString("threadId"),title=body.optString("title").trim().replaceAll("\\s+"," ");
+                if(!threadId.matches("[a-f0-9-]{36}")||title.isEmpty()||title.length()>80)throw new IllegalArgumentException("Enter a chat name of 1 to 80 characters");
+                if(!getSharedPreferences("conversation-titles",0).edit().putString(threadId,title).commit())throw new IllegalStateException("Could not rename this chat");
+            }
             case "/native/title" -> {
                 String threadId=body.optString("threadId");if(threadId.isEmpty()||threadId.length()>300)throw new IllegalArgumentException("Invalid conversation");
                 String saved=getSharedPreferences("conversation-titles",0).getString(threadId,"");if(!saved.isEmpty()){reply.complete(json("title",saved),null);return;}
                 historyQueries.submit(()->{try(StateStore history=new StateStore(getApplicationContext())){
                     JSONArray items=history.readConversation(threadId,0).getJSONArray("messages");StringBuilder sample=new StringBuilder();for(int i=0;i<Math.min(2,items.length());i++){JSONObject message=items.getJSONObject(i);sample.append(message.optString("role")).append(": ").append(message.optString("text")).append('\n');}String text=sample.substring(0,Math.min(4000,sample.length()));
-                    runOnUiThread(()->{if(isDestroyed())return;String id="title-"+System.nanoTime();webRequests.put(id,(result,error)->{if(error==null&&result!=null){String title=result.optString("title").trim();if(!title.isEmpty()&&title.length()<=100)getSharedPreferences("conversation-titles",0).edit().putString(threadId,title).apply();}reply.complete(result,error);});command(json("action","generate_title","requestId",id,"text",text));pocketUi.view.postDelayed(()->{PocketWebUi.Reply pending=webRequests.remove(id);if(pending!=null)pending.complete(null,"Conversation naming timed out");},25000);});
+                    runOnUiThread(()->{if(isDestroyed())return;String id="title-"+System.nanoTime();webRequests.put(id,(result,error)->{if(error==null&&result!=null){String title=result.optString("title").trim();if(!title.isEmpty()&&title.length()<=100&&getSharedPreferences("conversation-titles",0).getString(threadId,"").isEmpty())getSharedPreferences("conversation-titles",0).edit().putString(threadId,title).apply();}reply.complete(result,error);});command(json("action","generate_title","requestId",id,"text",text));pocketUi.view.postDelayed(()->{PocketWebUi.Reply pending=webRequests.remove(id);if(pending!=null)pending.complete(null,"Conversation naming timed out");},25000);});
                 }catch(Exception failure){reply.complete(null,"Conversation naming is unavailable");}});return;
             }
             case "/native/archive" -> { historyQueries.submit(()->{try(StateStore history=new StateStore(getApplicationContext())){reply.complete(history.readConversation(body.optString("threadId"),body.optInt("offset")),null);}catch(Exception failure){reply.complete(null,"Could not read saved conversation");}});return; }
@@ -877,7 +903,7 @@ public final class MainActivity extends Activity implements AgentService.Observe
             case "/native/stop" -> command(json("action","stop_main"));
             case "/native/minimize" -> moveTaskToBack(true);
             case "/native/theme" -> {
-                boolean light=body.optString("theme").equals("light");int color=android.graphics.Color.parseColor(light?"#F6F5F0":"#171918");
+                boolean light=body.optString("theme").equals("light");int color=android.graphics.Color.parseColor(light?"#FAFAFA":"#000000");
                 getWindow().setStatusBarColor(color);getWindow().setNavigationBarColor(color);
                 if(pocketUi.view.getParent() instanceof View parent)parent.setBackgroundColor(color);
                 android.view.WindowInsetsController controller=getWindow().getDecorView().getWindowInsetsController();
@@ -889,6 +915,14 @@ public final class MainActivity extends Activity implements AgentService.Observe
                 if(body.has("name"))getSharedPreferences("pocket-ui",0).edit().putString("name",body.optString("name").substring(0,Math.min(120,body.optString("name").length()))).apply();
                 if(body.has("instructions")){String value=body.optString("instructions");if(value.length()>50000)throw new IllegalArgumentException("Instructions are too long");command(json("action","configure","personalInstructions",value));}
                 if(body.has("stt")){String value=body.optString("stt");if(!java.util.List.of("system","groq","deepgram","codex").contains(value))throw new IllegalArgumentException("Unknown voice mode");getSharedPreferences("pocket-ui",0).edit().putString("voiceEngine",value).apply();}
+            }
+            case "/native/select-provider" -> {
+                if(activeWork())throw new IllegalStateException("Stop active work before changing connections");String provider=body.optString("provider");
+                if(!java.util.List.of("nebius","opencode","codex-account").contains(provider))throw new IllegalArgumentException("Choose a provider");
+                JSONObject profile=credentials.getProviderProfile(provider);boolean configured=!profile.optString(provider.equals("codex-account")?"accessToken":"apiKey").isEmpty();
+                invalidateAccountOperations();webAuth=json("state","idle");webModelProofs.clear();
+                if(configured){credentials.save(profile);if(AgentService.isRunning())command(json("action","configure"));}
+                reply.complete(json("configured",configured,"provider",provider,"model",profile.optString("model"),"reasoning",profile.optString("reasoningEffort","low")),null);return;
             }
             case "/native/provider" -> {
                 if(activeWork())throw new IllegalStateException("Stop active work before changing connections");
@@ -908,13 +942,14 @@ public final class MainActivity extends Activity implements AgentService.Observe
             case "/api/provider/disconnect" -> {
                 if(activeWork())throw new IllegalStateException("Stop active work before disconnecting");invalidateAccountOperations();webAuth=json("state","idle");
                 if(body.optString("provider").equals("codex-account")){boolean shared=credentials.signOutCodex();if(shared)stopService(new Intent(this,SubscriptionVoiceService.class));}
-                else if(body.optString("provider").equals(credentials.get().optString("authMode")))credentials.save(json("authMode","scripted","model","scripted"));
+                else credentials.removeKeyProvider(body.optString("provider"));
                 if(AgentService.isRunning())command(json("action","configure"));
             }
             case "/api/auth/codex/start" -> { if(activeWork())throw new IllegalStateException("Stop active work before signing in");webSignIn(body.optBoolean("voiceOnly")); }
             case "/api/auth/codex/cancel" -> {invalidateAccountOperations();webAuth=json("state","idle");}
             case "/api/auth/codex/import" -> {if(activeWork())throw new IllegalStateException("Stop active work before importing");JSONObject account=CodexAccountAuth.readImport(new java.io.ByteArrayInputStream(body.getJSONObject("document").toString().getBytes(java.nio.charset.StandardCharsets.UTF_8)));invalidateAccountOperations();saveAccount(account);webAuth=json("state","idle");}
             case "/api/provider/models", "/native/mcp/discover" -> {
+                if(path.equals("/api/provider/models")&&!body.optString("provider",credentials.get().optString("authMode")).equals(credentials.get().optString("authMode")))throw new IllegalStateException("Connect the selected provider before discovering models");
                 String id="web-"+System.nanoTime();webRequests.put(id,reply);
                 command(path.equals("/api/provider/models")?json("action","list_models","requestId",id):json("action","mcp_discover","requestId",id,"serverId",body.optString("id")));
                 pocketUi.view.postDelayed(()->{PocketWebUi.Reply waiting=webRequests.remove(id);if(waiting!=null)waiting.complete(null,"Discovery timed out. Try again.");},45000);return;
@@ -952,8 +987,12 @@ public final class MainActivity extends Activity implements AgentService.Observe
             default -> throw new IllegalArgumentException("Unknown phone action");
         }
     }
-    private void validateWebConnection(JSONObject draft,PocketWebUi.Reply reply) {
+    private void validateWebConnection(JSONObject draft,PocketWebUi.Reply reply) throws Exception {
         long generation=invalidateAccountOperations();String id="connection-"+System.nanoTime();
+        CredentialStore credentials=new CredentialStore(this);JSONObject previous=credentials.getProviderProfile(draft.optString("authMode"));
+        if(!previous.optString("apiKey").isEmpty()&&matchesSavedConnection(previous,draft.optString("authMode"),draft.optString("endpoint",previous.optString("endpoint")),draft.optString("apiKey"))){
+            credentials.save(draft);webAuth=json("state","idle");webModelProofs.clear();if(AgentService.isRunning())command(json("action","configure"));reply.complete(webStatus(),null);return;
+        }
         webRequests.put(id,(result,error)->{
             if(error!=null){reply.complete(null,error+" Settings were not saved.");return;}
             if(generation!=accountGeneration||activeWork()){reply.complete(null,"Connection settings changed during the test. Try again.");return;}
