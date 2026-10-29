@@ -966,14 +966,10 @@ public final class MainActivity extends Activity implements AgentService.Observe
         });
     }
     private void navigateBack(){if(pocketUi!=null)pocketUi.view.evaluateJavascript("window.pocketBack?.()",null);else finish();}
-    @Override public boolean onKeyDown(int keyCode,android.view.KeyEvent event){
-        if(Build.VERSION.SDK_INT<33&&keyCode==android.view.KeyEvent.KEYCODE_BACK){event.startTracking();return true;}
-        return super.onKeyDown(keyCode,event);
-    }
-    @Override public boolean onKeyUp(int keyCode,android.view.KeyEvent event){
-        if(Build.VERSION.SDK_INT<33&&keyCode==android.view.KeyEvent.KEYCODE_BACK&&event.isTracking()&&!event.isCanceled()){navigateBack();return true;}
-        return super.onKeyUp(keyCode,event);
-    }
+    // Legacy system back (including gesture navigation before Android 13) must
+    // follow the same WebView navigation path as OnBackInvokedCallback.
+    @SuppressWarnings("deprecation")
+    @Override public void onBackPressed(){navigateBack();}
     private void conversationActions() {
         String[] labels = {"New chat", "Copy conversation", "Search saved conversations", "Stop response", "Stop all work", "Stop assistant listening", "Voice modes"};
         new AlertDialog.Builder(this).setTitle("Conversation").setItems(labels, (dialog, which) -> {
