@@ -16,6 +16,9 @@ for test in NativeUiDeviceTest ConversationHistoryDeviceTest ProviderProfilesDev
   log="$evidence/${test//#/_}.txt"
   if ! adb -s "$serial" shell am instrument -w -r -e class "dev.pocket.agent.$test" "$package.test/androidx.test.runner.AndroidJUnitRunner" | tee "$log"; then failed=1; fi
   if ! rg -q 'OK \([0-9]+ tests?\)' "$log" || rg -q 'FAILURES|INSTRUMENTATION_FAILED|Process crashed' "$log"; then failed=1; fi
+  if [[ "$test" == NativeUiDeviceTest ]]; then
+    adb -s "$serial" pull "/sdcard/Android/data/$package/files/ui-qa" "$evidence/screenshots" || failed=1
+  fi
 done
 adb -s "$serial" shell am force-stop "$package"
 exit "$failed"
