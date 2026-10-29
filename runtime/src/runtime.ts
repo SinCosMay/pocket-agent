@@ -7,6 +7,7 @@ import { SubagentRuntime } from '../vendor/pi9/runtime.js';
 import { completedGeneration,errorGeneration,interruptedGeneration,generationKey } from '../vendor/pi9/conversation.js';
 import { MobileSession } from './session.js';
 import { DisplayPool } from './display-pool.js';
+import {generateChatTitle} from './chat-title.js';
 import { nativeTools,subagentTool,sendMessageTool,requestVoiceConversationTool,clearNativeToolUiState } from './tools.js';
 import {memoryTools,recallBlock,MEMORY_GUIDANCE,MEMORY_TOOL_NAMES} from './memory.js';
 import { messageText } from './scripted.js';
@@ -40,6 +41,7 @@ export interface NativeBridge {call(method:string,argsJson:string):string;emit(e
 export class PocketRuntime {
   readonly registry=new AgentRegistry();
   readonly displayPool=new DisplayPool(3);
+  private readonly displayIds=new Map<string,number>();
   private readonly nativeDisplays=new Set<string>();
   private readonly pendingDisplays=new Map<string,Promise<any>>();
   private readonly releaseRetries=new Map<string,{attempt:number,timer?:ReturnType<typeof setTimeout>,dueAt?:number}>();
@@ -72,7 +74,9 @@ export class PocketRuntime {
   private observerSession?:MobileSession;
   private mainThreadId:string;
   private readonly workerHistoryOwners=new Map<string,string>();
+  private readonly workerMainThreads=new Map<string,string>();
   private personalInstructions='';
+  private titleRequest?:AbortController;
   private readonly credentialHistory=new Set<any>();
   private catalogPending?:Promise<CatalogModel[]>;
   private discoveringModels=false;
@@ -138,9 +142,11 @@ export class PocketRuntime {
       if(typeof proof?.model==='string'&&proof.model.length<=160&&levels.length)this.workerReasoningProofs.set(id,{model:proof.model,levels});
     }
     const hasOwnerMap=Object.hasOwn(saved,'workerHistoryOwners');
+    if(saved.workerMainThreads&&typeof saved.workerMainThreads==='object')for(const [id,thread]of Object.entries(saved.workerMainThreads))if(typeof thread==='string'&&/^[a-f0-9-]{36}$/.test(thread))this.workerMainThreads.set(id,thread);
     const ownerMap=saved.workerHistoryOwners;
     const validOwnerMap=ownerMap!==null&&typeof ownerMap==='object'&&!Array.isArray(ownerMap);
     for(const stored of saved.workers??[]) {
+      if(!this.workerMainThreads.has(stored.conversationId))this.workerMainThreads.set(stored.conversationId,typeof saved.mainThreadId==='string'&&/^[a-f0-9-]{36}$/.test(saved.mainThreadId)?saved.mainThreadId:this.mainThreadId);
       // Retained legacy workers keep their old scope; every new worker gets a unique archive identity.
       const oldOwner=validOwnerMap&&Object.hasOwn(ownerMap,stored.conversationId)?ownerMap[stored.conversationId]:undefined;
       this.workerHistoryOwners.set(stored.conversationId,typeof oldOwner==='string'&&oldOwner.length>0&&oldOwner.length<=160&&oldOwner!=='main'
@@ -240,8 +246,9 @@ export class PocketRuntime {
     } catch(error) {this.reportError(`MCP setup failed: ${String((error as any)?.message??error)}`);return [];}
   }
   private createSession(owner:string,parent?:any,messages:any[]=[]):MobileSession {
+    if(owner!=='main'&&!this.workerMainThreads.has(owner))this.workerMainThreads.set(owner,this.mainThreadId);
     if(owner!=='main'&&!this.workerHistoryOwners.has(owner))this.workerHistoryOwners.set(owner,owner+'@'+randomUUID());
-    const systemPrompt=composePrompt(parent?.definition?.systemPrompt??(owner==='main'?DEFAULT_MAIN_PROMPT:WORKER_PROMPT),this.personalInstructions)+'\n'+MEMORY_GUIDANCE;
+    const systemPrompt=composePrompt(parent?.definition?.systemPrompt??(owner==='main'?DEFAULT_MAIN_PROMPT:WORKER_PROMPT),this.personalInstructions)+'\n'+MEMORY_GUIDANCE+'\nDisplay readiness: virtual backend idle means ready on demand, not unavailable. Read available/status and attempt allocation before reporting a blocker. To install an app, open its https://play.google.com/store/apps/details?id=PACKAGE link on the virtual display, observe the listing, tap Install, and verify the installed package using phone_apps; a dispatched tap is not completion. Idle background Play Store tasks transfer automatically into the private session and close when it is released. A visible Store or another worker\'s Store task cannot be taken over. Preserve other personal tasks and never fall back to the physical screen unless the user explicitly authorizes visible-screen work. Background-only work must remain background-only.';
     const restored=messages[0]?.role==='system'?[{...messages[0],content:systemPrompt},...messages.slice(1)]:messages;
     const selectedModel=parent?.requestedConfig?.model;
     const currentModel=modelFor(this.config,this.credentials);
@@ -323,12 +330,15 @@ export class PocketRuntime {
         const result=this.call('tool',{name:'phone_screen',args:{action:'acquire'},owner});
         if(result?.isError){this.releaseScreen(owner);return result;}
         this.nativeDisplays.add(owner);
+        const displayId=result?.display_id;
+        if(typeof displayId==='number'&&Number.isSafeInteger(displayId)&&displayId>=0)this.displayIds.set(owner,displayId);
         if(signal?.aborted){this.releaseScreen(owner);throw new Error('Display request cancelled');}
         return result;
       }catch(e){this.releaseScreen(owner);throw e;}
     })();
     this.pendingDisplays.set(owner,request);
-    try{return await request;}finally{this.pendingDisplays.delete(owner);}
+    this.publish();
+    try{return await request;}finally{this.pendingDisplays.delete(owner);this.publish();}
   }
   private retryScreenRelease(owner:string):void {
     // One queued timer per retained lease, bounded by the pool's three owners.
@@ -364,12 +374,13 @@ export class PocketRuntime {
     const retry=this.releaseRetries.get(owner);
     if(retry?.timer)clearTimeout(retry.timer);
     this.releaseRetries.delete(owner);
-    this.nativeDisplays.delete(owner);this.displayPool.release(owner);
+    this.nativeDisplays.delete(owner);this.displayIds.delete(owner);this.displayPool.release(owner);this.publish();
     if(retry)this.publish();
     return result;
   }
   private suppressCompletedMainDeliveries():void {
     for(const c of this.runtime.listConversations()) {
+      if(this.workerMainThreads.get(c.conversationId)!==this.mainThreadId)continue;
       const g=c.generations.at(-1)!;
       if(!c.parentConversationId && g.status.kind==='done') {
         if(g.modelSubscribed) {
@@ -381,6 +392,7 @@ export class PocketRuntime {
     }
   }
   private enqueueCompletion(conversationId:string,generation:number):void {
+    if(this.workerMainThreads.get(conversationId)!==this.mainThreadId)return;
     const key=generationKey({conversationId:conversationId as any,generation});
     if(this.delivered.has(key)||this.inbox.some(x=>x.key===key))return;
     this.inbox.push({type:'completion',key,conversationId,generation});
@@ -525,8 +537,10 @@ export class PocketRuntime {
     return value.trim();
   }
   dispatch(commandJson:string):string {
+    let openingRequest:string|undefined;
     try {
       const cmd=JSON.parse(commandJson);
+      if(cmd?.action==='open_main'&&typeof cmd.requestId==='string'&&/^[A-Za-z0-9_-]{1,64}$/.test(cmd.requestId))openingRequest=cmd.requestId;
       if(!cmd||typeof cmd.action!=='string')throw new Error('Missing action');
       if(this.shuttingDown&&cmd.action!=='state')throw new Error('Runtime shutdown is in progress');
       if(cmd.action==='automation_control') {
@@ -539,6 +553,7 @@ export class PocketRuntime {
       } else if(cmd.action==='prepare_shutdown') {
         void this.prepareShutdown();
       } else if(cmd.action==='send') {
+        this.titleRequest?.abort();
         if(typeof cmd.text!=='string'||!cmd.text.trim()||cmd.text.length>50000)throw new Error('Message must contain 1..50000 characters');
         if(cmd.inputSource!==undefined&&!['typed','voice'].includes(cmd.inputSource))throw Error('Input source must be typed or voice');
         if(this.inbox.length>=32)throw new Error('Pending message limit reached (32)');
@@ -570,6 +585,7 @@ export class PocketRuntime {
         }
       }
       else if(cmd.action==='stop_all') {
+        this.titleRequest?.abort();
         this.autonomyPausePending=true;
         try{this.call('autonomy.pause',{});this.autonomyPausePending=false;}catch(error){this.reportError(error);}
         void this.stopAll().catch(this.reportError).finally(()=>this.tickAutonomy());
@@ -591,6 +607,17 @@ export class PocketRuntime {
         const finish=()=>{this.connectionTests--;this.publish();};
         void validateConnection(draft).then(result=>{finish();this.emit({type:'connection_validation',requestId,...result});},
           error=>{finish();this.emit({type:'connection_validation',requestId,error:redactProviderSecrets(String(error?.message??'Connection test failed'),draft)});});
+      } else if(cmd.action==='generate_title') {
+        if(typeof cmd.requestId!=='string'||!/^[A-Za-z0-9_-]{1,64}$/.test(cmd.requestId)||typeof cmd.text!=='string'||!cmd.text.trim()||cmd.text.length>4000)throw new Error('Invalid title request');
+        const requestId=cmd.requestId;
+        if(this.busy||this.titleRequest||this.config.mode==='scripted'){this.emit({type:'chat_title',requestId,error:'Conversation naming is unavailable while another request is active'});}
+        else {
+          const controller=new AbortController();this.titleRequest=controller;
+          void generateChatTitle(this.config,this.credentials,cmd.text,controller.signal)
+            .then(title=>this.emit({type:'chat_title',requestId,title}))
+            .catch(()=>this.emit({type:'chat_title',requestId,error:'Conversation naming is temporarily unavailable'}))
+            .finally(()=>{if(this.titleRequest===controller)this.titleRequest=undefined;this.publish();});
+        }
       } else if(cmd.action==='list_models') {
         if(typeof cmd.requestId!=='string'||!/^[A-Za-z0-9_-]{1,64}$/.test(cmd.requestId))throw new Error('Invalid model discovery request ID');
         const requestId=cmd.requestId;
@@ -617,6 +644,7 @@ export class PocketRuntime {
         const latest=this.call('credentials.get',{})??{};this.credentialHistory.add(latest);
         this.credentials.mcpServers=Array.isArray(latest.mcpServers)?latest.mcpServers:[];void this.refreshMcpTools();
       } else if(cmd.action==='configure') {
+        this.titleRequest?.abort();
         if(this.busy||this.pumping||this.deliveryTransaction||this.observing||(this.inbox.length&&!this.mainPaused)||this.runtime.listConversations().some(c=>c.currentGeneration||c.isStopping))throw new Error('Stop active work before changing providers');
         if(cmd.systemPrompt!==undefined||cmd.resetSystemPrompt!==undefined)throw new Error('Core system instructions cannot be changed through the app');
         const nextPersonal=cmd.personalInstructions===undefined?this.personalInstructions:this.validatePersonal(cmd.personalInstructions);
@@ -654,8 +682,20 @@ export class PocketRuntime {
         const previousMain=this.main;
         this.main=this.createSession('main',undefined,previousMain.messages);
         previousMain.dispose();
+      } else if(cmd.action==='open_main') {
+        if(typeof cmd.threadId!=='string'||!/^[a-f0-9-]{36}$/.test(cmd.threadId))throw new Error('Invalid main conversation');
+        if(cmd.threadId!==this.mainThreadId){
+          if(this.busy||this.pumping||this.deliveryTransaction||this.observing)throw new Error('Stop the current response before switching chats');
+          const archived=this.call('history.resume_main',{threadId:cmd.threadId});
+          if(!Array.isArray(archived?.messages)||!archived.messages.length)throw new Error('Saved conversation is unavailable');
+          const model=modelFor(this.config,this.credentials);
+          const restored=archived.messages.map((message:{role:string,text:string,timestamp:number})=>message.role==='user'?{role:'user',content:message.text,timestamp:message.timestamp}:{role:'assistant',content:[{type:'text',text:message.text}],api:model.api,provider:model.provider,model:model.id,stopReason:'stop',timestamp:message.timestamp,usage:{input:0,output:0,cacheRead:0,cacheWrite:0,totalTokens:0,cost:{input:0,output:0,cacheRead:0,cacheWrite:0,total:0}}});
+          this.deliveryTransaction=true;
+          try{if(!this.save())throw new Error('Unable to save the current chat');this.inbox=[];this.main.dispose();this.mainThreadId=cmd.threadId;this.main=this.createSession('main',undefined,restored);this.mainPaused=false;this.mainInterrupted=false;this.mainTurns=restored.filter((message:{role:string})=>message.role==='user').length;this.lastError=null;this.observationPending=[];}finally{this.deliveryTransaction=false;}
+          for(const conversation of this.runtime.listConversations()){const generation=conversation.generations.at(-1)!;if(!conversation.parentConversationId&&generation.status.kind==='done'&&this.runtime.isModelSubscribed({conversationId:conversation.conversationId,generation:generation.generation})&&!generation.receipts.model)this.enqueueCompletion(conversation.conversationId,generation.generation);}
+        }
       } else if(cmd.action==='new_main') {
-        if(this.busy||this.pumping||this.deliveryTransaction||this.observing||this.runtime.listConversations().some(c=>c.currentGeneration||c.isStopping))throw new Error('Stop active work before starting a new main thread');
+        if(this.busy||this.pumping||this.deliveryTransaction||this.observing)throw new Error('Stop active work before starting a new main thread');
         this.deliveryTransaction=true;
         try {
           // Archive before changing delivery receipts or the inbox, so failure leaves all work intact.
@@ -672,8 +712,8 @@ export class PocketRuntime {
           this.observationPending=[];
         } finally { this.deliveryTransaction=false; }
       } else if(cmd.action!=='state')throw new Error(`Unknown action ${cmd.action}`);
-      this.save();this.publish();return JSON.stringify({ok:true,accepted:true});
-    } catch(e){return JSON.stringify({ok:false,error:this.sanitize(String((e as any)?.message??e))});}
+      this.save();this.publish();if(openingRequest)this.emit({type:'main_opened',requestId:openingRequest,threadId:this.mainThreadId});return JSON.stringify({ok:true,accepted:true});
+    } catch(e){const error=this.sanitize(String((e as any)?.message??e));if(openingRequest)this.emit({type:'main_opened',requestId:openingRequest,error});return JSON.stringify({ok:false,error});}
   }
   private async sendWorker(id:string,text:string):Promise<void> {
     const c=this.runtime.conversation(id);
@@ -693,6 +733,9 @@ export class PocketRuntime {
     }
     this.totalStarts+=tasks.length;
     const result=this.runtime.startTasks(this.context,tasks,options);
+    const parent=options?.caller?.conversation?.conversationId;
+    const thread=typeof parent==='string'?this.workerMainThreads.get(parent)??this.mainThreadId:this.mainThreadId;
+    result.starts.forEach((start:{ok:boolean;conversationId?:string},index:number)=>{if(start.ok&&start.conversationId&&(tasks[index]?.kind==='spawn'||!this.workerMainThreads.has(start.conversationId)))this.workerMainThreads.set(start.conversationId,thread);});
     return result;
   }
   async steer(id:string,text:string,caller?:any,initiatedBy:any='model'):Promise<any> {
@@ -707,7 +750,7 @@ export class PocketRuntime {
   }
   cleanupRemoved():void {
     const retained=new Set(this.runtime.listConversations().map(c=>c.conversationId));
-    for(const [id,session] of this.sessions)if(!retained.has(id as any)){this.releaseScreen(id);session.dispose();this.sessions.delete(id);this.workerReasoningProofs.delete(id);this.workerHistoryOwners.delete(id);}
+    for(const [id,session] of this.sessions)if(!retained.has(id as any)){this.releaseScreen(id);session.dispose();this.sessions.delete(id);this.workerReasoningProofs.delete(id);this.workerHistoryOwners.delete(id);this.workerMainThreads.delete(id);}
     this.delivered=new Set([...this.delivered].filter(key=>retained.has(JSON.parse(key)[0])));
   }
   private async stopAll():Promise<boolean> {
@@ -725,6 +768,7 @@ export class PocketRuntime {
     return saved;
   }
   private async prepareShutdown():Promise<void> {
+    this.titleRequest?.abort();
     if(this.shuttingDown)return;
     this.shuttingDown=true;
     let clean=false,persisted=false;
@@ -795,7 +839,7 @@ export class PocketRuntime {
       // Queued workers may not have a session yet, but their first checkpoint must already own a unique archive scope.
       for(const worker of workers)if(!this.workerHistoryOwners.has(worker.conversationId))
         this.workerHistoryOwners.set(worker.conversationId,worker.conversationId+'@'+randomUUID());
-      let state:any={version:1,mainThreadId:this.mainThreadId,workerHistoryOwners:Object.fromEntries(this.workerHistoryOwners),config:this.config,providerRevision:this.credentials.providerRevision,busy:this.busy,lastError:this.lastError,mainPaused:this.mainPaused,totalStarts:this.totalStarts,personalInstructions:this.personalInstructions,mainMessages:stripImages(this.main.messages),workers,workerMessages,workerReasoningProofs:Object.fromEntries(this.workerReasoningProofs),inbox:this.inbox,delivered:[...this.delivered],mainTurns:this.mainTurns,observationPending:this.observationPending};
+      let state:any={version:1,mainThreadId:this.mainThreadId,workerHistoryOwners:Object.fromEntries(this.workerHistoryOwners),workerMainThreads:Object.fromEntries(this.workerMainThreads),config:this.config,providerRevision:this.credentials.providerRevision,busy:this.busy,lastError:this.lastError,mainPaused:this.mainPaused,totalStarts:this.totalStarts,personalInstructions:this.personalInstructions,mainMessages:stripImages(this.main.messages),workers,workerMessages,workerReasoningProofs:Object.fromEntries(this.workerReasoningProofs),inbox:this.inbox,delivered:[...this.delivered],mainTurns:this.mainTurns,observationPending:this.observationPending};
       let serialized=this.redactCheckpoint(state);
       if(utf8Bytes(serialized)>MAX_DURABLE_CHECKPOINT_BYTES) {
         const compactWorkers:any={};
@@ -823,13 +867,18 @@ export class PocketRuntime {
       return false;
     }
   }
+  displayStatus(owner:string):Readonly<{state:'idle'|'waiting'|'preparing'|'active'|'releasing';displayId:number|null}> {
+    const state=this.releaseRetries.has(owner)?'releasing':this.nativeDisplays.has(owner)?'active':this.displayPool.has(owner)?'preparing':this.pendingDisplays.has(owner)?'waiting':'idle';
+    return {state,displayId:this.displayIds.get(owner)??null};
+  }
   state():any {
-    const tasks=this.runtime.listConversations().map(c=>{const g=c.generations.at(-1)!;return {...c,generation:g.generation,status:g.status.kind==='done'?({error:'failed',aborted:'cancelled',skipped:'cancelled'} as any)[g.status.outcome]??g.status.outcome:g.status.kind,output:g.status.kind==='done'?g.status.output:undefined};});
-    const otherActive=this.connectionTests>0||this.discoveringModels||hasPendingCodexRefresh(this.credentials)||this.observing||this.busy||tasks.some(t=>t.currentGeneration||t.isStopping)||(!this.mainPaused&&this.inbox.length>0)||Boolean(this.pendingSave);
+    const tasks=this.runtime.listConversations().map(c=>{const g=c.generations.at(-1)!;return {...c,generation:g.generation,status:g.status.kind==='done'?({error:'failed',aborted:'cancelled',skipped:'cancelled'} as any)[g.status.outcome]??g.status.outcome:g.status.kind,output:g.status.kind==='done'?g.status.output:undefined,display:this.displayStatus(c.conversationId)};});
+    const otherActive=this.connectionTests>0||Boolean(this.titleRequest)||this.discoveringModels||hasPendingCodexRefresh(this.credentials)||this.observing||this.busy||tasks.some(t=>t.currentGeneration||t.isStopping)||(!this.mainPaused&&this.inbox.length>0)||Boolean(this.pendingSave);
     const cleanupOnly=this.releaseRetries.size>0&&!otherActive;
     const cleanupWakeMs=cleanupOnly?Math.min(...[...this.releaseRetries.values()].map(retry=>Math.max(1,(retry.dueAt??Date.now()+200)-Date.now()))):0;
-    return {messages:textMessages(this.main.messages,this.sanitize),mainThreadId:this.mainThreadId,tasks,busy:this.busy,lastError:this.lastError,active:this.releaseRetries.size>0||otherActive,cleanupOnly,cleanupWakeMs,mainPaused:this.mainPaused,mainInterrupted:this.mainInterrupted,provider:{...this.config},mainTurns:this.mainTurns,personalInstructions:this.personalInstructions,
+    return {messages:textMessages(this.main.messages,this.sanitize),mainThreadId:this.mainThreadId,tasks:tasks.map(task=>({...task,mainThreadId:this.workerMainThreads.get(task.conversationId)})),busy:this.busy,lastError:this.lastError,active:this.releaseRetries.size>0||otherActive,cleanupOnly,cleanupWakeMs,mainPaused:this.mainPaused,mainInterrupted:this.mainInterrupted,provider:{...this.config},mainTurns:this.mainTurns,personalInstructions:this.personalInstructions,
       autonomy:this.autonomy.snapshot(),
+      displays:{capacity:this.displayPool.capacity,active:this.displayPool.active,waiting:this.displayPool.waiting,main:this.displayStatus('main')},
       workerMessages:Object.fromEntries([...this.sessions].map(([id,s])=>[id,textMessages(s.messages,this.sanitize)]))};
   }
   publish():void {

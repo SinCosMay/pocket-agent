@@ -44,6 +44,11 @@ final class AgentDisplayCoordinator implements AutoCloseable {
         if(client==null) client=new ShizukuDisplayClient(context,this::invalidate);
         return client;
     }
+    synchronized JSONObject preview(int id) throws Exception {
+        if(id<=0||!leases.containsValue(id)||client==null||!"ready".equals(client.status()))
+            throw new ControlException(NOT_READY,"This private screen has finished or is unavailable");
+        return Json.obj("displayId",id,"image",client.preview(id));
+    }
 
     synchronized JSONObject acquire(String owner,Object generation) throws ControlException {
         // Retirement runs off-thread. A stalled shell cleanup of some other
@@ -169,6 +174,7 @@ final class AgentDisplayCoordinator implements AutoCloseable {
     }
 
     synchronized void key(String owner,int code,Object generation) throws ControlException {int id=display(owner,generation);client().key(id,code);}
+    synchronized void text(String owner,String text,Object generation) throws ControlException {int id=display(owner,generation);client().text(id,text);}
 
     void release(String owner,Object generation) {
         final Integer id;
@@ -269,6 +275,14 @@ final class AgentDisplayCoordinator implements AutoCloseable {
     synchronized int activeCount() {return leases.size();}
     boolean accessibilityConnected() {return AccessibilityProxyBackend.connected(context);}
     String backendStatus() {ShizukuDisplayClient present=client;return present==null?ShizukuDisplayClient.prerequisites():present.status();}
+    JSONObject capabilities() {return capabilityStatus(backendStatus(),activeCount(),ShizukuDisplayClient.prerequisites());}
+    static JSONObject capabilityStatus(String backend,int active,String prerequisite) {
+        boolean authorized="idle".equals(prerequisite),available=authorized&&java.util.Set.of("idle","ready","binding","disconnected").contains(backend);
+        return Json.obj("backend",backend,"active",active,"maximum",MAX_DISPLAYS,"requires_shizuku",true,
+            "shizuku_running",!"shizuku_unavailable".equals(prerequisite),"shizuku_authorized",authorized,"available",available,
+            "status",available?(active>0?"active":"ready_on_demand"):(authorized?backend:prerequisite),
+            "note",available?"Idle means ready: no private display has been allocated yet. UI tools allocate and bind automatically; attempt the requested UI action. Do not treat idle, disconnected or requires_shizuku=true as a missing permission.":"Private UI is blocked. Check Shizuku running state and authorization; physical Accessibility is reported separately.");
+    }
 
     @Override public synchronized void close() {
         retiring.addAll(leases.owners());

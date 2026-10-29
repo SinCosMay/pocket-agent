@@ -24,6 +24,8 @@ public final class CredentialStore {
     private static final String ALIAS = "pocket-agent-provider-v1";
     // Encrypted alongside the provider, but never exposed to Pi's provider config.
     private static final String VOICE_ACCOUNT = "subscriptionVoiceAccount";
+    // Inactive connections remain inside the same Keystore envelope, not in runtime config.
+    private static final String PROFILES = "providerProfiles";
     // Runtime refresh and the settings Activity use different store instances.
     private static final Object LOCK = new Object();
     public static final String CODEX_ACCOUNT = "codex-account";
@@ -76,8 +78,18 @@ public final class CredentialStore {
         }
         if (changed) write(current);
         current.remove(VOICE_ACCOUNT);
+        current.remove(PROFILES);
         current.put("mcpServers", sanitizedMcpServers(current.optJSONArray("mcpServers")));
         return current;
+    } }
+    /** Settings-only view of one encrypted connection, including inactive providers. */
+    public JSONObject getProviderProfile(String mode) throws Exception { synchronized (LOCK) {
+        JSONObject current = read();
+        String canonical = canonicalMode(mode);
+        JSONObject profiles = current.optJSONObject(PROFILES);
+        JSONObject profile = canonical.equals(canonicalMode(current.optString("authMode")))
+                ? current : profiles == null ? null : profiles.optJSONObject(canonical);
+        return profile == null ? new JSONObject() : profileSnapshot(profile);
     } }
     private JSONObject read() throws Exception {
         String saved = context.getSharedPreferences("provider-secrets", Context.MODE_PRIVATE).getString("encrypted", null);
@@ -99,15 +111,23 @@ public final class CredentialStore {
         synchronized (LOCK) {
             JSONObject current = read();
             String mode = settings.optString("authMode");
+            JSONObject profiles = current.optJSONObject(PROFILES);
+            if (profiles == null) profiles = new JSONObject();
+            JSONObject previous = canonicalMode(mode).equals(canonicalMode(current.optString("authMode")))
+                    ? current : profiles.optJSONObject(canonicalMode(mode));
+            if (previous == null) previous = new JSONObject();
             String endpoint = fixedEndpoint(mode, settings.optString("endpoint"));
             validateEndpoint(endpoint, mode);
-            if (OPENCODE.equals(mode) && settings.optString("apiKey").trim().isEmpty()) throw new IllegalArgumentException("Enter an OpenCode Console service-account key");
-            if (NEBIUS.equals(mode) && settings.optString("apiKey").trim().isEmpty()) throw new IllegalArgumentException("Enter a Nebius API key");
+            String apiKey = settings.optString("apiKey").trim();
+            // A blank field reuses a key only for the same endpoint, never a new host.
+            if (apiKey.isEmpty() && endpoint.equals(previous.optString("endpoint")))
+                apiKey = previous.optString("apiKey");
+            if (OPENCODE.equals(mode) && apiKey.trim().isEmpty()) throw new IllegalArgumentException("Enter an OpenCode Console service-account key");
+            if (NEBIUS.equals(mode) && apiKey.trim().isEmpty()) throw new IllegalArgumentException("Enter a Nebius API key");
             boolean newAccountCredential = CODEX_ACCOUNT.equals(mode) && settings.has("accessToken");
             String effort = reasoningEffort(settings.has("reasoningEffort")
                     ? settings.optString("reasoningEffort")
-                    : newAccountCredential || (CODEX_ACCOUNT.equals(mode) && !CODEX_ACCOUNT.equals(current.optString("authMode")))
-                            ? DEFAULT_REASONING_EFFORT : current.optString("reasoningEffort", DEFAULT_REASONING_EFFORT));
+                    : newAccountCredential ? DEFAULT_REASONING_EFFORT : previous.optString("reasoningEffort", DEFAULT_REASONING_EFFORT));
             String currentPreferred = reasoningEffort(current.optString("preferredReasoningEffort",
                     current.optString("reasoningEffort", DEFAULT_REASONING_EFFORT)));
             String preferredEffort = reasoningEffort(settings.has("preferredReasoningEffort")
@@ -118,7 +138,7 @@ public final class CredentialStore {
             allowed.put("mcpServers", sanitizedMcpServers(settings.optJSONArray("mcpServers") == null
                     ? current.optJSONArray("mcpServers") : settings.optJSONArray("mcpServers")));
             if (CODEX_ACCOUNT.equals(mode)) {
-                JSONObject source = settings.has("accessToken") ? settings : current;
+                JSONObject source = settings.has("accessToken") ? settings : previous;
                 if (!CODEX_ACCOUNT.equals(source.optString("authMode")) && !settings.has("accessToken")) throw new IllegalArgumentException("Sign in or import an account first");
                 JSONObject account = CodexAccountAuth.validateCredentials(source, false);
                 for (String field : new String[]{"accessToken", "refreshToken", "accountId", "expiresAt", "idToken"})
@@ -127,15 +147,15 @@ public final class CredentialStore {
                 allowed.put("model", selectedModel);
             } else {
                 allowed.put("endpoint", endpoint);
-                allowed.put("apiKey", settings.optString("apiKey"));
+                allowed.put("apiKey", apiKey);
                 allowed.put("model", model(settings.optString("model")));
             }
             String selectedModel = allowed.getString("model");
-            boolean sameProvider = sameProviderIdentity(current, allowed);
+            boolean sameProvider = sameProviderIdentity(previous, allowed);
             String source = settings.optString("modelSource");
             if (!settings.has("modelSource") && !newAccountCredential
-                    && sameProvider && selectedModel.equals(current.optString("model")))
-                source = current.optString("modelSource");
+                    && sameProvider && selectedModel.equals(previous.optString("model")))
+                source = previous.optString("modelSource");
             if (source.equals("manual") || source.equals("catalog")) allowed.put("modelSource", source);
             boolean manualModel = source.equals("manual");
             boolean proofSpecified = settings.has("reasoningEffortModel") || settings.has("reasoningEfforts");
@@ -145,8 +165,8 @@ public final class CredentialStore {
                     && selectedModel.equals(settings.optString("reasoningEffortModel")) && supported.length() > 0;
             if (!proofSpecified && !newAccountCredential && !manualModel
                     && sameProvider
-                    && selectedModel.equals(current.optString("reasoningEffortModel"))) {
-                supported = reasoningEfforts(current.optJSONArray("reasoningEfforts"));
+                    && selectedModel.equals(previous.optString("reasoningEffortModel"))) {
+                supported = reasoningEfforts(previous.optJSONArray("reasoningEfforts"));
                 validProof = supported.length() > 0;
             }
             String effectiveEffort = effectiveReasoningEffort(effort, supported, validProof, manualModel, CODEX_ACCOUNT.equals(mode) || source.equals("catalog"));
@@ -156,7 +176,7 @@ public final class CredentialStore {
                 allowed.put("reasoningEffortModel", selectedModel);
                 allowed.put("reasoningEfforts", supported);
             }
-            allowed.put("providerRevision", providerRevision(current, allowed));
+            allowed.put("providerRevision", providerRevision(previous, allowed));
             JSONObject voice = current.optJSONObject(VOICE_ACCOUNT);
             // Preserve an independently selected voice account across chat settings.
             if (CODEX_ACCOUNT.equals(mode) && (voice == null || sameCodexAccount(voice, allowed)))
@@ -164,6 +184,9 @@ public final class CredentialStore {
             else if (voice == null && CODEX_ACCOUNT.equals(current.optString("authMode")))
                 voice = accountSnapshot(current);
             if (voice != null) allowed.put(VOICE_ACCOUNT, voice);
+            profiles.put(canonicalMode(current.optString("authMode")), profileSnapshot(current));
+            profiles.put(canonicalMode(mode), profileSnapshot(allowed));
+            allowed.put(PROFILES, profiles);
             write(allowed);
         }
     }
@@ -278,12 +301,17 @@ public final class CredentialStore {
                 if (account.has(field)) allowed.put(field, account.get(field));
             String revision = current.optString("providerRevision");
             allowed.put("providerRevision", revision.isEmpty() ? UUID.randomUUID().toString() : revision);
+            JSONObject profiles = current.optJSONObject(PROFILES);
+            if (profiles == null) profiles = new JSONObject();
+            profiles.put(CODEX_ACCOUNT, profileSnapshot(allowed));
+            allowed.put(PROFILES, profiles);
             JSONObject voice = current.optJSONObject(VOICE_ACCOUNT);
             if (voice == null || current.optString("accountId").equals(voice.optString("accountId")))
                 voice = accountSnapshot(allowed);
             allowed.put(VOICE_ACCOUNT, voice);
             write(allowed);
             allowed.remove(VOICE_ACCOUNT);
+            allowed.remove(PROFILES);
             return new JSONObject(allowed.toString());
         }
     }
@@ -328,6 +356,15 @@ public final class CredentialStore {
                 updateCodex(update);
             } else {
                 current.put(VOICE_ACCOUNT, accountSnapshot(refreshed));
+                JSONObject profiles = current.optJSONObject(PROFILES);
+                JSONObject cached = profiles == null ? null : profiles.optJSONObject(CODEX_ACCOUNT);
+                if (cached != null && old.equals(cached.optString("refreshToken"))
+                        && cached.optString("accountId").equals(refreshed.optString("accountId"))) {
+                    JSONObject next = profileSnapshot(cached);
+                    for (String field : new String[]{"accessToken", "refreshToken", "accountId", "expiresAt", "idToken"})
+                        if (refreshed.has(field)) next.put(field, refreshed.get(field));
+                    profiles.put(CODEX_ACCOUNT, next);
+                }
                 write(current);
             }
             return getVoiceCodex();
@@ -369,22 +406,54 @@ public final class CredentialStore {
         return snapshot;
     }
 
-    /** Signs out chat, preserving a different voice login. Returns whether shared voice auth was removed. */
+    /** Signs out the saved chat account (active or inactive), preserving independent voice. */
     public boolean signOutCodex() throws Exception {
         synchronized (LOCK) {
             JSONObject current = read();
-            if (!CODEX_ACCOUNT.equals(current.optString("authMode"))) return false;
+            boolean active = CODEX_ACCOUNT.equals(current.optString("authMode"));
+            JSONObject profiles = current.optJSONObject(PROFILES);
+            if (profiles == null) profiles = new JSONObject();
+            JSONObject account = active ? current : profiles.optJSONObject(CODEX_ACCOUNT);
+            if (account == null) return false;
+            JSONObject voice = current.optJSONObject(VOICE_ACCOUNT);
+            boolean sharedVoice = (active && voice == null)
+                    || (voice != null && sameCodexAccount(voice, account));
+            profiles.remove(CODEX_ACCOUNT);
+            if (!active) {
+                if (sharedVoice) current.remove(VOICE_ACCOUNT);
+                current.put(PROFILES, profiles);
+                write(current);
+                return sharedVoice;
+            }
             String effort = reasoningEffort(current.optString("reasoningEffort", DEFAULT_REASONING_EFFORT));
             String preferredEffort = reasoningEffort(current.optString("preferredReasoningEffort", effort));
-            JSONObject voice = current.optJSONObject(VOICE_ACCOUNT);
-            boolean sharedVoice = voice == null || sameCodexAccount(voice, current);
             JSONObject allowed = new JSONObject().put("authMode", "scripted").put("model", "scripted").put("endpoint", "https://api.openai.com/v1")
                     .put("reasoningEffort", preferredEffort).put("preferredReasoningEffort", preferredEffort).put("providerRevision", UUID.randomUUID().toString())
                     .put("mcpServers", sanitizedMcpServers(current.optJSONArray("mcpServers")));
             if (!sharedVoice) allowed.put(VOICE_ACCOUNT, voice);
+            profiles.put("scripted", profileSnapshot(allowed));
+            allowed.put(PROFILES, profiles);
             write(allowed);
             return sharedVoice;
         }
+    }
+    public void removeKeyProvider(String mode) throws Exception { synchronized(LOCK) {
+        if(!NEBIUS.equals(mode)&&!OPENCODE.equals(mode))throw new IllegalArgumentException("Choose a key provider");
+        JSONObject current=read(),profiles=current.optJSONObject(PROFILES);if(profiles==null)profiles=new JSONObject();profiles.remove(mode);
+        if(mode.equals(current.optString("authMode"))){
+            for(String field:new String[]{"apiKey","accessToken","refreshToken","accountId","expiresAt","idToken","modelSource","reasoningEffortModel","reasoningEfforts"})current.remove(field);
+            current.put("authMode","scripted").put("model","scripted").put("endpoint","https://api.openai.com/v1").put("providerRevision",UUID.randomUUID().toString());
+        }
+        current.put(PROFILES,profiles);write(current);
+    } }
+    private static JSONObject profileSnapshot(JSONObject source) throws Exception {
+        JSONObject result = new JSONObject();
+        for (String field : new String[]{"authMode", "endpoint", "apiKey", "model", "modelSource",
+                "reasoningEffort", "preferredReasoningEffort", "reasoningEffortModel",
+                "reasoningEfforts", "providerRevision", "accessToken", "refreshToken",
+                "accountId", "expiresAt", "idToken"})
+            if (source.has(field)) result.put(field, source.get(field));
+        return result;
     }
     private static String canonicalMode(String mode) {
         if ("api-key".equals(mode)) return "openai";
