@@ -736,7 +736,7 @@ public final class MainActivity extends Activity implements AgentService.Observe
         accountPanel.addView(text(accountStatus));
         accountPanel.addView(text("Sign in using a device code, or select your Codex auth.json. Account tokens stay encrypted on this phone. Imported refresh tokens may share rotation with the original Codex installation."));
         final AlertDialog[] settingsDialog = new AlertDialog[1];
-        TextView connectionStatus = text("Test connection checks model discovery and a small reply before saving. This makes a small API request and may incur provider usage.");
+        TextView connectionStatus = text("Save tests the connection only when the API key changes. Test connection checks discovery and a backend reply on demand and may incur provider usage.");
         panel.addView(connectionStatus);
         Button testConnection = button("Test connection", () -> {
             if (settingsDialog[0] == null) return;
@@ -1134,6 +1134,11 @@ public final class MainActivity extends Activity implements AgentService.Observe
                     };
                     if (selectedMode.equals("scripted") || selectedMode.equals(CredentialStore.CODEX_ACCOUNT)) {
                         if (testOnly[0]) { connectionStatus.setText("Connection testing is available for API-key providers. Use account sign-in for Codex."); return; }
+                        saveConnection.run(); return;
+                    }
+                    // Compare the effective key after blank-field retention, not model/preferences.
+                    // Re-entering the saved key also must not trigger an automatic request.
+                    if (!testOnly[0] && config.optString("apiKey").equals(saved.optString("apiKey"))) {
                         saveConnection.run(); return;
                     }
                     if (connectionTestId != null) { toast("Connection test is already running"); return; }
