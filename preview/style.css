@@ -248,3 +248,7 @@ form.composer.has-draft{flex-wrap:wrap}
 form.composer.has-draft textarea{flex-basis:100%}
 .composer.has-draft .composer-actions{margin-left:auto}
 #message{scrollbar-width:none}#message::-webkit-scrollbar{display:none}
+
+/* Temporarily hide the composer model selector. Keep its implementation for
+   future use; models remain configurable in Settings → AI & model. */
+.composer .model-picker-trigger{display:none!important}
