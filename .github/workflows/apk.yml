@@ -68,6 +68,7 @@ jobs:
           PY
       - uses: gradle/actions/setup-gradle@v5
       - name: Build release, development and local-emulator test APKs
+        id: build_apks
         run: |
           ./gradlew --no-daemon :app:assembleRelease :app:assembleDevelopment :app:assembleReleaseAndroidTest :app:lintRelease :fixture:assembleDebug
           ./gradlew --no-daemon -PdevEmulatorTest :app:assembleDevelopmentAndroidTest
@@ -117,6 +118,7 @@ jobs:
             emulator-diagnostics/emulator-results.json
           if-no-files-found: ignore
       - name: Collect provenance and signed APKs
+        if: ${{ always() && steps.build_apks.outcome == 'success' }}
         run: |
           mkdir -p artifacts
           cp app/build/outputs/apk/release/app-arm64-v8a-release.apk artifacts/Pocket-Agent-arm64.apk
@@ -147,6 +149,7 @@ jobs:
           sha256sum artifacts/*.apk > artifacts/SHA256SUMS.txt
           (cd artifacts && sha256sum Pocket-Agent-x86_64.apk Pocket-Agent-tests.apk Pocket-Agent-fixture.apk > EMULATOR_SHA256SUMS.txt)
       - uses: actions/upload-artifact@v6
+        if: ${{ always() && steps.build_apks.outcome == 'success' }}
         with:
           name: pocket-agent-emulator-validation
           path: |
@@ -158,12 +161,14 @@ jobs:
           retention-days: 7
           if-no-files-found: error
       - uses: actions/upload-artifact@v6
+        if: ${{ always() && steps.build_apks.outcome == 'success' }}
         with:
           name: pocket-agent-release
           path: artifacts/
           retention-days: 90
           if-no-files-found: error
       - uses: actions/upload-artifact@v6
+        if: ${{ always() && steps.build_apks.outcome == 'success' }}
         with:
           name: pocket-agent-development
           path: |

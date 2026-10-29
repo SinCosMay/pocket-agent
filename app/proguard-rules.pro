@@ -96,6 +96,9 @@
 -keep class androidx.tracing.Trace { *; }
 -keep class dev.pocket.agent.AutonomyStore { *; }
 -keep class dev.pocket.agent.RuntimeOwner { *; }
+# The release target and instrumentation APK are minified separately.
+# The device test invokes this package-private wake-lock API directly.
+-keep class dev.pocket.agent.ActiveWorkWakeLock { *; }
 
 # Offline WebView calls this bridge by its JavaScript method name.
 -keepclassmembers class dev.pocket.agent.PocketWebUi$* {
