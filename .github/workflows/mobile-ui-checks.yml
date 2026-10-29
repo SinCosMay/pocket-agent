@@ -7,6 +7,10 @@ on:
       - 'runtime/**'
       - 'preview/**'
       - '.github/workflows/mobile-ui-checks.yml'
+      - '.github/scripts/run-mobile-ui-integration-tests.sh'
+concurrency:
+  group: mobile-ui-${{ github.ref }}
+  cancel-in-progress: true
 permissions:
   contents: read
 jobs:
@@ -35,7 +39,21 @@ jobs:
       - run: sdkmanager 'platforms;android-36' 'build-tools;36.0.0' 'ndk;27.2.12479018'
       - uses: gradle/actions/setup-gradle@v5
       - name: Build isolated UI and instrumentation APKs, then lint
-        run: ./gradlew --no-daemon -PuiPreview :app:assembleDebug :app:assembleDebugAndroidTest :app:lintDebug :app:minifyReleaseWithR8
+        run: ./gradlew --no-daemon -PuiPreview :app:assembleDebug :app:assembleDevelopment :app:assembleDebugAndroidTest :app:lintDebug :app:lintRelease :app:minifyReleaseWithR8
+      - name: Record APK source and checksums
+        run: |
+          git rev-parse HEAD > app/build/outputs/apk/SOURCE_COMMIT.txt
+          find app/build/outputs/apk -name '*.apk' -exec sha256sum {} + > app/build/outputs/apk/SHA256SUMS.txt
+      - name: Preserve installable APKs
+        uses: actions/upload-artifact@v6
+        with:
+          name: Pocket-Agent-preview-APKs
+          path: |
+            app/build/outputs/apk/debug/*.apk
+            app/build/outputs/apk/development/*.apk
+            app/build/outputs/apk/SOURCE_COMMIT.txt
+            app/build/outputs/apk/SHA256SUMS.txt
+          retention-days: 14
       - name: Allow hardware-assisted emulator execution
         run: sudo chmod 666 /dev/kvm
       - name: Exercise mobile chat, provider profiles and voice UI integration
@@ -45,20 +63,17 @@ jobs:
           arch: x86_64
           target: google_apis
           emulator-options: -no-window -gpu swiftshader_indirect -no-snapshot -no-boot-anim
-          script: |
-            adb shell settings put global hidden_api_policy 1
-            ./gradlew --no-daemon -PuiPreview :app:installDebug
-            adb shell pm grant dev.pocket.agent.uipreview android.permission.RECORD_AUDIO
-            adb shell pm grant dev.pocket.agent.uipreview android.permission.POST_NOTIFICATIONS
-            ./gradlew --no-daemon -PuiPreview :app:connectedDebugAndroidTest -Pandroid.testInstrumentationRunnerArguments.class=dev.pocket.agent.NativeUiDeviceTest,dev.pocket.agent.ConversationHistoryDeviceTest,dev.pocket.agent.ProviderProfilesDeviceTest,dev.pocket.agent.SubscriptionVoiceActivationDeviceTest,dev.pocket.agent.VoiceInvitationDeviceTest
+          script: bash .github/scripts/run-mobile-ui-integration-tests.sh
       - name: Preserve Android test reports
         if: always()
         uses: actions/upload-artifact@v6
         with:
           name: mobile-ui-integration-evidence
           path: |
+            app/build/outputs/mobile-ui-integration-evidence/
             app/build/outputs/androidTest-results/connected/
             app/build/reports/androidTests/connected/
             app/build/reports/lint-results-debug.html
+            app/build/reports/lint-results-release.html
           if-no-files-found: ignore
           retention-days: 14
