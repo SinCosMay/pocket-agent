@@ -96,7 +96,7 @@ export function mountComposer(input) {
   const form=input.closest('form');
   let keyboard=null,nativeKeyboard=false,nativeVisible=false,frame=0,measuredValue=null,measuredWidth=0,viewportHeight=window.visualViewport?.height||innerHeight,viewportWidth=innerWidth;
   input.rows=1;
-  const measure=()=>{frame=0;const expanded=keyboard??document.activeElement===input;form.classList.toggle('is-expanded',expanded);const width=input.clientWidth;if(input.value===measuredValue&&width===measuredWidth)return;measuredValue=input.value;measuredWidth=width;input.style.setProperty('--composer-input-height','0px');input.style.setProperty('--composer-input-height',input.value?Math.min(160,Math.max(40,input.scrollHeight))+'px':'40px');};
+  const measure=()=>{frame=0;const expanded=keyboard??document.activeElement===input;form.classList.toggle('is-expanded',expanded);form.classList.toggle('has-draft',!!input.value);const width=input.clientWidth;if(input.value===measuredValue&&width===measuredWidth)return;measuredValue=input.value;measuredWidth=width;input.style.setProperty('--composer-input-height','0px');input.style.setProperty('--composer-input-height',input.value?Math.min(160,Math.max(40,input.scrollHeight))+'px':'40px');};
   const resize=()=>{if(!frame)frame=requestAnimationFrame(measure);};
   const dismiss=()=>{keyboard=false;input.blur();resize();if(window.pocketRequest)void window.pocketRequest('/native/keyboard-hide').catch(error=>console.warn('Keyboard dismissal failed',error));};
   input.addEventListener('focus',()=>{keyboard=null;resize();});input.addEventListener('blur',()=>{keyboard=false;resize();});input.addEventListener('input',resize);
