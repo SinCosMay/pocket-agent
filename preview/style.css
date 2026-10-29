@@ -220,3 +220,28 @@ form.composer textarea,form.composer.is-expanded textarea{height:var(--composer-
 .composer-caption{display:none}
 .display-view-image{display:block;max-width:100%;max-height:70dvh;margin:16px auto;object-fit:contain;border-radius:12px;background:var(--surface)}
 .display-slot{width:100%;text-align:left}.worker-messages{padding-top:16px}
+
+/* Press feedback stays inside each control's actual rounded shape. */
+*{-webkit-tap-highlight-color:transparent}
+button:focus:not(:focus-visible),a:focus:not(:focus-visible){outline:none}
+button:active:not(:disabled){opacity:.82;box-shadow:inset 0 0 0 100vmax #80808026;transition:none}
+.workspace.drawer-dragging .main,.workspace.drawer-dragging .chat-drawer{will-change:transform}
+.workspace.drawer-dragging .drawer-backdrop{will-change:opacity}
+.conversation,.settings-body,.drawer-history{overscroll-behavior-y:contain}
+
+.thinking-indicator{display:flex;align-items:center;gap:8px;width:fit-content;min-height:48px;padding:16px 20px;margin:12px 0 24px;background:var(--surface);border-radius:20px 20px 20px 6px}
+.thinking-indicator[hidden]{display:none}
+.thinking-dot{width:9px;height:9px;border-radius:50%;background:var(--muted);animation:pocket-thinking 1.2s ease-in-out infinite}
+.thinking-dot:nth-child(2){animation-delay:150ms}.thinking-dot:nth-child(3){animation-delay:300ms}
+@keyframes pocket-thinking{0%,60%,100%{transform:translateY(0);opacity:.4}30%{transform:translateY(-5px);opacity:1}}
+@media(prefers-reduced-motion:reduce){.thinking-dot{animation:none;opacity:.7}}
+
+.model-picker-trigger{max-width:130px;min-width:64px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;border-radius:24px;padding:0 12px;background:var(--raised);font-size:12px;flex-shrink:1}
+.model-picker-dialog{width:min(398px,calc(100% - 24px));padding:20px;border-radius:24px;max-height:80dvh;overflow-y:auto}.model-picker-dialog label{display:block;margin:16px 0;font-size:13px}.model-picker-dialog select{margin-top:8px}.model-picker-dialog .settings-primary{width:100%}.model-picker-dialog p{font-size:12px;color:var(--muted)}
+.thinking-effort span{display:block;text-transform:capitalize;margin-bottom:12px}.thinking-effort input{width:100%;min-height:44px;accent-color:#3b82f6;cursor:pointer;touch-action:pan-y}.composer-actions{min-width:0}.composer-note.provider-picker{min-width:0;max-width:36%;overflow:hidden}.provider-picker #provider-label{overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+
+/* Keep the composer compact; full model names live in the picker. */
+.composer-note.provider-picker{display:none}
+.composer-bottom{justify-content:flex-end}
+.model-picker-trigger{width:96px;min-width:96px;max-width:96px;text-align:center}
+#message{scrollbar-width:none}#message::-webkit-scrollbar{display:none}
