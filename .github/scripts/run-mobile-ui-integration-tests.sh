@@ -9,7 +9,7 @@ adb -s "$serial" install -r app/build/outputs/apk/debug/app-x86_64-debug.apk
 adb -s "$serial" install -r app/build/outputs/apk/androidTest/debug/app-debug-androidTest.apk
 adb -s "$serial" shell settings put global hidden_api_policy 1
 failed=0
-for test in NativeUiDeviceTest ConversationHistoryDeviceTest ProviderProfilesDeviceTest SubscriptionVoiceActivationDeviceTest VoiceInvitationDeviceTest 'LifecycleDeviceTest#mainThreadPromptAndDebugControlsWorkOnDevice'; do
+for test in NativeUiDeviceTest ConversationHistoryDeviceTest ProviderProfilesDeviceTest CodexAuthDeviceTest SubscriptionVoiceActivationDeviceTest VoiceInvitationDeviceTest 'LifecycleDeviceTest#mainThreadPromptAndDebugControlsWorkOnDevice'; do
   adb -s "$serial" shell am force-stop "$package"
   adb -s "$serial" shell pm grant "$package" android.permission.RECORD_AUDIO
   adb -s "$serial" shell pm grant "$package" android.permission.POST_NOTIFICATIONS
