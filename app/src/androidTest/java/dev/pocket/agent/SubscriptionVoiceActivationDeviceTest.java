@@ -213,6 +213,8 @@ public final class SubscriptionVoiceActivationDeviceTest {
         try {
             ctx.stopService(new Intent(ctx, SubscriptionVoiceService.class));
             assertTrue(protectedPrefs.edit().remove("encrypted").commit());
+            assertTrue("Test setup must leave the voice account disconnected",
+                    new CredentialStore(ctx).getVoiceCodex().optString("accessToken").isEmpty());
             SubscriptionVoiceFailureStore.ready(ctx);
             InstrumentationRegistry.getInstrumentation().getUiAutomation()
                     .grantRuntimePermission(ctx.getPackageName(), Manifest.permission.RECORD_AUDIO);
@@ -238,9 +240,17 @@ public final class SubscriptionVoiceActivationDeviceTest {
                 assertEquals("Main chat must expose its own Codex voice button", expectedLabel, label);
                 assertEquals("true", evaluateJavascript(webView,
                         "(()=>{const button=document.querySelector('#send');if(!button)return false;button.click();return true;})()"));
-                assertEquals("The missing voice account should route to setup, not start a broken session",
-                        "true", evaluateJavascript(webView,
-                        "(()=>{const screen=document.querySelector('#settings-screen');return !!screen&&!screen.hidden&&screen.textContent.includes('A conversation, out loud.');})()"));
+                boolean setupVisible = false;
+                String setupState = "false";
+                long setupUntil = SystemClock.elapsedRealtime() + 5_000L;
+                while (SystemClock.elapsedRealtime() < setupUntil) {
+                    setupState = evaluateJavascript(webView,
+                            "(()=>{const screen=document.querySelector('#settings-screen');return !!screen&&!screen.hidden&&screen.textContent.includes('A conversation, out loud.');})()");
+                    if ("true".equals(setupState)) { setupVisible = true; break; }
+                    SystemClock.sleep(50L);
+                }
+                assertTrue("The missing voice account should route to setup, not start a broken session; state="
+                        + setupState, setupVisible);
                 assertFalse("No voice session should start without a connected account",
                         SubscriptionVoiceService.isActive());
                 assertEquals("Setup guidance should not be recorded as a failed voice activation",
