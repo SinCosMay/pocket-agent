@@ -37,8 +37,12 @@ public class ConversationHistoryDeviceTest {
             assertEquals(1,chats.length());
             String thread=chats.getJSONObject(0).getString("threadId");
             assertEquals(65,chats.getJSONObject(0).getInt("count"));
-            assertEquals(60,store.readConversation(thread,0).getJSONArray("messages").length());
-            assertEquals(5,store.readConversation(thread,60).getJSONArray("messages").length());
+            JSONArray first=store.readConversation(thread,0).getJSONArray("messages"),second=store.readConversation(thread,60).getJSONArray("messages");
+            assertEquals(60,first.length());assertEquals(5,second.length());
+            assertEquals("Sapphire archive message 0",first.getJSONObject(0).getString("text"));
+            assertEquals("Sapphire archive message 59",first.getJSONObject(59).getString("text"));
+            assertEquals("Sapphire archive message 60",second.getJSONObject(0).getString("text"));
+            assertEquals("Sapphire archive message 64",second.getJSONObject(4).getString("text"));
             assertEquals(0,store.listConversations("obsidian").length());
             assertEquals(1,store.listConversations("").length());
             assertEquals(65,store.resumeMainConversation(thread).length());

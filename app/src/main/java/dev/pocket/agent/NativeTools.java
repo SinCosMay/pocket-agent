@@ -275,7 +275,7 @@ final class NativeTools implements AutoCloseable {
         if (name.equals("phone_screen")) return screenLease(args,owner);
         try {
             JSONObject spec=definition(name);validate(args,spec.getJSONObject("inputSchema"));
-            if(name.equals("phone_shell"))return displays.terminal(args,owner,displayGeneration);
+            if(name.equals("phone_shell")){String action=args.getString("action");if(action.equals("acquire")||action.equals("release"))return screenLease(Json.obj("action",action),owner);return displays.terminal(args,owner,displayGeneration);}
             if(!spec.getJSONObject("annotations").getBoolean("readOnlyHint")) return operations.execute(args.getString("operation_id"),name,args,()->dispatch(name,args,owner));
             return dispatch(name,args,owner);
         } catch(ControlException e) {return Json.failure(e.code.name(),e.getMessage());}

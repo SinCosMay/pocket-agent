@@ -59,6 +59,7 @@ public final class ShellTerminalPhoneSmoke {
             JSONObject reply=null;deadline=System.currentTimeMillis()+5000;
             do {reply=new JSONObject(service.terminal(new JSONObject().put("action","poll").put("session_id",session).toString(),"other-worker",display));if("exited".equals(reply.optString("status")))break;Thread.sleep(25);}while(System.currentTimeMillis()<deadline);
             check(reply.getString("output").contains("uid=2000(shell)"),reply.toString());check(reply.getString("output").contains("display="+display),reply.toString());
+            check("exited".equals(reply.optString("status"))&&reply.getInt("exit_code")==0,reply.toString());
             results.put("production_service_shell_uid",2000);results.put("cross_agent_session_access",true);results.put("ok",true);
         } finally {
             if(display>0){service.removeDisplay(display);results.put("display_released",true);}

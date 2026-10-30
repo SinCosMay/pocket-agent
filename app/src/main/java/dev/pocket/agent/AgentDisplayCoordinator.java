@@ -37,7 +37,9 @@ final class AgentDisplayCoordinator implements AutoCloseable {
     private boolean retryScheduled,closeWhenIdle;
     private int retryAttempt;
     private ShizukuDisplayClient client;
-    private boolean shellInUse;
+    private final Object shellRpcLock=new Object();
+    private int shellRequests,activeShellSessions;
+    private boolean shellCheckScheduled;
 
     AgentDisplayCoordinator(Context context) {this.context=context.getApplicationContext();}
 
@@ -54,13 +56,28 @@ final class AgentDisplayCoordinator implements AutoCloseable {
     JSONObject terminal(JSONObject args,String owner,Object generation) throws Exception {
         final ShizukuDisplayClient active;final Integer id;
         synchronized(this) {
-            shellInUse=true;active=client();
+            active=client();shellRequests++;
             id=leases.ownedBy(owner,generation)&&!leases.provisional(owner)?leases.get(owner):null;
         }
-        JSONObject result=active.terminal(args,owner,id==null?-1:id);
-        if(id!=null)result.put("display_context",Json.obj("display_id",id,"width",720,"height",1280,"dpi",320,
-            "input_example","input -d "+id+" tap X Y","guidance","Use your assigned display for this task; shell commands are not display-filtered."));
-        return result;
+        try {
+            final JSONObject result;
+            synchronized(shellRpcLock){
+                result=active.terminal(args,owner,id==null?-1:id);
+                synchronized(this){activeShellSessions=result.optInt("active_sessions",activeShellSessions);scheduleShellCheck();}
+            }
+            if(id!=null)result.put("display_context",Json.obj("display_id",id,"width",720,"height",1280,"dpi",320,
+                "input_example","input -d "+id+" tap X Y","guidance","Use your assigned display for this task; shell commands are not display-filtered."));
+            return result;
+        } finally {synchronized(this){shellRequests--;if(leases.size()==0)closeWhenIdle=true;closeIfUnused();}}
+    }
+    private void scheduleShellCheck(){
+        if(activeShellSessions==0||shellCheckScheduled)return;
+        shellCheckScheduled=true;
+        cleanup.schedule(()->{
+            synchronized(this){shellCheckScheduled=false;if(activeShellSessions==0)return;}
+            try{terminal(Json.obj("action","context"),"shell-session-status",null);}
+            catch(Exception unavailable){synchronized(this){scheduleShellCheck();closeIfUnused();}}
+        },1,TimeUnit.SECONDS);
     }
 
     synchronized JSONObject acquire(String owner,Object generation) throws ControlException {
@@ -272,7 +289,7 @@ final class AgentDisplayCoordinator implements AutoCloseable {
     }
 
     private void closeIfUnused() {
-        if(shellInUse||!closeWhenIdle||!retiring.isEmpty()||leases.size()!=0)return;
+        if(shellRequests>0||activeShellSessions>0||!closeWhenIdle||!retiring.isEmpty()||leases.size()!=0)return;
         closeWhenIdle=false;
         if(client!=null) {ShizukuDisplayClient closing=client;client=null;closing.close();}
     }
@@ -281,6 +298,7 @@ final class AgentDisplayCoordinator implements AutoCloseable {
         // Binder death confirms that the old UserService no longer owns displays.
         for(int id:leases.ids())new AccessibilityProxyBackend(context,id).release();
         leases.clear();
+        activeShellSessions=0;
         retiring.clear();
         closeIfUnused();
     }

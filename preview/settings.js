@@ -7,13 +7,15 @@ function el(tag, className, text) { const node=document.createElement(tag);if(cl
 function icon(name) { const svg=document.createElementNS('http://www.w3.org/2000/svg','svg');svg.setAttribute('viewBox','0 0 24 24');svg.setAttribute('aria-hidden','true');const path=document.createElementNS(svg.namespaceURI,'path');path.setAttribute('d',glyphs[name]||glyphs.user);svg.append(path);return svg; }
 export function createSettings({screen,onClose,getTheme,setTheme,onProviderChange}) {
   let prefs={...defaults,servers:[]};
+  const modelProofs=new Map();
   let storageAvailable=true;
   try {
     const saved=JSON.parse(localStorage.getItem('pocket-preview-settings')||'{}');
-    for(const key of ['name','provider','model','reasoning','instructions','stt']) if(typeof saved?.[key]==='string')prefs[key]=saved[key];
+    for(const key of ['name','provider','model','reasoning','preferredReasoning','instructions','stt']) if(typeof saved?.[key]==='string')prefs[key]=saved[key];
     for(const key of ['wake','autonomy']) if(typeof saved?.[key]==='boolean')prefs[key]=saved[key];
     if(Array.isArray(saved?.servers))prefs.servers=saved.servers.filter(s=>s&&typeof s.name==='string'&&typeof s.url==='string');
   } catch { storageAvailable=false; }
+  prefs.preferredReasoning||=prefs.reasoning;
   if (!providers.some(([id])=>id===prefs.provider)) prefs.provider='none';
   onProviderChange(composerLabels[prefs.provider]);
   let route='overview';
@@ -76,9 +78,10 @@ export function createSettings({screen,onClose,getTheme,setTheme,onProviderChang
       heading('The brain behind Pocket.','Choose a provider, model, and reasoning preference.');
       select(body,'provider','Provider',providers,prefs.provider,value=>{prefs.provider=value;prefs.model=({'codex-account':'gpt-6-luna',nebius:'zai-org/GLM-5.3-Flash',opencode:'big-pickle'})[value]||'';prefs.reasoning='low';persist();onProviderChange(composerLabels[value]);render('ai');});
       const modelField=field(body,'model','Model ID',{placeholder:'Enter your provider’s model ID'});
-      const reasoning=select(body,'reasoning','Reasoning effort',[['minimal','Minimal'],['low','Low'],['medium','Medium'],['high','High'],['xhigh','Extra high'],['max','Maximum']],prefs.reasoning,value=>{prefs.reasoning=value;persist();});
-      reasoning.disabled=prefs.provider!=='codex-account';
-      if(prefs.provider!=='none')disposeConnection=mountConnection(body,{provider:prefs.provider,getConfig:()=>({provider:prefs.provider,model:prefs.model,reasoning:prefs.reasoning}),onModel:chosen=>{prefs.model=chosen.id;modelField.value=chosen.id;const levels=chosen.supportedReasoningLevels;if(levels?.length&&!levels.includes(prefs.reasoning)){prefs.reasoning=chosen.defaultReasoningLevel||levels[0];reasoning.value=prefs.reasoning;}persist();}});
+      const reasoning=select(body,'reasoning','Reasoning effort',[['minimal','Minimal'],['low','Low'],['medium','Medium'],['high','High'],['xhigh','Extra high'],['max','Maximum']],prefs.reasoning,value=>{prefs.reasoning=value;prefs.preferredReasoning=value;persist();});
+      const applyLevels=()=>{const levels=modelProofs.get(prefs.provider+':'+prefs.model)||['low'];for(const option of reasoning.options)option.disabled=!levels.includes(option.value);if(prefs.provider==='codex-account'&&!levels.includes(prefs.reasoning)){prefs.reasoning=levels.includes('low')?'low':levels[0];reasoning.value=prefs.reasoning;persist();}reasoning.disabled=prefs.provider!=='codex-account';};
+      const saveModel=modelField.oninput;modelField.oninput=()=>{saveModel();applyLevels();onProviderChange(composerLabels[prefs.provider]);};applyLevels();
+      if(prefs.provider!=='none')disposeConnection=mountConnection(body,{provider:prefs.provider,getConfig:()=>({provider:prefs.provider,model:prefs.model,reasoning:prefs.reasoning}),onModel:chosen=>{prefs.model=chosen.id;modelField.value=chosen.id;const levels=chosen.supportedReasoningLevels;modelProofs.set(prefs.provider+':'+chosen.id,levels||['low']);if(levels?.length&&!levels.includes(prefs.reasoning)){prefs.reasoning=chosen.defaultReasoningLevel||levels[0];reasoning.value=prefs.reasoning;}applyLevels();persist();onProviderChange(composerLabels[prefs.provider]);}});
       else nativeNote('Choose a provider to sign in or add its key.');
     } else if(route==='instructions') {
       heading('Help Pocket understand you.','Your tone, priorities, and preferences.');field(body,'instructions','Personal instructions',{multiline:true,placeholder:'Keep replies concise. Ask before making plans. Call me…'});
@@ -88,7 +91,8 @@ export function createSettings({screen,onClose,getTheme,setTheme,onProviderChang
       select(body,'stt','Speech recognition',[['android','Android / system default'],['groq','Groq Whisper'],['deepgram','Deepgram'],['hybrid','Hybrid · Android app']],prefs.stt,value=>{prefs.stt=value;persist();render('voice');});
       const voice=group();toggle(voice,'wake','Hey Jarvis','Always-listening wake word · Android app only.');voice.querySelector('input').disabled=true;
       if(prefs.stt==='groq')disposeConnection=mountVoiceConnection(body,'groq');
-      else if(prefs.stt==='deepgram'||prefs.stt==='hybrid')disposeConnection=mountVoiceConnection(body,'deepgram');
+      else if(prefs.stt==='deepgram')disposeConnection=mountVoiceConnection(body,'deepgram');
+      else if(prefs.stt==='hybrid')nativeNote('Hybrid recognition is available in the Android app. This browser uses system speech.');
       else nativeNote('System speech needs no Deepgram or Groq key. Browser support depends on the installed speech recognizer.');
       nativeNote('The microphone fills the message box so you can review speech before sending, even without an AI provider. Hey Jarvis and hybrid live recognition remain Android features.');
     } else if(route==='phone') {
@@ -113,5 +117,5 @@ export function createSettings({screen,onClose,getTheme,setTheme,onProviderChang
   }
   function close() {disposeConnection();screen.hidden=true;onClose();}
   screen.addEventListener('keydown',event=>{if(event.key==='Escape'){event.preventDefault();route==='overview'?close():render('overview');}});
-  return {setModel(config){prefs.model=config.model;prefs.reasoning=config.reasoning;persist();},open(section='overview'){screen.hidden=false;render(section);},preferences(){return {provider:prefs.provider,model:prefs.model,reasoning:prefs.reasoning,instructions:prefs.instructions,stt:prefs.stt};}};
+  return {setModel(config){prefs.model=config.model;prefs.reasoning=config.reasoning;if(config.preferredReasoning)prefs.preferredReasoning=config.preferredReasoning;if(config.supportedReasoningLevels)modelProofs.set(prefs.provider+':'+prefs.model,config.supportedReasoningLevels);persist();onProviderChange(composerLabels[prefs.provider]);},open(section='overview'){screen.hidden=false;render(section);},preferences(){return {provider:prefs.provider,model:prefs.model,reasoning:prefs.reasoning,preferredReasoning:prefs.preferredReasoning||prefs.reasoning,instructions:prefs.instructions,stt:prefs.stt};}};
 }

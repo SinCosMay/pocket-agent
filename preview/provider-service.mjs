@@ -38,7 +38,7 @@ async function boundedJson(response,max=262144){
 export async function createProviderService({directory,fetcher=fetch,wait=delay,onAuthState=()=>{},validateDraft=validateConnection}={}){
   const vault=await createVault(directory);
   let generation=0,loginController,titleController,auth={state:'idle'},activeRequests=0;
-  const cached=new Map();
+  const cached=new Map(),discovered=new Map();
   function mutable(){if(activeRequests)fail('Wait for the current provider request to finish.',409);titleController?.abort();}
   function stopLogin(){generation++;loginController?.abort();loginController=undefined;}
   function status(){return {providers:Object.fromEntries([...PROVIDERS].map(id=>[id,{configured:Boolean(vault.get(id)),kind:id==='codex-account'?'account':'key'}])),voice:{configured:Boolean(vault.get('deepgram')),deepgram:Boolean(vault.get('deepgram')),groq:Boolean(vault.get('groq'))},auth:{...auth}};}
@@ -50,7 +50,7 @@ export async function createProviderService({directory,fetcher=fetch,wait=delay,
       if(id==='codex-account')registerCodexCredentialUpdater(current,async update=>{
         await vault.update(state=>{
           if(state[id]?.refreshToken!==update.oldRefreshToken)fail('The account changed. Start the request again.',409);
-          const {oldRefreshToken,...account}=update;state[id]={...account,authMode:id};
+          const {oldRefreshToken,...account}=update;state[id]={...state[id],...account,authMode:id};
         });return {...vault.get(id)};
       });
     }
@@ -81,7 +81,7 @@ export async function createProviderService({directory,fetcher=fetch,wait=delay,
           if(selected!==generation||controller.signal.aborted)return;
           await vault.update(state=>{state['codex-account']=account;},()=>{if(selected!==generation)fail('Sign-in was cancelled.');});
           if(selected!==generation)return;
-          cached.delete('codex-account');auth={state:'connected'};notify();return;
+          cached.delete('codex-account');discovered.delete('codex-account');auth={state:'connected'};notify();return;
         }
         const error=typeof result.data.error==='string'?result.data.error:result.data.error?.code;
         if(error==='slow_down')interval=Math.min(900000,interval+5000);
@@ -97,7 +97,12 @@ export async function createProviderService({directory,fetcher=fetch,wait=delay,
     const levels=new Set(['minimal','low','medium','high','xhigh','max']);
     const reasoningEffort=input.reasoning||'low';if(!levels.has(reasoningEffort))fail('Choose a valid reasoning effort.');
     const selected={mode:id,model,reasoningEffort};
-    const credential=credentials(id);credential.model=model;credential.modelSource='manual';
+    const credential=credentials(id);credential.model=model;
+    const proof=(discovered.get(id)||credential.modelCatalog||[]).find(entry=>entry.id===model);
+    credential.modelSource=id==='codex-account'?'catalog':'manual';
+    credential.reasoningEffortModel=proof?model:'';
+    credential.reasoningEfforts=proof?.supportedReasoningLevels||[];
+    if(id==='codex-account'&&reasoningEffort!=='low'&&!credential.reasoningEfforts.includes(reasoningEffort))fail('Discover this model and choose a supported reasoning effort first.');
     return {selected,credential};
   }
   return {
@@ -117,9 +122,9 @@ export async function createProviderService({directory,fetcher=fetch,wait=delay,
       }catch(error){if(selected===generation)auth={state:'error',error:error instanceof ProviderFailure?error.message:'Codex sign-in failed.'};throw error;}
     },
     cancel(){stopLogin();auth={state:'cancelled'};return status();},
-    async importAccount(document){mutable();const account=parseAccount(document);stopLogin();await vault.update(state=>{state['codex-account']=account;});cached.delete('codex-account');auth={state:'connected'};return status();},
-    async saveKey(input){mutable();const id=provider(input.provider);if(id==='codex-account')fail('Codex uses account sign-in, not an API key.');const apiKey=token(input.apiKey,16384),draft={authMode:id,apiKey,model:input.model||DEFAULTS[id]};activeRequests++;try{await validateDraft(draft,fetcher);await vault.update(state=>{state[id]=draft;});cached.delete(id);return status();}catch{fail('Provider connection test failed. Check the key, model access and quota. Settings were not saved.',502);}finally{activeRequests--;}},
-    async disconnect(id){mutable();provider(id);if(id==='codex-account'){stopLogin();auth={state:'idle'};}await vault.update(state=>{delete state[id];});cached.delete(id);return status();},
+    async importAccount(document){mutable();const account=parseAccount(document);stopLogin();await vault.update(state=>{state['codex-account']=account;});cached.delete('codex-account');discovered.delete('codex-account');auth={state:'connected'};return status();},
+    async saveKey(input){mutable();const id=provider(input.provider);if(id==='codex-account')fail('Codex uses account sign-in, not an API key.');const apiKey=token(input.apiKey,16384),draft={authMode:id,apiKey,model:input.model||DEFAULTS[id]};activeRequests++;try{await validateDraft(draft,fetcher);await vault.update(state=>{state[id]=draft;});cached.delete(id);discovered.delete(id);return status();}catch{fail('Provider connection test failed. Check the key, model access and quota. Settings were not saved.',502);}finally{activeRequests--;}},
+    async disconnect(id){mutable();provider(id);if(id==='codex-account'){stopLogin();auth={state:'idle'};}await vault.update(state=>{delete state[id];});cached.delete(id);discovered.delete(id);return status();},
     async saveVoiceKey(apiKey,engine='deepgram'){if(!['deepgram','groq'].includes(engine))fail('Choose a supported speech engine.');const key=token(apiKey,512);await vault.update(state=>{state[engine]={apiKey:key};});return status();},
     async disconnectVoice(engine='deepgram'){if(!['deepgram','groq'].includes(engine))fail('Choose a supported speech engine.');await vault.update(state=>{delete state[engine];});return status();},
     async transcribe(audio,type,engine='deepgram'){
@@ -147,7 +152,7 @@ export async function createProviderService({directory,fetcher=fetch,wait=delay,
       try{while(true){const next=await reader.read();if(next.done)break;size+=next.value.length;if(size>16*1024*1024){await reader.cancel();fail('The spoken reply exceeded its size limit.',502);}chunks.push(next.value);}}finally{reader.releaseLock();}
       return Buffer.concat(chunks);
     },
-    async models(input){if(activeRequests)fail('A provider request is already running.',409);const {selected,credential}=config(input);activeRequests++;try{if(selected.mode==='codex-account')await ensureCodexCredentials(credential,{fetch:fetcher});return await discoverProviderModels(selected,credential,fetcher);}finally{activeRequests--;}} ,
+    async models(input){if(activeRequests)fail('A provider request is already running.',409);const {selected,credential}=config({...input,reasoning:'low'});activeRequests++;try{if(selected.mode==='codex-account')await ensureCodexCredentials(credential,{fetch:fetcher});const models=await discoverProviderModels(selected,credential,fetcher);await vault.update(state=>{state[selected.mode].modelCatalog=models;});credential.modelCatalog=models;discovered.set(selected.mode,models);return models;}finally{activeRequests--;}} ,
     async title(input,signal){
       if(activeRequests)fail('A provider request is already running.',409);
       const {selected,credential}=config(input);if(typeof input.text!=='string'||!input.text.trim()||input.text.length>4000)fail('Invalid conversation title input.');

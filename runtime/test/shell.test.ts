@@ -61,3 +61,10 @@ test('every composed prompt explains independent execution, persistent scripts, 
  const prompt=composePrompt('Research worker.','');
  for(const term of ['phone_shell','without a PC','scripts_directory','memory_save','action=capture','not a shell command restriction','session_id'])assert.ok(prompt.includes(term),term);
 });
+
+test('standing shell grant and implicit capture allocation work inside phone_batch',async()=>{
+ const h=host(),tool=nativeTools(h,'worker',['phone_batch']).find(t=>t.name==='phone_batch')!;
+ await tool.execute('batch',{calls:[{name:'phone_shell',args:{action:'capture'}}]});
+ assert.ok(h.events.includes('display:worker'));
+ assert.equal(h.calls[0].name,'phone_batch');assert.equal(h.calls[0].args.calls[0].name,'phone_shell');
+});

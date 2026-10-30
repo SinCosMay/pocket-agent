@@ -29,7 +29,8 @@ function paintIcons(root = document) {
   }
 }
 const input = document.querySelector('#message');
-mountComposer(input);
+const resizeComposer=mountComposer(input);
+let modelPicker;
 icons.wave='M4 10v4M8 6v12M12 3v18M16 7v10M20 10v4';
 const send = document.querySelector('#send');
 const panel = document.querySelector('#panel');
@@ -44,6 +45,7 @@ const settings = createSettings({
   getTheme:() => theme,
   setTheme:value => { theme=value; document.documentElement.dataset.theme=value; save('pocket-preview-theme',value); },
   onProviderChange:label => {
+    modelPicker?.update();
     document.querySelector('#provider-label').textContent=label;
     document.querySelector('#provider-picker').setAttribute('aria-label',`${label} · Choose AI provider`);
   }
@@ -98,7 +100,7 @@ let current = { id: crypto.randomUUID(), messages: [] };
 let theme = 'dark';
 const setThinking=mountThinkingIndicator(document.querySelector('#conversation'));
 let responding=false,chatController;
-const modelPicker=mountModelPicker({getConfig:()=>settings.preferences(),isBusy:()=>responding,save:async config=>settings.setModel(config),onConnect:()=>openPanel('settings')});
+modelPicker=mountModelPicker({getConfig:()=>settings.preferences(),isBusy:()=>responding,save:async config=>settings.setModel(config),onConnect:()=>openPanel('settings')});
 document.querySelector('#provider-picker').onclick=()=>void modelPicker.open();
 try {
   const saved = JSON.parse(localStorage.getItem('pocket-preview-chats') || '[]');
@@ -120,7 +122,7 @@ async function nameChat(chat){
   try{const result=await api('/api/chat/title',{...config,text:chat.messages.slice(0,2).map(m=>`${m.role}: ${m.text}`).join('\n').slice(0,4000)});chat.title=shortTitle(result.title);save('pocket-preview-chats',JSON.stringify(conversations));renamed=true;}catch{}finally{naming.delete(chat.id);}
   if(renamed)renderHistory();
 }
-function syncInput() { const live=!responding&&!input.value.trim();send.disabled=false;send.classList.toggle('is-voice',live);send.setAttribute('aria-label',responding?'Stop response':live?'Start Codex live voice':'Send message');send.querySelector('[data-icon]').dataset.icon=responding?'stop':live?'wave':'up';paintIcons(send);save('pocket-preview-draft', input.value); }
+function syncInput() { resizeComposer();const live=!responding&&!input.value.trim();send.disabled=false;send.classList.toggle('is-voice',live);send.setAttribute('aria-label',responding?'Stop response':live?'Start Codex live voice':'Send message');send.querySelector('[data-icon]').dataset.icon=responding?'stop':live?'wave':'up';paintIcons(send);save('pocket-preview-draft', input.value); }
 function setResponding(value){responding=value;setThinking(value);send.setAttribute('aria-label',value?'Stop response':'Send message');send.querySelector('[data-icon]').dataset.icon=value?'stop':'up';paintIcons(send);syncInput();}
 function renderHistory(target = document.querySelector('#history'), query = chatSearch.value) {
   if (!target) return;
@@ -184,6 +186,7 @@ async function submitMessage(){
   const text=input.value.trim();if(!text){mainScreen.inert=true;settings.open('voice');notice.textContent='Codex live voice is available in the Android app.';return;}
   const config=settings.preferences();
   if(config.provider==='none'){notice.textContent='Choose a provider and connect it to start chatting.';mainScreen.inert=true;settings.open('ai');return;}
+  if(current.messages.length>=80||text.length>12000||current.messages.some(m=>m.text.length>12000)||current.messages.reduce((total,m)=>total+m.text.length,0)+text.length>100000){notice.textContent='Start a new chat or shorten this conversation.';return;}
   const target=current;target.messages.push({role:'user',text});persistConversation(target);
   input.value='';chatController=new AbortController();setResponding(true);render();notice.textContent='Waiting for your provider…';
   try{

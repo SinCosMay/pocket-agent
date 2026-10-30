@@ -31,7 +31,7 @@
 .conversation:has(.welcome:not([hidden])){display:flex;align-items:center;justify-content:center}
 .welcome{padding:24px 0;text-align:center;width:100%;margin-top:-48px}
 .welcome-logo{display:block;margin:0 auto 24px;border-radius:18px}
-.welcome h1{font:500 22px/1.35 var(--sans);letter-spacing:-.5px;text-wrap:balance}
+.welcome h1{font:500 clamp(32px,5vw,48px)/1.2 Georgia,serif;letter-spacing:-.5px;text-wrap:balance}
 .welcome .intro{font-size:14px;line-height:1.8;margin-top:12px}
 .provider-picker{padding:0 8px;border-radius:10px;font-size:12px;min-height:48px}
 .provider-picker svg{width:16px;height:16px}
@@ -109,7 +109,7 @@ body{-webkit-text-size-adjust:100%;text-size-adjust:100%}
 .message[data-role=user] .message-body{padding:10px 14px;border-radius:16px;background:var(--raised)}
 .message[data-role=assistant] .message-body{line-height:1.6}
 .welcome-logo{width:48px;height:48px;margin-bottom:20px;border-radius:var(--card-radius)}
-.welcome h1{font-size:20px;font-weight:500;letter-spacing:-.4px}
+.welcome h1{font-weight:500;letter-spacing:-.4px}
 .welcome .intro{font-size:13px;line-height:1.6;margin-top:8px}
 .settings-header{padding:8px var(--content-inset);gap:8px}
 .settings-title{font-size:20px;letter-spacing:-.4px}

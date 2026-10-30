@@ -550,3 +550,16 @@ test('explicit same-ID worker catalog selection does not inherit manual main-mod
    }
  } finally {globalThis.fetch=originalFetch;}
 });
+
+test('stalled terminal Codex error bodies obey caller cancellation without waiting for the overall deadline',{timeout:2000},async()=>{
+ const credentials=accountCredential(),abort=new AbortController();let cancelled=false;
+ const stream=await makeStream(accountConfig,credentials,'main')(modelFor(accountConfig,credentials),{messages:[]},{signal:abort.signal,fetch:async()=>{
+   setTimeout(()=>abort.abort(),20);
+   return new Response(new ReadableStream({cancel(){cancelled=true;}}),{status:401});
+ }});
+ assert.equal((await stream.result()).stopReason,'aborted');assert.equal(cancelled,true);
+});
+test('message-only invalid encrypted content retains fresh-task recovery guidance',async()=>{
+ const {codexFailure}=await import('../src/codex-errors.js');
+ assert.match(codexFailure(400,{error:{message:'Invalid encrypted content'}}).message,/fresh task context/);
+});

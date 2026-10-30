@@ -1,6 +1,6 @@
 # Pocket Agent local companion
 
-Install the repository's pinned runtime dependencies once, then run:
+Use Node.js 22.19.0 or newer. Install the repository's pinned runtime dependencies once, then run:
 
 ```sh
 cd runtime && npm ci && cd ..

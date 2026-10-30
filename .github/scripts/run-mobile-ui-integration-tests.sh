@@ -7,6 +7,17 @@ evidence=app/build/outputs/mobile-ui-integration-evidence
 mkdir -p "$evidence"
 adb -s "$serial" install -r app/build/outputs/apk/debug/app-x86_64-debug.apk
 adb -s "$serial" install -r app/build/outputs/apk/androidTest/debug/app-debug-androidTest.apk
+prior_hidden_api_policy=$(adb -s "$serial" shell settings get global hidden_api_policy | tr -d '\r')
+cleanup() {
+  if [[ "$prior_hidden_api_policy" == null ]]; then
+    adb -s "$serial" shell settings delete global hidden_api_policy
+  else
+    adb -s "$serial" shell settings put global hidden_api_policy "$prior_hidden_api_policy"
+  fi
+}
+trap cleanup EXIT
+trap 'exit 130' INT
+trap 'exit 143' TERM
 adb -s "$serial" shell settings put global hidden_api_policy 1
 failed=0
 for test in NativeUiDeviceTest ConversationHistoryDeviceTest ProviderProfilesDeviceTest CodexAuthDeviceTest SubscriptionVoiceActivationDeviceTest VoiceInvitationDeviceTest 'LifecycleDeviceTest#mainThreadPromptAndDebugControlsWorkOnDevice'; do

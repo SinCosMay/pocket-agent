@@ -1,9 +1,9 @@
 import {makeStream,modelFor,type ProviderConfig,type ProviderCredentials} from './provider.js';
+import {shortTitle} from '../../preview/short-title.mjs';
 import {normalizeContext} from '@earendil-works/pi-ai/utils/transcript';
 
 export function cleanChatTitle(value:string):string {
-  const text=value.replace(/<[^>]*>/g,'').replace(/[\r\n\t]+/g,' ').replace(/^[\s#*"'`]+|[\s"'`.!]+$/g,'').replace(/^(?:title|conversation title)\s*:\s*/i,'').replace(/\s+/g,' ').trim().split(' ').slice(0,6).join(' ');
-  return Array.from(text).slice(0,42).join('').trim()||'New conversation';
+  return shortTitle(value);
 }
 export async function generateChatTitle(config:ProviderConfig,credentials:ProviderCredentials,text:string,signal:AbortSignal,fetcher:typeof fetch=fetch):Promise<string> {
   if(!text.trim()||text.length>4000)throw new Error('Invalid conversation title input');

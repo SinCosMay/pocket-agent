@@ -851,7 +851,7 @@ public final class MainActivity extends androidx.activity.ComponentActivity impl
     private JSONObject webSnapshot() throws Exception { return webSnapshot(state); }
     private JSONObject webSnapshot(JSONObject currentState) throws Exception {
         JSONObject config = new CredentialStore(this).get(); String mode=config.optString("authMode");
-        JSONObject prefs=json("name",getSharedPreferences("pocket-ui",0).getString("name",""),"provider",java.util.List.of("nebius","opencode","codex-account").contains(mode)?mode:"none","model",config.optString("model"),"reasoning",config.optString("reasoningEffort","low"),"instructions",currentState.optString("personalInstructions"),"stt",getSharedPreferences("pocket-ui",0).getString("voiceEngine","system"),"wake",WakeWordService.enabled(this),"autonomy",AutonomyStore.enabled(this));
+        JSONObject prefs=json("name",getSharedPreferences("pocket-ui",0).getString("name",""),"provider",java.util.List.of("nebius","opencode","codex-account").contains(mode)?mode:"none","model",config.optString("model"),"reasoning",config.optString("reasoningEffort","low"),"preferredReasoning",config.optString("preferredReasoningEffort",config.optString("reasoningEffort","low")),"instructions",currentState.optString("personalInstructions"),"stt",getSharedPreferences("pocket-ui",0).getString("voiceEngine","system"),"wake",WakeWordService.enabled(this),"autonomy",AutonomyStore.enabled(this));
         JSONArray servers=new JSONArray(),stored=credentialsForUi();
         for(int i=0;i<stored.length();i++){JSONObject server=stored.getJSONObject(i);servers.put(json("id",server.optString("id"),"name",server.optString("name"),"url",server.optString("url"),"authMode",server.optString("authMode"),"enabled",server.optBoolean("enabled")));}
         JSONObject result=json("state",currentState,"preferences",prefs,"connection",webStatus(),"servers",servers,"voiceActive",SubscriptionVoiceService.isActive());
@@ -867,6 +867,15 @@ public final class MainActivity extends androidx.activity.ComponentActivity impl
         }
         if(android.os.SystemClock.elapsedRealtime()>=deadline){reply.complete(null,"Could not close this chat. Stop active work and try again.");return;}
         pocketUi.view.postDelayed(()->finishChatDeletion(threadId,reply,deadline),50);
+    }
+    private void savePersonalInstructions(String text, PocketWebUi.Reply reply) {
+        if(text.length()>50000){reply.complete(null,"Instructions are too long");return;}
+        RuntimeOwner owner=RuntimeOwner.acquire(getApplicationContext());
+        owner.ready.thenCompose(ignored->owner.host.dispatch(json("action","set_personal_instructions","text",text)))
+            .whenComplete((result,error)->{owner.close();runOnUiThread(()->{
+                if(error!=null||result==null||!result.optBoolean("ok"))reply.complete(null,result==null?"Could not save instructions":result.optString("error","Could not save instructions"));
+                else reply.complete(json("saved",true),null);
+            });});
     }
     private void webRequest(String path,JSONObject body,PocketWebUi.Reply reply) throws Exception {
         CredentialStore credentials=new CredentialStore(this);
@@ -922,7 +931,7 @@ public final class MainActivity extends androidx.activity.ComponentActivity impl
             case "/native/copy" -> {ClipboardManager clipboard=getSystemService(ClipboardManager.class);if(clipboard!=null)clipboard.setPrimaryClip(ClipData.newPlainText("Pocket Agent conversation",body.optString("text")));}
             case "/native/preferences" -> {
                 if(body.has("name"))getSharedPreferences("pocket-ui",0).edit().putString("name",body.optString("name").substring(0,Math.min(120,body.optString("name").length()))).apply();
-                if(body.has("instructions")){String value=body.optString("instructions");if(value.length()>50000)throw new IllegalArgumentException("Instructions are too long");command(json("action","configure","personalInstructions",value));}
+                if(body.has("instructions")){savePersonalInstructions(body.optString("instructions"),reply);return;}
                 if(body.has("stt")){String value=body.optString("stt");if(!java.util.List.of("system","groq","deepgram","codex").contains(value))throw new IllegalArgumentException("Unknown voice mode");getSharedPreferences("pocket-ui",0).edit().putString("voiceEngine",value).apply();}
             }
             case "/native/select-provider" -> {
@@ -938,6 +947,7 @@ public final class MainActivity extends androidx.activity.ComponentActivity impl
                 JSONObject config=credentials.get();String provider=body.optString("provider");
                 if(!java.util.List.of("nebius","opencode","codex-account").contains(provider))throw new IllegalArgumentException("Choose a provider");
                 if(!provider.equals(config.optString("authMode")))throw new IllegalStateException("Connect this provider first");
+                config.put("preferredReasoningEffort",body.optString("preferredReasoning",config.optString("preferredReasoningEffort",config.optString("reasoningEffort","low"))));
                 config.put("model",body.optString("model"));config.put("reasoningEffort",body.optString("reasoning","low"));config.put("modelSource",body.has("supportedReasoningLevels")?"catalog":"manual");
                 if(body.has("supportedReasoningLevels")){JSONArray proof=webModelProofs.get(body.optString("model"));if(proof==null)throw new IllegalStateException("Discover models again before saving this reasoning choice");config.put("reasoningEffortModel",body.optString("model"));config.put("reasoningEfforts",proof);}
                 if(!provider.equals("codex-account")){validateWebConnection(config,reply);return;}
@@ -969,8 +979,26 @@ public final class MainActivity extends androidx.activity.ComponentActivity impl
             case "/native/dictation" -> {String engine=getSharedPreferences("pocket-ui",0).getString("voiceEngine","system");startDictation(engine.equals("codex")?"system":engine);}
             case "/native/live-voice" -> {if(credentials.getVoiceCodex().optString("accessToken").isEmpty())throw new IllegalStateException("Connect a ChatGPT voice account in Voice settings");toggleVoiceConversation();}
             case "/native/voice/finish" -> {if(groqCapture!=null)groqCapture.finish();}
-            case "/native/voice/stop" -> {if(groqCapture!=null){groqCapture.close();groqCapture=null;}stopService(new Intent(this,SubscriptionVoiceService.class));stopService(new Intent(this,VoiceListeningService.class));}
-            case "/native/voice/disconnect-account" -> {if(activeWork())throw new IllegalStateException("Stop active work before disconnecting voice");invalidateAccountOperations();webAuth=json("state","idle");credentials.signOutVoiceCodex();VoiceConversationInvitation.cancel(this,"voice_account_signed_out");stopService(new Intent(this,SubscriptionVoiceService.class));}
+            case "/native/voice/stop" -> {if(groqCapture!=null){groqCapture.close();groqCapture=null;}pocketUi.event("voice",json("active",false,"message",""));stopService(new Intent(this,SubscriptionVoiceService.class));stopService(new Intent(this,VoiceListeningService.class));}
+            case "/native/voice/disconnect-account" -> {
+                if(activeWork())throw new IllegalStateException("Stop active work before disconnecting voice");
+                Runnable disconnect=()->{
+                    try {
+                        if(activeWork())throw new IllegalStateException("Stop active work before disconnecting voice");
+                        invalidateAccountOperations();webAuth=json("state","idle");credentials.signOutVoiceCodex();
+                        VoiceConversationInvitation.cancel(this,"voice_account_signed_out");
+                        stopService(new Intent(this,SubscriptionVoiceService.class));replyWebStatus(reply);
+                    } catch(Exception failure){reply.complete(null,"Could not disconnect account. Stop active work and try again.");}
+                };
+                if(credentials.voiceSharesChatAccount()) {
+                    new AlertDialog.Builder(this).setTitle("Disconnect shared Codex account?")
+                        .setMessage("Voice and chat use the same account. Disconnecting signs out both.")
+                        .setNegativeButton("Cancel",(dialog,which)->replyWebStatus(reply))
+                        .setPositiveButton("Disconnect",(dialog,which)->disconnect.run())
+                        .setOnCancelListener(dialog->replyWebStatus(reply)).show();
+                } else disconnect.run();
+                return;
+            }
             case "/native/action" -> webPhoneAction(body.optString("action"));
             case "/native/autonomy" -> {boolean enabled=body.optBoolean("enabled");AutonomyStore.requestEnabled(this,enabled,error->runOnUiThread(()->pocketUi.event("notice",json("text","Could not update background work"))));if(!enabled){RuntimeHost runtime=RuntimeOwner.peekHost();if(runtime!=null)runtime.dispatch(json("action","stop_autonomy"));}}
             case "/native/schedule" -> {String action=body.optString("action");if(!action.equals("pause")&&!action.equals("resume"))throw new IllegalArgumentException("Invalid schedule action");command(json("action","automation_control","tool","schedule","args",json("action",action,"id",body.optString("id"))));}
@@ -1047,9 +1075,9 @@ public final class MainActivity extends androidx.activity.ComponentActivity impl
     }
     private void settingsHome() {
         phonePage("Settings", body -> {
-            String name = getSharedPreferences("pocket-ui", 0).getString("name", "Your Pocket"); settingsRow(body, name.isBlank() ? "Your Pocket" : name, "Personal preferences", () -> phonePage("Your profile", profile -> { EditText value = field(profile, "Your name", name.equals("Your Pocket") ? "" : name); profile.addView(button("Save name", () -> { getSharedPreferences("pocket-ui", 0).edit().putString("name", value.getText().toString().trim()).apply(); toast("Profile saved"); })); }));
+            String name = getSharedPreferences("pocket-ui", 0).getString("name", "Your Pocket"); settingsRow(body, name.trim().isEmpty() ? "Your Pocket" : name, "Personal preferences", () -> phonePage("Your profile", profile -> { EditText value = field(profile, "Your name", name.equals("Your Pocket") ? "" : name); profile.addView(button("Save name", () -> { getSharedPreferences("pocket-ui", 0).edit().putString("name", value.getText().toString().trim()).apply(); toast("Profile saved"); })); }));
             activitySection(body, "Your assistant"); settingsRow(body, "AI & model", "Provider connection, sign-in, models & reasoning", this::settings);
-            settingsRow(body, "Personal instructions", "Tone, priorities and preferences", () -> phonePage("Personal instructions", page -> { EditText value = field(page, "Instructions for Pocket", state.optString("personalInstructions")); value.setSingleLine(false); value.setMinLines(6); value.setGravity(Gravity.TOP); page.addView(button("Save instructions", () -> { String prompt = value.getText().toString().trim(); if (prompt.length() > 50000) { toast("Instructions must be 50000 characters or fewer"); return; } command(json("action", "configure", "personalInstructions", prompt)); toast("Instructions saved"); })); }));
+            settingsRow(body, "Personal instructions", "Tone, priorities and preferences", () -> phonePage("Personal instructions", page -> { EditText value = field(page, "Instructions for Pocket", state.optString("personalInstructions")); value.setSingleLine(false); value.setMinLines(6); value.setGravity(Gravity.TOP); page.addView(button("Save instructions", () -> { String prompt = value.getText().toString().trim(); if (prompt.length() > 50000) { toast("Instructions must be 50000 characters or fewer"); return; } savePersonalInstructions(prompt,(result,error)->toast(error==null?"Instructions saved":error)); })); }));
             settingsRow(body, "Voice & wake word", "System speech, Groq Whisper, Deepgram & Codex voice", this::voiceSettingsPage);
             activitySection(body, "On your phone"); settingsRow(body, "Phone access", "Permissions, Accessibility & virtual displays", this::phoneAccessPage); settingsRow(body, "Connections", "Remote MCP servers & tool discovery", this::mcpSettings); settingsRow(body, "Background work", "Schedules, approvals and run history", this::autonomyActivity);
             activitySection(body, "Appearance"); Spinner theme = new Spinner(this); String[] labels = {"System", "Warm charcoal", "Soft paper"}; String[] values = {"system", "dark", "light"}; theme.setAdapter(new ArrayAdapter<>(this, android.R.layout.simple_spinner_dropdown_item, labels)); String savedTheme = getSharedPreferences("pocket-ui", 0).getString("theme", "system"); theme.setSelection(java.util.Arrays.asList(values).indexOf(savedTheme)); body.addView(theme); theme.setOnItemSelectedListener(new AdapterView.OnItemSelectedListener() { public void onNothingSelected(AdapterView<?> parent) { } public void onItemSelected(AdapterView<?> parent, View view, int position, long id) { if (!values[position].equals(getSharedPreferences("pocket-ui", 0).getString("theme", "system"))) { getSharedPreferences("pocket-ui", 0).edit().putString("theme", values[position]).apply(); recreate(); } } });
@@ -1122,7 +1150,7 @@ public final class MainActivity extends androidx.activity.ComponentActivity impl
             historyQueries.submit(() -> { JSONArray rows; try (StateStore history = new StateStore(getApplicationContext())) { rows = history.listConversations(query); } catch (RuntimeException failure) { runOnUiThread(() -> { if (drawer.isShowing() && request.get() == generation) { list.removeAllViews(); list.addView(activityMeta("Saved chats could not be read. Your data has not been changed.")); } }); return; }
                 runOnUiThread(() -> { if (isDestroyed() || !drawer.isShowing() || request.get() != generation) return; list.removeAllViews();
                     list.addView(button("Current conversation", drawer::dismiss)); JSONArray tasks = state.optJSONArray("tasks"); if (tasks != null && tasks.length() > 0) { activitySection(list, "Workers"); for (int i = 0; i < tasks.length(); i++) { JSONObject task = tasks.optJSONObject(i); if (task == null) continue; String id = task.optString("conversationId"); list.addView(button(task.optString("label", "Worker") + " · " + taskStatus(task.optString("status")), () -> { drawer.dismiss(); worker(id); })); } }
-                    activitySection(list, "Saved chats"); if (rows.length() == 0) list.addView(activityMeta(query.isBlank() ? "Your conversations will appear here." : "No saved chats match your search."));
+                    activitySection(list, "Saved chats"); if (rows.length() == 0) list.addView(activityMeta(query.trim().isEmpty() ? "Your conversations will appear here." : "No saved chats match your search."));
                     for (int i = 0; i < rows.length(); i++) { JSONObject item = rows.optJSONObject(i); if (item == null) continue; String id = item.optString("threadId"), title = item.optString("title", "Saved conversation").replace('\n', ' '); list.addView(button(title, () -> { drawer.dismiss(); if (id.equals(state.optString("mainThreadId"))) messages.fullScroll(View.FOCUS_DOWN); else openArchive(id, title, 0); })); }
                 });
             });

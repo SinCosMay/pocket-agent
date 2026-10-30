@@ -315,7 +315,7 @@ public class NativeUiDeviceTest {
                 assertEquals(oldId,store.loadDurable().optString("mainThreadId"));
                 eval("window.pocketRequest('/native/send',{text:'delegate delay=1000'})");
                 ready("document.querySelector('#show-threads').textContent.includes('·')");
-                assertEquals("0",eval("document.querySelectorAll('.main .native-task').length"));
+                assertEquals("true",eval("document.querySelectorAll('.main .native-task').length>0"));
                 eval("document.querySelector('#show-threads').click()");ready("document.querySelector('#settings-screen .settings-title').textContent==='Threads'");capture("chat-threads-screen");
                 assertEquals("true",eval("document.querySelectorAll('#settings-screen .native-task').length>0"));
                 eval("window.pocketBack();document.querySelector('#message').value='';document.querySelector('#message').dispatchEvent(new Event('input'))");
@@ -325,6 +325,8 @@ public class NativeUiDeviceTest {
                 long deadline=android.os.SystemClock.elapsedRealtime()+10000;while(AgentService.isRunning()&&android.os.SystemClock.elapsedRealtime()<deadline)android.os.SystemClock.sleep(50);
                 assertFalse("Fixture runtime must stop before restoring state",AgentService.isRunning());
                 java.lang.reflect.Field closing=RuntimeOwner.class.getDeclaredField("previousClose");closing.setAccessible(true);Object pending=closing.get(null);if(pending instanceof java.util.concurrent.CompletableFuture<?> future)future.get(10,TimeUnit.SECONDS);
+                store.getWritableDatabase().delete("conversation_history","thread_id IN (?,?)",new String[]{oldId,newId});
+                store.getWritableDatabase().delete("conversation_history_progress","thread_id IN (?,?)",new String[]{oldId,newId});
                 store.saveDurable(priorDurable);store.save(priorSnapshot);credentials.save(priorCredentials);
             }
         }

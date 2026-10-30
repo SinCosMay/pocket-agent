@@ -143,6 +143,7 @@ jobs:
             emulator-diagnostics/emulator-results.json
           if-no-files-found: ignore
       - name: Collect provenance and signed APKs
+        id: collect_apks
         if: ${{ always() && steps.build_apks.outcome == 'success' }}
         run: |
           mkdir -p artifacts
@@ -179,7 +180,7 @@ jobs:
           sha256sum artifacts/*.apk > artifacts/SHA256SUMS.txt
           (cd artifacts && sha256sum Pocket-Agent-x86_64.apk Pocket-Agent-tests.apk Pocket-Agent-fixture.apk > EMULATOR_SHA256SUMS.txt)
       - uses: actions/upload-artifact@v6
-        if: ${{ always() && steps.build_apks.outcome == 'success' }}
+        if: ${{ always() && steps.collect_apks.outcome == 'success' }}
         with:
           name: pocket-agent-emulator-validation
           path: |
@@ -191,14 +192,14 @@ jobs:
           retention-days: 7
           if-no-files-found: error
       - uses: actions/upload-artifact@v6
-        if: ${{ always() && steps.build_apks.outcome == 'success' }}
+        if: ${{ always() && steps.collect_apks.outcome == 'success' }}
         with:
           name: ${{ inputs.validation_signing && 'pocket-agent-test-signed-release' || 'pocket-agent-release' }}
           path: artifacts/
           retention-days: 90
           if-no-files-found: error
       - uses: actions/upload-artifact@v6
-        if: ${{ always() && steps.build_apks.outcome == 'success' }}
+        if: ${{ always() && steps.collect_apks.outcome == 'success' }}
         with:
           name: ${{ inputs.validation_signing && 'pocket-agent-test-signed-development' || 'pocket-agent-development' }}
           path: |

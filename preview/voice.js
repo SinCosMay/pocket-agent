@@ -44,8 +44,8 @@ export function createVoice({button,feedback,status,audio,onTranscript,getConfig
       media=source;chunks=[];let size=0;
       const mimeType=['audio/webm;codecs=opus','audio/ogg;codecs=opus','audio/mp4'].find(type=>MediaRecorder.isTypeSupported(type));
       recorder=new MediaRecorder(media,mimeType?{mimeType}:{});
-      recorder.ondataavailable=event=>{if(event.data.size){size+=event.data.size;if(size>10*1024*1024){cancel();failure('Recording was too large. Try a shorter message.');return;}chunks.push(event.data);}};
-      recorder.onerror=()=>{cancel();failure('Microphone recording failed. Try again.');};
+      recorder.ondataavailable=event=>{if(selected!==generation)return;if(event.data.size){size+=event.data.size;if(size>10*1024*1024){cancel();failure('Recording was too large. Try a shorter message.');return;}chunks.push(event.data);}};
+      recorder.onerror=()=>{if(selected!==generation)return;cancel();failure('Microphone recording failed. Try again.');};
       recorder.onstop=async()=>{
         if(selected!==generation)return;release();
         try{
@@ -56,7 +56,7 @@ export function createVoice({button,feedback,status,audio,onTranscript,getConfig
           onTranscript(result.text);setPhase('idle');
         }catch(error){if(selected===generation)failure(error.name==='AbortError'?'Voice cancelled.':error.message);}
       };
-      recorder.start(500);setPhase('recording','Listening… Tap the microphone again when you’re done.');timer=setTimeout(()=>{if(recorder.state==='recording')recorder.stop();},30000);
+      recorder.start(500);setPhase('recording','Listening… Tap the microphone again when you’re done.');timer=setTimeout(()=>{if(selected!==generation)return;if(recorder.state==='recording')recorder.stop();},30000);
     }catch(error){release();if(selected===generation)failure(error.name==='NotAllowedError'?'Microphone access was denied. Allow it in your browser to use voice.':error.message);}
   };
   async function speak(text){
@@ -70,7 +70,7 @@ export function createVoice({button,feedback,status,audio,onTranscript,getConfig
       controller=new AbortController();const response=await fetch('/api/voice/speak',{method:'POST',headers:{'X-Pocket-Request':'1','Content-Type':'application/json'},body:JSON.stringify({text}),signal:controller.signal});
       if(!response.ok){const result=await response.json();throw Error(result.error||'Spoken reply is unavailable.');}
       const blob=await response.blob();if(selected!==generation)return;audioUrl=URL.createObjectURL(blob);audio.src=audioUrl;audio.hidden=false;status.textContent='Reading the reply aloud';
-      try{await audio.play();}catch{status.textContent='Tap play to hear the reply.';}
+      try{await audio.play();}catch{if(selected===generation)status.textContent='Tap play to hear the reply.';}
     }catch(error){if(selected===generation)failure(error.message);}
   }
   window.addEventListener('pagehide',cancel);

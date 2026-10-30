@@ -29,8 +29,10 @@ public final class ShellTerminalSessionTest {
             while(!terminal.poll(id,0).getString("output").equals("ready")) {
                 check(System.currentTimeMillis()<deadline,"Command did not start");Thread.sleep(10);
             }
+            check(terminal.activeSessions()==1,"A running shell must keep its Shizuku client bound");
             terminal.stop(id,0);
             check(completed(terminal,id).getInt("exit_code")!=0,"Stopped command must have a nonzero exit code");
+            check(terminal.activeSessions()==0,"Completed shells must not keep the client bound");
             Files.createFile(proceed.toPath());Thread.sleep(100);
             check(!marker.exists(),"Stopped script continued executing after the session exited");
             check(completed(new ShellTerminal(home,shell),id).getInt("exit_code")!=0,"Stopped session lost its durable receipt");

@@ -48,7 +48,7 @@ test('display status exposes assigned IDs, waiting work, and released leases for
   assert.equal(app.state().displays.waiting,1);
   app.releaseScreen('first');await queued;
   // Then: the waiting task receives a real ID and the released lease disappears.
-  assert.equal(app.displayStatus('fourth').state,'active');
+  assert.equal(app.displayStatus('fourth').state,'active');assert.equal(typeof app.displayStatus('fourth').displayId,'number');
   assert.deepEqual(app.displayStatus('first'),{state:'idle',displayId:null});
   assert.equal(app.state().displays.waiting,0);
   for(const owner of ['second','third','fourth'])app.releaseScreen(owner);

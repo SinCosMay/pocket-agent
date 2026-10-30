@@ -74,10 +74,11 @@ public final class ShellDisplayService extends IDisplayShell.Stub {
         final DisplayWakeLock wakeLock;
         final Map<Integer,Integer> protectedTasks=new LinkedHashMap<>();
         Image latestFrame;
+        boolean closed;
         OwnedDisplay(VirtualDisplay display,ImageReader reader,DisplayTaskSnapshot before,DisplayWakeLock wakeLock) {
             this.display=display;this.reader=reader;this.wakeLock=wakeLock;protectedTasks.putAll(before.taskDisplays);
         }
-        synchronized void updateFrame(Image frame){if(latestFrame!=null)latestFrame.close();latestFrame=frame;}
+        synchronized void updateFrame(Image frame){if(closed){frame.close();return;}if(latestFrame!=null)latestFrame.close();latestFrame=frame;}
         synchronized String preview() {
             if(latestFrame==null)return "";
             Image.Plane plane=latestFrame.getPlanes()[0];int width=latestFrame.getWidth(),height=latestFrame.getHeight();
@@ -91,7 +92,7 @@ public final class ShellDisplayService extends IDisplayShell.Stub {
                 return android.util.Base64.encodeToString(bytes.toByteArray(),android.util.Base64.NO_WRAP);
             } finally {if(scaled!=null&&scaled!=cropped&&scaled!=padded)scaled.recycle();if(cropped!=null&&cropped!=padded)cropped.recycle();padded.recycle();}
         }
-        synchronized void close() {try {display.release();}finally {wakeLock.close();if(latestFrame!=null){latestFrame.close();latestFrame=null;}reader.close();}}
+        synchronized void close() {closed=true;try {display.release();}finally {wakeLock.close();if(latestFrame!=null){latestFrame.close();latestFrame=null;}reader.close();}}
     }
 
     public ShellDisplayService() {this.context=null;android.util.Log.i("PocketDisplayShizuku","Shizuku UserService no-context constructor uid="+Process.myUid());}
@@ -152,9 +153,11 @@ public final class ShellDisplayService extends IDisplayShell.Stub {
                         last=imeFailure;
                         continue;
                     }
-                    OwnedDisplay owned=new OwnedDisplay(display,reader,before,wakeLock);displays.put(id,owned);
+                    OwnedDisplay owned=new OwnedDisplay(display,reader,before,wakeLock);
+                    try {
                     reader.setOnImageAvailableListener(r->{try {Image frame=r.acquireLatestImage();if(frame!=null)owned.updateFrame(frame);}catch(IllegalStateException closed){android.util.Log.d("PocketDisplayShizuku","Frame reader closed");}},frameHandler());
-                    return id;
+                    } catch(Exception setupFailure) {owned.close();throw setupFailure;}
+                    displays.put(id,owned);return id;
                 } catch(Exception e) {last=e;}
             }
         } catch(Exception e) {last=e;}
@@ -482,7 +485,7 @@ public final class ShellDisplayService extends IDisplayShell.Stub {
             else if(action.equals("stop"))result=terminal.stop(args.getString("session_id"),args.optLong("offset",0));
             else if(action.equals("image"))result=ShellImages.read(args.getString("path"),args.optInt("max_image_dimension",1280));
             else if(action.equals("capture")) {
-                int target=args.optInt("display_id",displayId);OwnedDisplay active;
+                int target=args.optInt("display_id",displayId);if(target!=displayId)throw new SecurityException("Capture must use the assigned display");OwnedDisplay active;
                 synchronized(this){active=displays.get(target);}
                 if(active==null)throw new IllegalArgumentException("No frame reader for this display. Acquire a private display or use shell screencap plus action=image for the physical screen.");
                 synchronized(active) {
@@ -491,7 +494,7 @@ public final class ShellDisplayService extends IDisplayShell.Stub {
                 }
                 result.put("display_id",target);
             } else throw new IllegalArgumentException("Unsupported shell action");
-            result.put("uid",Process.myUid());result.put("assigned_display_id",displayId<0?org.json.JSONObject.NULL:displayId);
+            result.put("active_sessions",terminal.activeSessions());result.put("uid",Process.myUid());result.put("assigned_display_id",displayId<0?org.json.JSONObject.NULL:displayId);
             return result.toString();
         } catch(Exception error) {
             return Json.failure(error instanceof SecurityException?"PERMISSION_REQUIRED":error instanceof IllegalArgumentException||error instanceof org.json.JSONException?"INVALID_ARGUMENT":"SHELL_ERROR",

@@ -231,6 +231,30 @@ public final class SubscriptionVoiceActivationDeviceTest {
         } finally { instrumentation.runOnMainSync(activity::finish); }
     }
 
+    @Test public void manualVoiceTapClearsRetainedInvitationBeforeRequestingPermissions() throws Exception {
+        Context ctx=context();
+        SharedPreferences secrets=ctx.getSharedPreferences("provider-secrets",Context.MODE_PRIVATE);
+        String prior=secrets.getString("encrypted",null);
+        try {
+            assertTrue(secrets.edit().remove("encrypted").commit());
+            ctx.stopService(new Intent(ctx,SubscriptionVoiceService.class));
+            Activity activity=InstrumentationRegistry.getInstrumentation().startActivitySync(
+                new Intent(ctx,MainActivity.class).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK));
+            try {
+                java.lang.reflect.Field retained=MainActivity.class.getDeclaredField("pendingVoiceInvitation");retained.setAccessible(true);
+                java.lang.reflect.Method tap=MainActivity.class.getDeclaredMethod("toggleVoiceConversation");tap.setAccessible(true);
+                InstrumentationRegistry.getInstrumentation().runOnMainSync(()->{
+                    try {retained.set(activity,"stale-invitation-id");tap.invoke(activity);}
+                    catch(Exception failure){throw new AssertionError(failure);}
+                });
+                assertNull("A manual tap must never reuse an old invitation",retained.get(activity));
+            } finally {InstrumentationRegistry.getInstrumentation().runOnMainSync(activity::finish);}
+        } finally {
+            ctx.stopService(new Intent(ctx,SubscriptionVoiceService.class));
+            SharedPreferences.Editor restore=secrets.edit();if(prior==null)restore.remove("encrypted");else restore.putString("encrypted",prior);assertTrue(restore.commit());
+        }
+    }
+
     @Test public void mainChatVoiceControlOpensSetupWhenAccountIsMissing() throws Exception {
         Context ctx = context();
         SharedPreferences protectedPrefs = ctx.getSharedPreferences("provider-secrets", Context.MODE_PRIVATE);

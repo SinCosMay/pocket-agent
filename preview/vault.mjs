@@ -1,4 +1,4 @@
-import {mkdir,open,readFile,rename,chmod,rm} from 'node:fs/promises';
+import {mkdir,open,readFile,rename,chmod,rm,link} from 'node:fs/promises';
 import {join} from 'node:path';
 import {randomBytes,randomUUID,createCipheriv,createDecipheriv} from 'node:crypto';
 
@@ -11,8 +11,13 @@ export async function createVault(directory){
     if(error.code!=='ENOENT')throw Error('Could not open the local credential key.');
     try {await readFile(dataPath);throw Error('The credential key is missing. Restore it before using saved connections.');}
     catch(missing){if(missing.code!=='ENOENT')throw missing;}
-    key=randomBytes(32);const handle=await open(keyPath,'wx',0o600);
-    try{await handle.writeFile(key);await handle.sync();}finally{await handle.close();}
+    key=randomBytes(32);const tempKey=join(directory,`.vault-key-${randomUUID()}`);
+    try {
+      const handle=await open(tempKey,'wx',0o600);
+      try{await handle.writeFile(key);await handle.sync();}finally{await handle.close();}
+      // Publish the complete key without replacing a concurrent creator's key.
+      try{await link(tempKey,keyPath);}catch(error){if(error.code!=='EEXIST')throw error;key=await readFile(keyPath);}
+    } finally {await rm(tempKey,{force:true});}
   }
   if(key.length!==32)throw Error('The local credential key is invalid.');
   await chmod(keyPath,0o600);
@@ -33,8 +38,11 @@ export async function createVault(directory){
         const iv=randomBytes(12),cipher=createCipheriv('aes-256-gcm',key,iv);
         const encrypted=Buffer.concat([cipher.update(JSON.stringify(next),'utf8'),cipher.final()]);
         const temp=join(directory,`.credentials-${randomUUID()}`),handle=await open(temp,'wx',0o600);
-        try{await handle.writeFile(Buffer.concat([iv,cipher.getAuthTag(),encrypted]));await handle.sync();}finally{await handle.close();}
-        try{check();await rename(temp,dataPath);const folder=await open(directory,'r');try{await folder.sync();}finally{await folder.close();}state=next;}catch(error){await rm(temp,{force:true});throw error;}
+        try {
+          try{await handle.writeFile(Buffer.concat([iv,cipher.getAuthTag(),encrypted]));await handle.sync();}finally{await handle.close();}
+          check();await rename(temp,dataPath);state=next;
+          const folder=await open(directory,'r');try{await folder.sync();}finally{await folder.close();}
+        } finally {await rm(temp,{force:true});}
       });
       tail=operation.catch(()=>{});return operation;
     }

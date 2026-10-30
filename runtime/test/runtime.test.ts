@@ -504,7 +504,13 @@ test('new main thread clears old main delivery but retains a resumable worker',a
  assert.ok(internal.inbox.some((item:any)=>item.type==='completion'),'worker completion should be pending for the old main thread');
  assert.equal(runtime.runtime.conversation(id).generations.at(-1)!.receipts.model,false);
  const workerMessages=structuredClone(runtime.state().workerMessages);
- internal.inbox.push({type:'user',text:'stale queued user turn'});
+ internal.inbox.push({type:'user',text:'queued user turn'});
+ const queued=structuredClone(internal.inbox),thread=runtime.state().mainThreadId;
+ const rejectedSwitch=JSON.parse(runtime.dispatch(JSON.stringify({action:'new_main'})));
+ assert.equal(rejectedSwitch.ok,false);assert.match(rejectedSwitch.error,/queued messages/);
+ assert.deepEqual(internal.inbox,queued);assert.equal(runtime.state().mainThreadId,thread);
+ internal.mainPaused=false;await internal.pump();
+ await until(()=>!runtime.busy&&!internal.pumping&&!internal.inbox.length);
  command(runtime,{action:'new_main'});
  assert.deepEqual(runtime.state().messages,[]);assert.equal(runtime.state().mainTurns,0);assert.deepEqual(internal.inbox,[]);
  assert.equal(runtime.state().tasks[0].conversationId,id,'retained worker identity must survive a main-thread reset');
@@ -554,7 +560,7 @@ test('a rejected main reset preserves the queued inbox, receipts, and history id
  assert.deepEqual(internal.inbox,before.inbox);assert.deepEqual([...internal.delivered],before.delivered);
  assert.equal(runtime.state().mainThreadId,before.thread);
  assert.equal(runtime.runtime.conversation(id).generations.at(-1)!.receipts.model,before.receipt);
- bridge.fail=false;command(runtime,{action:'new_main'});
+ bridge.fail=false;internal.mainPaused=false;await internal.pump();await until(()=>!runtime.busy&&!internal.pumping&&!internal.inbox.length);command(runtime,{action:'new_main'});
 });
 test('archive identities survive restore but are never reused with a short worker ID',async()=>{
  const bridge=new Bridge(),runtime=new PocketRuntime(bridge);

@@ -158,13 +158,23 @@ function retryWait(ms: number, signal: AbortSignal): Promise<void> {
   });
 }
 /** Inspect only a bounded error code, never expose provider bodies to Pi or stored diagnostics. */
-async function terminalCodexError(response: Response,budget:{error?:string}): Promise<boolean> {
+async function terminalCodexError(response: Response,budget:{error?:string},signal:AbortSignal): Promise<boolean> {
   budget.error=codexFailure(response.status,undefined).message;
   if (!response.body) return !RETRYABLE_HTTP.has(response.status);
   const reader = response.body.getReader();const chunks: Uint8Array[] = [];let size = 0;
   try {
     while (true) {
-      const next = await reader.read();if (next.done) break;
+      let timer:ReturnType<typeof setTimeout>|undefined,abort:()=>void=()=>{};
+      let next:ReadableStreamReadResult<Uint8Array>;
+      try {
+        next=await new Promise<ReadableStreamReadResult<Uint8Array>>((resolve,reject)=>{
+          abort=()=>reject(new Error('Codex error response interrupted'));
+          timer=setTimeout(()=>reject(new Error('Codex error response stalled')),5000);
+          signal.addEventListener('abort',abort,{once:true});
+          if(signal.aborted)abort();else reader.read().then(resolve,reject);
+        });
+      } finally {clearTimeout(timer);signal.removeEventListener('abort',abort);}
+      if (next.done) break;
       size += next.value.byteLength;
       if (size > 32768) return true;
       chunks.push(next.value);
@@ -172,7 +182,7 @@ async function terminalCodexError(response: Response,budget:{error?:string}): Pr
     const body:unknown = JSON.parse(Buffer.concat(chunks).toString('utf8'));
     const failure=codexFailure(response.status,body);budget.error=failure.message;return failure.terminal;
   } catch {return !RETRYABLE_HTTP.has(response.status);}
-  finally {try {await reader.cancel();} catch {/* Discard remote diagnostics. */}}
+  finally {try {void reader.cancel().catch(()=>{});} catch {/* Discard remote diagnostics. */}}
 }
 
 function fixedCodexFetch(fetcher: typeof fetch, budget: {attempts:number;error?:string}, deadline: AbortSignal, requestSignal?: AbortSignal): typeof fetch {
@@ -198,7 +208,7 @@ function fixedCodexFetch(fetcher: typeof fetch, budget: {attempts:number;error?:
         continue;
       }
       if (response.ok) {budget.error=undefined;break;}
-      const terminal = await terminalCodexError(response,budget);
+      const terminal = await terminalCodexError(response,budget,signal);
       const delay = retryDelay(response.headers,attempt);
       if (signal.aborted) throw new Error('Codex inference interrupted.');
       if (terminal || !RETRYABLE_HTTP.has(response.status) || budget.attempts===CODEX_INFERENCE_ATTEMPTS || delay>5000) {

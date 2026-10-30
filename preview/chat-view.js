@@ -1,5 +1,6 @@
 export function reconcileMessages(parent,items,label='Assistant') {
   let changed=false;
+  for(const child of [...parent.children])if(!child.matches('article.message')||!child.querySelector('.message-body')){child.remove();changed=true;}
   items.forEach((item,index)=>{
     let article=parent.children[index];
     if(!article){article=document.createElement('article');article.className='message';const role=document.createElement('h2');role.className='message-label sr-only';const body=document.createElement('p');body.className='message-body';article.append(role,body);parent.append(article);changed=true;}

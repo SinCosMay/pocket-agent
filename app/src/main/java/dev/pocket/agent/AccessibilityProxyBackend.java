@@ -79,7 +79,7 @@ final class AccessibilityProxyBackend implements ControlBackend {
         boolean mutation="execute".equals(method)||"startActivity".equals(method)||"prepareKeyboardText".equals(method);
         long timeout=switch(method) {
             case "observe" -> extras.getBoolean("includeImage")?OBSERVE_IPC_TIMEOUT_MS:VALIDATE_IPC_TIMEOUT_MS;
-            case "validate" -> VALIDATE_IPC_TIMEOUT_MS;
+            case "validate", "prepareKeyboardText" -> VALIDATE_IPC_TIMEOUT_MS;
             case "execute" -> Math.max(VALIDATE_IPC_TIMEOUT_MS,EXECUTE_IPC_BASE_TIMEOUT_MS+Math.max(0,extras.getInt("durationMs",0)));
             default -> STATUS_IPC_TIMEOUT_MS;
         };

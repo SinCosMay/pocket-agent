@@ -16,6 +16,7 @@ final class ShellTerminal {
     private final Map<String,Process> processes=new ConcurrentHashMap<>();
     ShellTerminal(File home) {this(home,"/system/bin/sh");}
     ShellTerminal(File home,String shell) {this.home=home;this.shell=shell;}
+    int activeSessions(){return (int)processes.values().stream().filter(Process::isAlive).count();}
     JSONObject context(String owner) throws Exception {
         File scripts=new File(home,"scripts"),work=new File(home,"workspaces/"+UUID.nameUUIDFromBytes(owner.getBytes(StandardCharsets.UTF_8)));
         Files.createDirectories(scripts.toPath());Files.createDirectories(work.toPath());

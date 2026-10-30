@@ -9,7 +9,7 @@ Android; it does not depend on a laptop server for phone operation.
 - Runtime: `cd runtime && npm test` — 195 tests passed, including writable main
   history, worker ownership, display lifecycle, safe Codex failures and stream
   deadlines/cancellation.
-- Browser service: `npm run test:ui` — 13 tests passed, including encrypted
+- Browser service: `cd runtime && npm run test:ui` — 13 tests passed, including encrypted
   credentials, rejected draft preservation, speech protocols and a fresh HTTP
   server serving the entire imported chat-module graph. CI runs these tests.
 - Repository scripts: `python3 -m unittest discover -s scripts -p 'test_*.py'`
@@ -93,7 +93,7 @@ credential store currently has one active chat provider. A three-dot indicator i
 visible while the current chat is busy, with reduced-motion support. Touch feedback
 uses the control's own shape, with the WebView tap highlight disabled.
 
-Validation: `npm run test:ui` covers refresh coalescing, trailing updates,
+Validation: `cd runtime && npm run test:ui` covers refresh coalescing, trailing updates,
 cancellation/recovery, bounded model labels, reasoning metadata, and the served
 module graph. Browser QA with a mocked native bridge and 120 long messages verified
 100 runtime notifications produced one snapshot read, busy/idle dot visibility,

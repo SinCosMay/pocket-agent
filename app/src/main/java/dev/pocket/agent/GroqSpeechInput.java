@@ -64,6 +64,7 @@ final class GroqSpeechInput implements AutoCloseable {
             byte[] wav = new byte[44 + pcm.length]; System.arraycopy(header.array(), 0, wav, 0, 44); System.arraycopy(pcm, 0, wav, 44, pcm.length);
             RequestBody body = new MultipartBody.Builder().setType(MultipartBody.FORM).addFormDataPart("model", "whisper-large-v3-turbo").addFormDataPart("language", "en").addFormDataPart("response_format", "json").addFormDataPart("file", "speech.wav", RequestBody.create(wav, MediaType.get("audio/wav"))).build();
             call = client.newCall(new Request.Builder().url("https://api.groq.com/openai/v1/audio/transcriptions").header("Authorization", "Bearer " + key).post(body).build());
+            if (closed.get()) { call.cancel(); Arrays.fill(wav,(byte)0); return; }
             try (okhttp3.Response response = call.execute()) {
                 if (closed.get()) return;
                 if (!response.isSuccessful()) throw new IllegalStateException(response.code() == 429 ? "Groq speech quota reached. Try later or use system speech." : "Groq speech request failed. Check your key and connection.");

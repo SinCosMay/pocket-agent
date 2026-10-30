@@ -63,7 +63,7 @@ final class PocketWebUi {
                     byte[] bytes;try(java.io.InputStream stream=activity.getAssets().open("ui"+path);java.io.ByteArrayOutputStream output=new java.io.ByteArrayOutputStream()){
                         byte[] buffer=new byte[8192];int count;while((count=stream.read(buffer))!=-1)output.write(buffer,0,count);bytes=output.toByteArray();
                     }
-                    String mime=path.endsWith(".js")?"text/javascript":path.endsWith(".css")?"text/css":path.endsWith(".svg")?"image/svg+xml":"text/html";
+                    String mime=(path.endsWith(".js")||path.endsWith(".mjs"))?"text/javascript":path.endsWith(".css")?"text/css":path.endsWith(".svg")?"image/svg+xml":"text/html";
                     if(path.equals("/index.html"))bytes=new String(bytes,StandardCharsets.UTF_8).replace("/app.js","/native-app.js").replace("</head>","<link rel=\"stylesheet\" href=\"/native.css\"></head>").getBytes(StandardCharsets.UTF_8);
                     return new WebResourceResponse(mime,"UTF-8",200,"OK",Map.of("Content-Security-Policy","default-src 'none'; script-src 'self'; style-src 'self'; img-src 'self' data:; connect-src 'none'; base-uri 'none'; form-action 'none'"),new ByteArrayInputStream(bytes));
                 } catch(Exception missing) { return empty(); }

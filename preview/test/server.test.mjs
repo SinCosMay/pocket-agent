@@ -17,6 +17,8 @@ test('fresh preview serves the complete chat module graph and restricts provider
     child.on('exit',()=>{clearTimeout(timer);reject(Error('Preview exited before readiness'));});
     child.stdout.on('data',chunk=>{const match=String(chunk).match(/http:\/\/localhost:(\d+)/);if(match){clearTimeout(timer);resolve(`http://127.0.0.1:${match[1]}`);}});
   });
+  const page=await fetch(base+'/');assert.equal(page.status,200);assert.match(page.headers.get('content-type'),/html/);assert.match(await page.text(),/<script(?=[^>]*type="module")(?=[^>]*src="\/app.js")[^>]*>/);
+  const head=await fetch(base+'/events',{method:'HEAD',signal:AbortSignal.timeout(2000)});assert.ok(head.status<500);
   const pending=['/app.js'],seen=new Set();
   while(pending.length){
     const path=pending.shift();if(seen.has(path))continue;seen.add(path);

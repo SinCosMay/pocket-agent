@@ -2,6 +2,12 @@ name: Mobile UI checks
 on:
   pull_request:
     paths:
+      - 'scripts/**'
+      - 'control-core/**'
+      - '*.gradle.kts'
+      - 'gradle.properties'
+      - 'gradlew*'
+      - 'gradle/**'
       - 'app/**'
       - 'android-platform/**'
       - 'runtime/**'
@@ -43,7 +49,8 @@ jobs:
       - name: Record APK source and checksums
         run: |
           git rev-parse HEAD > app/build/outputs/apk/SOURCE_COMMIT.txt
-          find app/build/outputs/apk -name '*.apk' -exec sha256sum {} + > app/build/outputs/apk/SHA256SUMS.txt
+          cd app/build/outputs/apk
+          sha256sum debug/*.apk development/*.apk > SHA256SUMS.txt
       - name: Preserve installable APKs
         uses: actions/upload-artifact@v6
         with:

@@ -10,12 +10,13 @@ import android.graphics.drawable.Drawable;
 final class PocketIcon extends Drawable {
     private final Paint paint = new Paint(Paint.ANTI_ALIAS_FLAG);
     private final String name;
+    private int requestedAlpha=255;
     private final int ink, accent;
     PocketIcon(String name, int ink, int accent) { this.name = name; this.ink = ink; this.accent = accent; }
     @Override public void draw(Canvas canvas) {
         int save = canvas.save(); canvas.translate(getBounds().left, getBounds().top); canvas.scale(getBounds().width() / 24f, getBounds().height() / 24f);
-        if (name.equals("brand")) { paint.setStyle(Paint.Style.FILL); paint.setColor(accent); canvas.drawRoundRect(0, 0, 24, 24, 7, 7, paint); }
-        paint.setColor(ink); paint.setStyle(Paint.Style.STROKE); paint.setStrokeWidth(name.equals("brand") ? 1.25f : 1.6f); paint.setStrokeCap(Paint.Cap.ROUND); paint.setStrokeJoin(Paint.Join.ROUND);
+        if (name.equals("brand")) { paint.setStyle(Paint.Style.FILL); paint.setColor(accent); paint.setAlpha(android.graphics.Color.alpha(accent)*requestedAlpha/255); canvas.drawRoundRect(0, 0, 24, 24, 7, 7, paint); }
+        paint.setColor(ink); paint.setAlpha(android.graphics.Color.alpha(ink)*requestedAlpha/255); paint.setStyle(Paint.Style.STROKE); paint.setStrokeWidth(name.equals("brand") ? 1.25f : 1.6f); paint.setStrokeCap(Paint.Cap.ROUND); paint.setStrokeJoin(Paint.Join.ROUND);
         Path path = new Path();
         switch (name) {
             case "menu" -> { path.moveTo(5, 7); path.lineTo(19, 7); path.moveTo(5, 12); path.lineTo(15, 12); path.moveTo(5, 17); path.lineTo(19, 17); }
@@ -28,7 +29,7 @@ final class PocketIcon extends Drawable {
         }
         canvas.drawPath(path, paint); canvas.restoreToCount(save);
     }
-    @Override public void setAlpha(int alpha) { paint.setAlpha(alpha); invalidateSelf(); }
+    @Override public void setAlpha(int alpha) { requestedAlpha=alpha; invalidateSelf(); }
     @Override public void setColorFilter(ColorFilter filter) { paint.setColorFilter(filter); invalidateSelf(); }
     @Override public int getOpacity() { return PixelFormat.TRANSLUCENT; }
 }

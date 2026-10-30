@@ -4,7 +4,7 @@ export function attachDrawerSwipe({workspace,isOpen,canOpen,open,close}){
   const paint=()=>{paintFrame=0;if(!gesture)return;workspace.style.setProperty('--drawer-offset',gesture.offset+'px');workspace.style.setProperty('--drawer-opacity',String(gesture.offset/gesture.width));};
   function finish(cancelled=false){
     if(!gesture)return;
-    const current=gesture;gesture=null;
+    const current=gesture;paint();gesture=null;
     if(paintFrame){cancelAnimationFrame(paintFrame);paintFrame=0;}
     if(!current.dragging)return;
     const moved=current.offset-(current.wasOpen?current.width:0);

@@ -43,7 +43,7 @@ test('Codex device sign-in exchanges authorization and persists an encrypted usa
   // Then: only safe status is returned and the credential is encrypted at rest.
   assert.equal(service.status().providers['codex-account'].configured,true);assert.equal(calls,3);
   const publicState=JSON.stringify(service.status());assert.ok(!publicState.includes(account.access_token)&&!publicState.includes(account.refresh_token));
-  const ciphertext=await readFile(join(directory,'credentials.enc'));assert.ok(!ciphertext.includes(Buffer.from(account.refresh_token)));
+  const ciphertext=await readFile(join(directory,'credentials.enc'));assert.ok(!ciphertext.includes(Buffer.from(account.refresh_token)));assert.ok(!ciphertext.includes(Buffer.from(account.access_token)));
   assert.equal((await stat(join(directory,'credentials.enc'))).mode&0o777,0o600);assert.equal((await stat(join(directory,'vault.key'))).mode&0o777,0o600);
   const reopened=await createProviderService({directory});t.after(()=>reopened.close());assert.equal(reopened.status().providers['codex-account'].configured,true);
 });
@@ -106,7 +106,7 @@ test('Deepgram voice key enables transcription and speech at fixed endpoints',as
   // When: a recorded voice turn is transcribed and a response synthesized.
   const transcript=await service.transcribe(Buffer.from('fixture-input'),'audio/webm');const audio=await service.speak('Hello back');
   // Then: both operations use the saved key without exposing it in status.
-  assert.equal(transcript.text,'Hello Pocket');assert.equal(audio.toString(),'fixture-audio');assert.equal(visited.length,2);assert.equal(service.status().voice.configured,true);assert.ok(!JSON.stringify(service.status()).includes('fixture-voice-key'));
+  assert.equal(transcript.text,'Hello Pocket');assert.equal(audio.toString(),'fixture-audio');assert.deepEqual(visited,['https://api.deepgram.com/v1/listen?model=nova-3&smart_format=true','https://api.deepgram.com/v1/speak?model=aura-2-thalia-en&encoding=mp3']);assert.equal(service.status().voice.configured,true);assert.ok(!JSON.stringify(service.status()).includes('fixture-voice-key'));
 });
 
 test('account imports reject unsigned JWTs and malformed expiry',()=>{
@@ -149,4 +149,17 @@ test('an expired imported Codex session refreshes durably before model discovery
   const models=await service.models({provider:'codex-account'});
   // Then: the actual repo refresh adapter persists the replacement and returns the catalog.
   assert.equal(refreshes,1);assert.equal(models[0].id,'fixture-model');const reopened=await createProviderService({directory});t.after(()=>reopened.close());assert.equal(reopened.status().providers['codex-account'].configured,true);
+});
+
+test('Codex rejects unverified efforts and never trusts client-supplied reasoning proof',async t=>{
+ const {service}=await setup(t);await service.importAccount({tokens:fixtureAccount()});
+ await assert.rejects(service.chat({provider:'codex-account',model:'unverified',reasoning:'high',supportedReasoningLevels:['high'],messages:[{role:'user',text:'Hello'}]}),/Discover this model/);
+});
+
+test('verified reasoning catalog persists across companion restarts',async t=>{
+ const {service,directory}=await setup(t,{fetcher:async()=>Response.json({models:[{slug:'verified',supported_reasoning_levels:[{effort:'low'},{effort:'high'}]}]})});
+ await service.importAccount({tokens:fixtureAccount()});await service.models({provider:'codex-account'});
+ let reached=false;const reopened=await createProviderService({directory,fetcher:async()=>{reached=true;return Response.json({error:{code:'invalid_token'}},{status:401});}});t.after(()=>reopened.close());
+ await assert.rejects(reopened.chat({provider:'codex-account',model:'verified',reasoning:'high',messages:[{role:'user',text:'Hello'}]}),/provider could not complete/);
+ assert.equal(reached,true);
 });

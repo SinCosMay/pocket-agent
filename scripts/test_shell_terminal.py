@@ -39,6 +39,7 @@ class ShellTerminalTest(unittest.TestCase):
                 "scripts/ShellTerminalSessionTest.java",
             ])
             classes = temporary / "classes"
+            classes.mkdir()
             subprocess.run(["javac", "--release", "17", "-d", str(classes), *sources], check=True)
             subprocess.run([
                 "java", "-cp", str(classes), "dev.pocket.agent.ShellTerminalSessionTest",

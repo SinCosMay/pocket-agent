@@ -14,6 +14,7 @@ final class DisplayTaskSnapshot {
     private static final Pattern ROOT=Pattern.compile("^  (?:\\* Task\\{[^#\\r\\n]*#|RootTask #)(\\d+)\\b");
     private static final Pattern TASK=Pattern.compile("^\\s+\\* Task\\{[^#\\r\\n]*#(\\d+)\\b");
     private static final Pattern COMPONENT=Pattern.compile("^\\s+taskId=(\\d+): ([A-Za-z0-9_.]+)/");
+    private static final Pattern ACTIVITY=Pattern.compile("^\\s+\\* Hist #\\d+: ActivityRecord\\{[^\\r\\n]*?\\bu\\d+\\s+([A-Za-z0-9_.]+)/");
     final Map<Integer,Integer> displays=new LinkedHashMap<>();
     final Map<Integer,Integer> taskDisplays=new LinkedHashMap<>();
     final Set<Integer> visibleRoots=new LinkedHashSet<>();
@@ -41,18 +42,21 @@ final class DisplayTaskSnapshot {
 
     static DisplayTaskSnapshot activities(String output) {
         DisplayTaskSnapshot result=new DisplayTaskSnapshot();
-        int display=-1;
+        int display=-1;Integer root=null;
         for(String line:output.split("\\R")) {
             Matcher header=HEADER.matcher(line);
-            if(header.matches()) {display=Integer.parseInt(header.group(1));continue;}
+            if(header.matches()) {display=Integer.parseInt(header.group(1));root=null;continue;}
             // ActivityTaskSupervisor state, focused-task references, history, etc.
             // are separate dump sections, even if they mention Task{...} again.
             if(!line.isEmpty()&&!Character.isWhitespace(line.charAt(0)))display=-1;
             Matcher task=ROOT.matcher(line);
             if(display>=0&&task.find()) {
-                int id=Integer.parseInt(task.group(1));
+                int id=Integer.parseInt(task.group(1));root=id;
                 result.displays.put(id,display);result.taskDisplays.put(id,display);
             }
+            Matcher component=ACTIVITY.matcher(line);
+            if(display>=0&&root!=null&&component.find())result.packages.computeIfAbsent(root,key->new LinkedHashSet<>()).add(component.group(1));
+            if(display>=0&&root!=null&&(line.contains("visible=true")||line.contains("mVisibleRequested=true")))result.visibleRoots.add(root);
             Matcher anyTask=TASK.matcher(line);
             if(display>=0&&anyTask.find())result.taskDisplays.put(Integer.parseInt(anyTask.group(1)),display);
         }
